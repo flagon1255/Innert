@@ -738,7 +738,7 @@ impl Combat {
         let vpm = arena.view.vpm;
         let mut near: Vec<(f64, usize)> = (0..arena.animals.len())
             .filter(|&i| arena.animals[i].health > 0.0 && !arena.animals[i].look.is_pet())
-            .map(|i| ((arena.animals[i].center(vpm as u32) - at).norm() / vpm - arena.animals[i].look.body().1, i))
+            .map(|i| ((arena.animals[i].center(vpm as u32) - at).norm() / vpm - arena.animals[i].body().1, i))
             .filter(|&(d, _)| d < within)
             .collect();
         near.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -834,7 +834,7 @@ impl Combat {
             .filter_map(|a| {
                 let to = a.position - feet;
                 let d = to.xy().norm() / vpm;
-                (d < 14.0 && to.xy().try_normalize(1e-6).is_some_and(|v| v.dot(&flat.xy()) > 0.8)).then_some(d - a.look.body().1 - 1.5)
+                (d < 14.0 && to.xy().try_normalize(1e-6).is_some_and(|v| v.dot(&flat.xy()) > 0.8)).then_some(d - a.body().1 - 1.5)
             })
             .fold(f64::MAX, f64::min)
             .max(0.0)
@@ -1022,7 +1022,7 @@ impl Combat {
                 let from = self.held_point(weapon, view, false);
                 // What's in its ring, where it's aimed, or else the ground there
                 let spot = self.ground_aim(arena, target, aim::THREAD_AIM);
-                let aimed = Combat::aimed_foe(arena, target, 30.0).filter(|&i| (arena.animals[i].position - spot).xy().norm() < (2.5 + arena.animals[i].look.body().1) * vpm).map(|i| arena.animals[i].center(vpm as u32));
+                let aimed = Combat::aimed_foe(arena, target, 30.0).filter(|&i| (arena.animals[i].position - spot).xy().norm() < (2.5 + arena.animals[i].body().1) * vpm).map(|i| arena.animals[i].center(vpm as u32));
                 let to = aimed.unwrap_or(spot);
                 self.keep_rings(arena, &profile, special, spot, (to - from).norm() / (26.0 * vpm));
                 self.launch(&blood, None, Form::Lance, from, (to - from).try_normalize(1e-6).unwrap_or(forward) * 26.0 * vpm, base * 0.8, 0.0);
@@ -1121,7 +1121,7 @@ impl Combat {
                 }
                 for i in 0..arena.animals.len() {
                     let a = &arena.animals[i];
-                    if a.health > 0.0 && !a.look.is_pet() && off_line(a.center(vpm as u32), from, to) / vpm - a.look.body().1 < 1.3 {
+                    if a.health > 0.0 && !a.look.is_pet() && off_line(a.center(vpm as u32), from, to) / vpm - a.body().1 < 1.3 {
                         let s = &mut arena.animals[i].status;
                         s.staggered = s.staggered.max(0.5);
                         s.flash = s.flash.max(0.08);
@@ -1162,7 +1162,7 @@ impl Combat {
                 self.cap_sparks();
                 self.cues.push(Cue::here(Sound::HeavySwing, 1.0).pitched(0.75));
                 self.cues.push(Cue::here(Sound::Shing, 0.6).pitched(0.7));
-                let cut: Vec<usize> = Combat::foes_ahead(arena, view.eye, forward, reach + 1.0, 0.25).into_iter().filter(|&i| (arena.animals[i].center(vpm as u32) - view.eye).norm() / vpm - arena.animals[i].look.body().1 < reach).collect();
+                let cut: Vec<usize> = Combat::foes_ahead(arena, view.eye, forward, reach + 1.0, 0.25).into_iter().filter(|&i| (arena.animals[i].center(vpm as u32) - view.eye).norm() / vpm - arena.animals[i].body().1 < reach).collect();
                 let mut wisps = Vec::new();
                 for &i in &cut {
                     let center = arena.animals[i].center(vpm as u32);
@@ -1235,7 +1235,7 @@ impl Combat {
                 self.roll_ring(profile, center, ANVIL_REACH, Element::Storm);
                 let near = Combat::foes_round(arena, center, ANVIL_REACH);
                 for &i in &near {
-                    let d = ((arena.animals[i].position - center).xy().norm() / vpm - arena.animals[i].look.body().1 - 0.4).max(0.0);
+                    let d = ((arena.animals[i].position - center).xy().norm() / vpm - arena.animals[i].body().1 - 0.4).max(0.0);
                     self.pending.push(Pending { delay: d / RING_SPEED, act: Act::Signature(SigAct::Leap(arena.animals[i].id)), profile: profile.clone(), damage: damage * 0.35 });
                 }
                 if near.is_empty() {
@@ -1295,7 +1295,7 @@ impl Combat {
                         if arena.animals[j].id == id {
                             continue;
                         }
-                        let d = ((arena.animals[j].position - at).xy().norm() / vpm - arena.animals[j].look.body().1 - 0.4).max(0.0);
+                        let d = ((arena.animals[j].position - at).xy().norm() / vpm - arena.animals[j].body().1 - 0.4).max(0.0);
                         self.pending.push(Pending { delay: d / RING_SPEED, act: Act::Signature(SigAct::Echo { id: arena.animals[j].id, depth: depth + 1 }), profile: profile.clone(), damage: damage * 0.8 });
                     }
                 }
@@ -1384,7 +1384,7 @@ impl Combat {
                 if animal.health <= 0.0 || animal.look.is_pet() || p.hit.contains(&animal.id) {
                     return false;
                 }
-                let body = animal.look.body().1 * vpm;
+                let body = animal.body().1 * vpm;
                 let rel = animal.center(vpm as u32) - p.position;
                 let along = rel.dot(&way);
                 along > -body && along < step + body && (rel - way * along).norm() < half * vpm + body
@@ -1394,7 +1394,7 @@ impl Combat {
         for i in caught {
             let animal = &arena.animals[i];
             let center = animal.center(vpm as u32);
-            let big = animal.boss.is_some() || animal.look.body().1 > 1.4;
+            let big = animal.boss.is_some() || animal.body().1 > 1.4;
             p.hit.push(animal.id);
             self.sparks(center, 10, 3.5, Element::look(None), 0.8, 0.35);
             self.cues.push(Cue::at(Sound::Clang, center, 0.7).pitched(0.85));
@@ -1440,7 +1440,7 @@ impl Combat {
             }
             Sig::Lantern => {
                 hit(self, arena, p.damage, Some(Element::Holy));
-                let over = arena.animals[i].position + Vector3::new(0.0, 0.0, (arena.animals[i].look.body().0 + 1.0) * vpm);
+                let over = arena.animals[i].position + Vector3::new(0.0, 0.0, (arena.animals[i].body().0 + 1.0) * vpm);
                 self.hang_lantern(arena, p, over);
             }
             // A caltrop that hits something sticks in, then drops at its feet
@@ -1788,7 +1788,7 @@ impl Combat {
         self.cues.push(Cue::at(Sound::Burst, center, 0.6).pitched(1.2));
         self.shake = self.shake.max(0.4);
         for i in Combat::foes_round(arena, center, KNELL_REACH) {
-            let d = ((arena.animals[i].position - center).xy().norm() / vpm - arena.animals[i].look.body().1 - 0.4).max(0.0);
+            let d = ((arena.animals[i].position - center).xy().norm() / vpm - arena.animals[i].body().1 - 0.4).max(0.0);
             self.pending.push(Pending { delay: d / RING_SPEED, act: Act::Signature(SigAct::Echo { id: arena.animals[i].id, depth: 1 }), profile: profile.clone(), damage: p.damage * 0.75 });
         }
     }
@@ -1880,7 +1880,7 @@ impl Combat {
             Some(i) => {
                 let a = &arena.animals[i];
                 let to = a.position - z.position;
-                if to.xy().norm() < (a.look.body().1 + 0.4) * vpm {
+                if to.xy().norm() < (a.body().1 + 0.4) * vpm {
                     // Clung on, a little in from where it reached
                     let center = a.center(vpm as u32);
                     z.dwell = 1e-3;
@@ -2011,7 +2011,7 @@ impl Combat {
         let on: Vec<usize> = (0..arena.animals.len())
             .filter(|&i| {
                 let a = &arena.animals[i];
-                a.health > 0.0 && !a.look.is_pet() && z.path.iter().any(|c| (a.position - c).xy().norm() < (0.6 + a.look.body().1 * 0.6) * vpm && (a.position.z - c.z).abs() < 1.5 * vpm)
+                a.health > 0.0 && !a.look.is_pet() && z.path.iter().any(|c| (a.position - c).xy().norm() < (0.6 + a.body().1 * 0.6) * vpm && (a.position.z - c.z).abs() < 1.5 * vpm)
             })
             .collect();
         let profile = z.profile.clone();
@@ -2126,7 +2126,7 @@ impl Combat {
         let cut: Vec<usize> = (0..arena.animals.len())
             .filter(|&i| {
                 let animal = &arena.animals[i];
-                animal.health > 0.0 && !animal.look.is_pet() && off_line(animal.center(vpm as u32), a, b) / vpm - animal.look.body().1 < z.radius
+                animal.health > 0.0 && !animal.look.is_pet() && off_line(animal.center(vpm as u32), a, b) / vpm - animal.body().1 < z.radius
             })
             .collect();
         for i in cut {
@@ -2228,7 +2228,7 @@ impl Combat {
                     return false;
                 }
                 let center = a.center(vpm as u32);
-                let near = pairs.iter().any(|&(m, n)| off_line(center, tops[m], tops[n]) / vpm - a.look.body().1 < 0.9);
+                let near = pairs.iter().any(|&(m, n)| off_line(center, tops[m], tops[n]) / vpm - a.body().1 < 0.9);
                 near || (tops.len() >= 3 && inside_triangle(a.position, z.path[0], z.path[1], z.path[2]))
             })
             .collect();
@@ -2330,7 +2330,7 @@ impl Combat {
         for (k, &id) in ids.iter().enumerate().take(THREADS) {
             last[k] = arena.animals.iter().find(|a| a.id == id && a.health > 0.0).map_or(-1.0, |a| a.health as f32);
             if let Some(a) = arena.animals.iter().find(|a| a.id == id && a.health > 0.0) {
-                self.marks.push((a.position + Vector3::new(0.0, 0.0, 0.05 * vpm), a.look.body().1 + 0.3));
+                self.marks.push((a.position + Vector3::new(0.0, 0.0, 0.05 * vpm), a.body().1 + 0.3));
                 z.path.push(a.center(vpm as u32));
             }
         }

@@ -22,21 +22,26 @@ use crate::worldgen::material::*;
 /// Every one of them, in the order they're added among the looks
 /// The Sky Isles' own, kept apart, see sky.rs, and asked about first by what's here
 pub mod sky;
+/// Four more, each fighting its own way, see wardens.rs
+pub mod wardens;
 
 pub const LOOKS: [Look; 8] = [Look::Slagwright, Look::Cinderback, Look::LanternWidow, Look::Dreadmare, Look::Sunstinger, Look::Grovemaul, Look::Hoarback, Look::GildedSphinx];
 
 /// Whether `look` is one of them
 pub fn has(look: Look) -> bool {
-    LOOKS.contains(&look) || sky::has(look)
+    LOOKS.contains(&look) || sky::has(look) || wardens::has(look)
 }
 
 /// Whether `m` is one of their own moves, played out here
 pub fn owns(m: Move) -> bool {
-    matches!(m, Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel) || sky::owns(m)
+    matches!(m, Move::Slagrain | Move::Vents | Move::Gloomgate | Move::Hoofbrand | Move::Sting | Move::Pounce | Move::Rimestomp | Move::Sunwheel) || sky::owns(m) || wardens::owns(m)
 }
 
 /// How much bigger its model is than its build's
 pub fn scale(look: Look) -> f64 {
+    if wardens::has(look) {
+        return wardens::scale(look);
+    }
     if sky::has(look) {
         return sky::scale(look);
     }
@@ -57,6 +62,9 @@ pub fn scale(look: Look) -> f64 {
 /// the heavy ones as the giants and golems, the widow and the mare as the casters and the beasts,
 /// the scorpion as the spiders; the mammoth as the Colossus, the sphinx as the Dreaming Red's
 pub fn health(look: Look) -> f64 {
+    if wardens::has(look) {
+        return wardens::health(look);
+    }
     if sky::has(look) {
         return sky::health(look);
     }
@@ -72,6 +80,9 @@ pub fn health(look: Look) -> f64 {
 
 /// How fast it walks and runs, in meters a second
 pub fn speeds(look: Look) -> (f64, f64) {
+    if wardens::has(look) {
+        return wardens::speeds(look);
+    }
     if sky::has(look) {
         return sky::speeds(look);
     }
@@ -91,6 +102,9 @@ pub fn speeds(look: Look) -> (f64, f64) {
 
 /// Meters covered by one cycle of its walk, at its build's size
 pub fn stride(look: Look) -> f64 {
+    if wardens::has(look) {
+        return wardens::stride(look);
+    }
     if sky::has(look) {
         return sky::stride(look);
     }
@@ -109,6 +123,9 @@ pub fn stride(look: Look) -> f64 {
 /// Radius of a sphere round the whole of it, however it's posed, in meters: weapons raised high,
 /// rearing up, a tail curled over its back
 pub fn reach(look: Look) -> f64 {
+    if wardens::has(look) {
+        return wardens::reach(look);
+    }
     if sky::has(look) {
         return sky::reach(look);
     }
@@ -128,6 +145,9 @@ pub fn reach(look: Look) -> f64 {
 
 /// The body to aim at: how high its middle is, and how big it is, in meters
 pub fn body(look: Look) -> (f64, f64) {
+    if wardens::has(look) {
+        return wardens::body(look);
+    }
     if sky::has(look) {
         return sky::body(look);
     }
@@ -147,6 +167,9 @@ pub fn body(look: Look) -> (f64, f64) {
 }
 
 pub fn name(look: Look) -> &'static str {
+    if wardens::has(look) {
+        return wardens::name(look);
+    }
     if sky::has(look) {
         return sky::name(look);
     }
@@ -165,6 +188,9 @@ pub fn name(look: Look) -> &'static str {
 
 /// What its attacks are made of
 pub fn element(look: Look) -> Option<Element> {
+    if wardens::has(look) {
+        return wardens::element(look);
+    }
     if sky::has(look) {
         return sky::element(look);
     }
@@ -180,6 +206,9 @@ pub fn element(look: Look) -> Option<Element> {
 
 /// What it's made of: its body, darker parts, things on it, what glows, and one more
 pub(crate) fn skin(look: Look) -> Skin {
+    if wardens::has(look) {
+        return wardens::skin(look);
+    }
     if sky::has(look) {
         return sky::skin(look);
     }
@@ -211,6 +240,9 @@ pub(crate) fn skin(look: Look) -> Skin {
 /// mare's whips and naginatas, the scorpion's katars, the ape's mauls and totems, the mammoth's
 /// heavy polearms and the sphinx's war fans and sceptres
 pub fn taste(look: Look) -> &'static [&'static str] {
+    if wardens::has(look) {
+        return wardens::taste(look);
+    }
     if sky::has(look) {
         return sky::taste(look);
     }
@@ -229,6 +261,9 @@ pub fn taste(look: Look) -> &'static [&'static str] {
 
 /// What its hoard's called, as it spills out of it, see Game::reap()
 pub fn hoard(look: Look) -> Option<&'static str> {
+    if wardens::has(look) {
+        return Some(wardens::hoard(look));
+    }
     if sky::has(look) {
         return Some(sky::hoard(look));
     }
@@ -248,6 +283,9 @@ pub fn hoard(look: Look) -> Option<&'static str> {
 /// A blow at what's in front: how far ahead it lands and how far round it reaches in meters, how
 /// hard it hits, and how big a hole it blows
 pub fn slam(look: Look) -> (f64, f64, f64, f64) {
+    if wardens::has(look) {
+        return wardens::slam(look);
+    }
     if sky::has(look) {
         return sky::slam(look);
     }
@@ -326,6 +364,9 @@ pub fn timing(look: Look, m: Move) -> (f64, f64, f64, f64) {
 /// it does, its own first so it makes them whenever they're ready; a raid boss's in meters at its
 /// build's size
 pub fn menu(look: Look) -> &'static [(Move, f64, f64)] {
+    if wardens::has(look) {
+        return wardens::menu(look, false);
+    }
     if sky::has(look) {
         return sky::menu(look);
     }
@@ -428,6 +469,9 @@ fn stab(boss: &mut Boss, at: Vector3<f64>) {
 pub fn winding(m: Move, t: f64, whole: f64, a: &Animal, boss: &mut Boss, forward: Vector3<f64>, vpm: f64) {
     if sky::owns(m) {
         return sky::winding(m, t, whole, a, boss, forward, vpm);
+    }
+    if wardens::owns(m) {
+        return wardens::winding(m, t, whole, a, boss, forward, vpm);
     }
     let look = a.look;
     let s = look.scale();

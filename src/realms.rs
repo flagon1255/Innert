@@ -227,7 +227,8 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         raid_bosses: [(Look::FrostWyrm, [250.0, 180.0]), (Look::RimeJotun, [-240.0, 160.0]), (Look::Hoarback, [40.0, -310.0])],
         lair_names: ["the frozen heights", "the glacier", "the tusk fields"],
         lair_marks: [Landmark::Anywhere; 3],
-        guardians: &[Look::Frostfang, Look::Rimeweaver, Look::StormGiant, Look::WinterAlpha, Look::GraveKnight],
+        // and the Winterglass Duelist, see src\bosses\roster\wardens.rs
+        guardians: &[Look::Frostfang, Look::Rimeweaver, Look::StormGiant, Look::WinterAlpha, Look::GraveKnight, Look::WinterglassDuelist],
         finale: None,
         finale_mark: Landmark::Anywhere,
         monsters: &[
@@ -255,7 +256,8 @@ pub const REALMS: [Realm; REALM_COUNT] = [
         // all of them come to the sea: the Meremaw from the lakes, the Galecoil out of the sky, the
         // Veinbinder and the Shatterfang, see serpents.rs
         // and the Tidewrack Kraken, at home in the open sea, see src\bosses\kraken.rs
-        guardians: &[Look::Meremaw, Look::Galecoil, Look::Veinbinder, Look::Shatterfang, Look::Kraken],
+        // and the Fenhulk wading its shallows, see src\bosses\roster\wardens.rs
+        guardians: &[Look::Meremaw, Look::Galecoil, Look::Veinbinder, Look::Shatterfang, Look::Kraken, Look::Fenhulk],
         // And the Coil Unending, rising from the deep of the Drowned Ring once they're beaten, see
         // worldgen::Arena
         finale: Some((Look::Ysveth, [60.0, -330.0], "the Drowned Ring")),

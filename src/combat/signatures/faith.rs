@@ -633,7 +633,7 @@ impl Combat {
             f.risen = Some(r);
             return;
         };
-        let (goal, stop) = (arena.animals[i].position, (RISEN_REACH + arena.animals[i].look.body().1 * 0.7) * vpm);
+        let (goal, stop) = (arena.animals[i].position, (RISEN_REACH + arena.animals[i].body().1 * 0.7) * vpm);
         let to = (goal - f.position).xy();
         let d = to.norm();
         if d > stop {

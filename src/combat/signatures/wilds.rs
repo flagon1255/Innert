@@ -545,7 +545,7 @@ impl Combat {
                     .filter(|&i| {
                         let a = &arena.animals[i];
                         let to = a.center(vpm as u32) - p.position;
-                        a.health > 0.0 && !a.look.is_pet() && !p.hit.contains(&a.id) && to.xy().norm() < (BOULDER_ROUND + 0.3 + a.look.body().1) * vpm && to.z.abs() < 2.0 * vpm
+                        a.health > 0.0 && !a.look.is_pet() && !p.hit.contains(&a.id) && to.xy().norm() < (BOULDER_ROUND + 0.3 + a.body().1) * vpm && to.z.abs() < 2.0 * vpm
                     })
                     .collect();
                 for i in caught {
@@ -889,7 +889,7 @@ impl Combat {
                 let near: Vec<usize> = (0..arena.animals.len())
                     .filter(|&i| {
                         let animal = &arena.animals[i];
-                        animal.health > 0.0 && !animal.look.is_pet() && off_line(animal.center(vpm as u32), a, b) < (z.radius + animal.look.body().1) * vpm && (animal.position.z - z.position.z).abs() < 3.0 * vpm
+                        animal.health > 0.0 && !animal.look.is_pet() && off_line(animal.center(vpm as u32), a, b) < (z.radius + animal.body().1) * vpm && (animal.position.z - z.position.z).abs() < 3.0 * vpm
                     })
                     .collect();
                 let lashing = age < 0.3;

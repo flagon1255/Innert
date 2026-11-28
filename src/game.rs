@@ -447,11 +447,13 @@ struct Pickup {
     seen: bool,
     /// Shown by a beam of light like a weapon is, as the gold the player lost when they died
     beacon: bool,
+    /// Landing without a sound, as what a boss leaves does, so its own death is all that's heard
+    quiet: bool,
 }
 
 impl Pickup {
     fn lying(item: Item, position: Vector3<f64>, heading: f64) -> Self {
-        Pickup { item, position, heading, from: position, flying: 0.0, seen: false, beacon: false }
+        Pickup { item, position, heading, from: position, flying: 0.0, seen: false, beacon: false, quiet: false }
     }
 
     /// Whether a beam of light shows where it lies
@@ -2846,6 +2848,8 @@ impl Game {
                 let cue = match m {
                     Move::Charge => Cue::at(Sound::Roar, at, 0.7).pitched(voice * 1.3),
                     Move::Leap => Cue::at(Sound::Roar, at, 0.6).pitched(voice * 1.6),
+                    // A grunt as it gathers itself to bound out of where it's stuck
+                    Move::Vault => Cue::at(Sound::Roar, at, 0.4).pitched(voice * 1.9),
                     Move::Breath => Cue::at(Sound::Rumble, at, 0.9).pitched(voice * 1.6),
                     // A spider hissing, or something gathering in a drake's throat in the voice of
                     // its element
@@ -2869,6 +2873,15 @@ impl Game {
                     Move::Gyre => Cue::at(Sound::Gale, at, 1.0).pitched(0.9),
                     Move::Staticfall | Move::Overcharge => Cue::at(Sound::Thunder, at, 0.8).pitched(0.7),
                     Move::Thunderlash => Cue::at(Sound::Zap, at, 0.9).pitched(0.7),
+                    // The duelist's blade drawn, the queen's wings and brood stirring, the digger's
+                    // claws in the ground, the bog heaving in the hulk
+                    Move::Lunge | Move::Crescent => Cue::at(Sound::Swing, at, 0.8).pitched(0.75),
+                    Move::Riposte => Cue::at(Sound::Swing, at, 0.7).pitched(1.2),
+                    Move::Swarm => Cue::at(Sound::Whirr, at, 0.9).pitched(1.6),
+                    Move::Stingrain => Cue::at(Sound::Hiss, at, 0.8).pitched(0.9),
+                    Move::Rockspray | Move::Undermine => Cue::at(Sound::Dig, at, 1.0).pitched(0.6),
+                    Move::Mirestomp => Cue::at(Sound::Rumble, at, 1.0).pitched(0.4),
+                    Move::Bogspew => Cue::at(Sound::Squelch, at, 1.0).pitched(0.5),
                     _ => Cue::at(Sound::Rumble, at, 0.9).pitched(voice * 1.2),
                 };
                 self.cues.push(cue);
@@ -3583,7 +3596,7 @@ impl Game {
         if lost > 0 {
             self.gold -= lost;
             let from = feet + Vector3::new(0.0, 0.0, 1.0 * vpm);
-            self.pickups.push(Pickup { item: Item::Gold(lost), position: feet, heading: 0.0, from, flying: DROP_SECONDS, seen: false, beacon: true });
+            self.pickups.push(Pickup { item: Item::Gold(lost), position: feet, heading: 0.0, from, flying: DROP_SECONDS, seen: false, beacon: true, quiet: false });
         }
         self.say(if lost > 0 { format!("You were slain by the {by}. {lost} gold lies where you fell.") } else { format!("You were slain by the {by}.") });
         self.shake = self.shake.max(1.2);
@@ -3772,6 +3785,18 @@ impl Game {
     }
 
     /// Every boss about made to make only `m`, as soon as it's ready, for shots of it
+    /// For seeing one bound out of a hole: a pit `radius` meters round blown under every boss and
+    /// monster about, each turned on the player, see bosses\vault.rs
+    pub fn pit_bosses(&mut self, radius: f64) {
+        let vpm = self.combat.vpm();
+        for a in self.animals.iter_mut().filter(|a| a.boss.is_some()) {
+            self.combat.craters.push((a.position - Vector3::new(0.0, 0.0, 0.35 * radius * vpm), radius));
+            if let Some(boss) = &mut a.boss {
+                boss.provoke();
+            }
+        }
+    }
+
     pub fn force_boss_move(&mut self, m: Move) {
         for boss in self.animals.iter_mut().filter_map(|a| a.boss.as_mut()) {
             boss.forced = Some(m);
@@ -3874,6 +3899,10 @@ impl Game {
             }
             let animal = self.animals.remove(k);
             let look = animal.look;
+            // A boss or a demi-boss falling is heard only by its own death, its cry and its body
+            // coming down: no fanfare, no level gained, no loot landing nor chest over it, though
+            // all of it's said
+            let hush = (look.is_boss() || animal.demi.is_some()).then_some((self.cues.len(), self.pickups.len()));
             let middle = animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm);
             // Experience for every monster and boss slain, by its level and what it was
             let slain = self.slain(&animal);
@@ -4079,15 +4108,25 @@ impl Game {
                 && !self.animals.iter().any(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.key == key))
             {
                 self.cleared.insert(key);
-                cleared.push(key);
+                cleared.push((key, hush.is_some()));
                 self.milestone = true;
+            }
+            if let Some((cues, pickups)) = hush {
+                self.cues.truncate(cues);
+                for pickup in self.pickups.iter_mut().skip(pickups) {
+                    pickup.quiet = true;
+                }
             }
             self.target = None;
         }
         // Where a camp was cleared, the chest of the bandits' hoard turns up, said after the rest of
-        // what fell
-        for key in cleared {
+        // what fell, without a sound if its warlord was the last of them
+        for (key, quiet) in cleared {
+            let cues = self.cues.len();
             self.reveal_hoard(key);
+            if quiet {
+                self.cues.truncate(cues);
+            }
         }
     }
 
@@ -4137,7 +4176,7 @@ impl Game {
         for pickup in &mut self.pickups {
             if pickup.flying > 0.0 {
                 pickup.flying -= dt;
-                if pickup.flying <= 0.0 {
+                if pickup.flying <= 0.0 && !pickup.quiet {
                     let cue = match pickup.item {
                         Item::Weapon(_) => Cue::at(Sound::Clang, pickup.position, 0.35).pitched(1.6),
                         Item::Gold(_) => Cue::at(Sound::Coins, pickup.position, 0.35).pitched(1.1),
@@ -4338,7 +4377,7 @@ impl Game {
             });
             let landed = landed.map_or(spot, |z| Vector3::new(spot.x, spot.y, z as f64 + 1.0));
             let heading = random(&mut self.rng) * TAU;
-            self.pickups.push(Pickup { item, position: landed, heading, from, flying: DROP_SECONDS, seen: false, beacon: false });
+            self.pickups.push(Pickup { item, position: landed, heading, from, flying: DROP_SECONDS, seen: false, beacon: false, quiet: false });
         }
     }
 
@@ -4981,7 +5020,7 @@ impl Game {
         for k in 0..count {
             let angle = random(&mut self.rng) * TAU;
             let at = feet + Vector3::new(angle.cos(), angle.sin(), 0.0) * (0.5 + 0.2 * k as f64) * vpm;
-            self.pickups.push(Pickup { item, position: at, heading: angle, from: feet + Vector3::new(0.0, 0.0, 1.2 * vpm), flying: DROP_SECONDS, seen: false, beacon: false });
+            self.pickups.push(Pickup { item, position: at, heading: angle, from: feet + Vector3::new(0.0, 0.0, 1.2 * vpm), flying: DROP_SECONDS, seen: false, beacon: false, quiet: false });
         }
         self.say(format!("You drop {}.", self.item_name(item)));
     }
@@ -6008,7 +6047,7 @@ impl Game {
             let lying = at + Vector3::new(0.0, 0.0, 0.1 * vpm);
             if !self.pickups.iter().any(|p| p.item == Item::Wings(k) && (p.position - lying).norm() < 2.0 * vpm) {
                 let heading = (key[0] ^ key[1]) as f64 * 0.37;
-                self.pickups.push(Pickup { item: Item::Wings(k), position: lying, heading, from: lying, flying: 0.0, seen: false, beacon: true });
+                self.pickups.push(Pickup { item: Item::Wings(k), position: lying, heading, from: lying, flying: 0.0, seen: false, beacon: true, quiet: false });
             }
             self.aeries.push((key, k, at));
         }

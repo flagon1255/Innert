@@ -274,7 +274,7 @@ impl Combat {
         self.summons.on = Some((a.id, SENT));
         self.summons.prey = Some((i, SENT));
         let over = Combat::over(arena, i);
-        self.spots.push((a.position + up * 0.05 * vpm, a.look.body().1 + 0.6, 0.8));
+        self.spots.push((a.position + up * 0.05 * vpm, a.body().1 + 0.6, 0.8));
         let void = Element::look(Some(Element::Void));
         for at in raised {
             self.lightning(at + up * 1.3 * vpm, over, void, 0.02, 0, 1, 0.0, 0.0);
@@ -810,7 +810,7 @@ impl Combat {
             Some(i) => {
                 let a = &arena.animals[i];
                 let goal = a.position;
-                let stop = (reach + a.look.body().1 * 0.7) * vpm;
+                let stop = (reach + a.body().1 * 0.7) * vpm;
                 let speed = hurried(speed, (f.position - feet).xy().norm() / vpm);
                 if self.step_towards(arena, f, &mut r, goal, stop, speed, dt) && f.wait <= 0.0 {
                     r.swing = Some(0.0);
@@ -874,7 +874,7 @@ impl Combat {
                     r.heading = off.y.atan2(off.x);
                 }
                 // Stepping back from what's come too near, and walking up to what's out of reach
-                if d < ARCHER_BACK + a.look.body().1 {
+                if d < ARCHER_BACK + a.body().1 {
                     let away = f.position - Vector3::new(off.x, off.y, 0.0) / d;
                     let heading = r.heading;
                     self.step_towards(arena, f, &mut r, away, 0.0, BONES_SPEED * 0.8, dt);
@@ -913,7 +913,7 @@ impl Combat {
                 let to = center - f.position;
                 let dive = to.try_normalize(1e-6).unwrap_or_else(Vector3::x) * WRAITH_DIVE * vpm;
                 v = v.lerp(&dive, (8.0 * dt).min(1.0));
-                if to.norm() < (0.7 + arena.animals[i].look.body().1) * vpm {
+                if to.norm() < (0.7 + arena.animals[i].body().1) * vpm {
                     let profile = f.profile.clone();
                     self.strike(arena, &profile, i, Blow { damage: f.damage, crit: false, heavy: false, from: f.position, depth: 1, element: Some(Element::Void) });
                     let s = &mut arena.animals[i].status;
