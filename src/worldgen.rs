@@ -4360,21 +4360,21 @@ impl Terrain {
         best.map(|(_, lair)| lair)
     }
 
-    /// The nearest camp in a cave to `near` kept by `folk`, if it says, within a kilometer or so,
-    /// see camps\cave.rs. For trying them out.
+    /// The nearest camp in a cave to `near` kept by `folk`, if it says, with at least `room`
+    /// meters round its fire, within about 700 m, see camps\cave.rs. For trying them out.
     #[allow(dead_code)]
-    pub fn nearest_cave_camp(&self, near: [f32; 2], folk: Option<Folk>) -> Option<CaveCamp> {
+    pub fn nearest_cave_camp(&self, near: [f32; 2], folk: Option<Folk>, room: f32) -> Option<CaveCamp> {
         let home = near.map(|v| (v / CAVE_CELL).floor() as i32);
         let mut best: Option<(f32, CaveCamp)> = None;
-        for cy in home[1] - 8..=home[1] + 8 {
-            for cx in home[0] - 8..=home[0] + 8 {
+        for cy in home[1] - 12..=home[1] + 12 {
+            for cx in home[0] - 12..=home[0] + 12 {
                 let Some(cave) = self.cave_in(cx, cy) else {
                     continue;
                 };
                 for built in cave.camps.iter().filter_map(|spot| camps::cave::cave_camp(&self.settings, &cave.shapes, spot)) {
                     let c = built.camp;
                     let distance = (c.fire[0] - near[0]).hypot(c.fire[1] - near[1]);
-                    if folk.is_none_or(|f| f == c.folk) && best.is_none_or(|(b, _)| distance < b) {
+                    if folk.is_none_or(|f| f == c.folk) && c.room >= room && best.is_none_or(|(b, _)| distance < b) {
                         best = Some((distance, c));
                     }
                 }

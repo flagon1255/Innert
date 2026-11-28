@@ -2012,11 +2012,13 @@ impl Placed {
             landscape.and_then(|l| l.nearest_cavern([112.0, 112.0]))
         });
         // `--set cave_camp=bandits`, `dead`, `nobody` or `any` starts by the fire of the nearest
-        // camp in a cave kept by them, a way back along the way in to it, looking at it, and
-        // `cave_camp_distance=12` that many meters off, see worldgen\camps\cave.rs
+        // camp in a cave kept by them, a way back along the way in to it, looking at it,
+        // `cave_camp_distance=12` that many meters off, and `cave_camp_room=2.4` the nearest with
+        // that much room round its fire, see worldgen\camps\cave.rs
         let cave_camp = setting("cave_camp").filter(|_| dungeon.is_none() && cavern.is_none()).and_then(|kind| {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
-            let c = landscape?.nearest_cave_camp([112.0, 112.0], worldgen::Folk::named(kind))?;
+            let room = setting("cave_camp_room").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            let c = landscape?.nearest_cave_camp([112.0, 112.0], worldgen::Folk::named(kind), room)?;
             println!("Cave camp: {:?} at {:.0}, {:.0}, {:.1}, room {:.1} m, {} bandits and {} brutes", c.folk, c.fire[0], c.fire[1], c.fire[2], c.room, c.bandits, c.brutes);
             Some(c)
         });

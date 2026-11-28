@@ -14,9 +14,10 @@ use super::*;
 /// What a cave camp is at its fire, see CaveCamp
 pub const CAVE_CAMP_SITE: &str = "cave camp";
 /// The light of a camp's fire in a cave: redder than a torch's, so it flickers more, see flicker()
-/// in main.rs. And the dead's, pale green, guttering.
-pub const CAMPFIRE_LIGHT: [f32; 3] = [1.0, 0.5, 0.2];
-pub const GHOST_FIRE_LIGHT: [f32; 3] = [0.42, 0.95, 0.8];
+/// in main.rs, and brighter, as all there is to see the camp by. And the dead's, pale green,
+/// guttering.
+pub const CAMPFIRE_LIGHT: [f32; 3] = [2.2, 1.1, 0.44];
+pub const GHOST_FIRE_LIGHT: [f32; 3] = [0.63, 1.42, 1.2];
 
 /// Of the camps in caves, how many bandits keep and how many the dead, out of one, the rest left
 /// to no one; and how many meters under the ground a camp's deep, where the dead keep DEEPER more
@@ -192,7 +193,10 @@ pub(in crate::worldgen) fn cave_camp(settings: &TerrainSettings, hollows: &[Shap
     let seed = hash3(key[0] as u32, key[1] as u32, settings.seed ^ 0xcace);
     let peopled = !matches!(land_of(settings.seed), Land::Dream | Land::Water | Land::Dragon);
     let depth = height_at(settings, x, y) - f0;
-    let folk = spot.folk.unwrap_or_else(|| Folk::of(unit(seed), depth, peopled));
+    // Mixed again and taken from its high bits, as the low ones go along with the roll that put
+    // a camp here at all, see Terrain::camp_here()
+    let roll = unit(hash(seed.rotate_left(13) ^ 0x9e37_79b9) >> 16);
+    let folk = spot.folk.unwrap_or_else(|| Folk::of(roll, depth, peopled));
     let ground = |gx: f32, gy: f32| h.floor(gx, gy, f0).filter(|f| (f - f0).abs() <= LEVEL).unwrap_or(f0);
     let mut lot = Lot { s: Vec::new(), lights: Vec::new(), ground: &ground, level: None, place: Placement::Inside, rng: Rng(hash(seed)) };
     let way = {
@@ -281,7 +285,8 @@ fn bonfire(lot: &mut Lot, x: f32, y: f32, size: f32) {
     let z = lot.g(x, y);
     lot.put(Shape::ellipsoid([x, y, z + 0.42 * size], [0.2 * size, 0.2 * size, 0.38 * size], FLAME, GLOW_FIRE));
     if let Some(light) = lot.lights.last_mut() {
-        *light = Light { position: [x, y, z + 0.9 * size], color: CAMPFIRE_LIGHT, reach: 12.0 * size.sqrt() };
+        // Over the kettle or spit, so they don't shade the floor round the fire from it
+        *light = Light { position: [x, y, z + 1.7], color: CAMPFIRE_LIGHT, reach: 12.5 * size.sqrt() };
     }
 }
 
@@ -383,7 +388,7 @@ fn dead(lot: &mut Lot, c: &mut Round, chest: bool) {
         let g = lot.g(sx, sy);
         lot.put(Shape::sphere([sx, sy, g], r, BASALT, MOSS, false));
     }
-    lot.light([x, y, z + 0.7], GHOST_FIRE_LIGHT, 9.0);
+    lot.light([x, y, z + 1.1], GHOST_FIRE_LIGHT, 9.0);
     let flip = lot.rng.next() < 0.5;
     let all = order(SLOTS / 2, flip);
     let far = c.room - 0.45;
@@ -556,8 +561,8 @@ mod tests {
         assert!(total * 20 >= spots * 19, "only {total} of {spots} camps built");
         assert!(total >= 12, "only {total} camps");
         let share = |n: usize| n as f32 / total as f32;
-        assert!((share(counts[0]) - BANDITS).abs() < 0.17 && (share(counts[1]) - DEAD).abs() < 0.17, "{counts:?}");
-        assert!(counts[2] > 0);
+        assert!((share(counts[0]) - BANDITS).abs() < 0.12 && (share(counts[1]) - DEAD).abs() < 0.12, "{counts:?}");
+        assert!(share(counts[2]) > 0.15, "{counts:?}");
     }
 
     /// Who keeps each camp, and all of it, goes by where it is and the seed alone: built again, or
