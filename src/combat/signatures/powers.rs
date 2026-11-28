@@ -878,6 +878,10 @@ impl Combat {
         let base = if magic { profile.stat("spellDamage") } else { profile.stat("physicalDamage") } + profile.stat("elementalDamage");
         let feet = arena.player.unwrap_or(view.eye - up * 1.6 * vpm);
         let forward = view.forward();
+        // What it's aimed at, for the necromancer's dead to go after, see summons.rs
+        if let (_, Some(i)) = Combat::ray_point(arena, view.eye, forward, AIM_RANGE) {
+            self.struck_by_player(arena.animals[i].id);
+        }
         let flat = flat_of(forward);
         // Along where it's looked, never much up or down, so it runs on over the ground
         let pitch = forward.z.clamp(-0.18, 0.25);
@@ -1571,7 +1575,7 @@ impl Combat {
                     if animal.health <= 0.0 || animal.look.is_pet() || p.hit.contains(&animal.id) {
                         return false;
                     }
-                    let body = animal.look.body().1 * vpm;
+                    let body = animal.body().1 * vpm;
                     let rel = animal.center(vpm as u32) - p.position;
                     let along = rel.dot(&way);
                     along > -body && along < step + body && (rel - way * along).norm() < half * vpm + body
@@ -1613,10 +1617,10 @@ impl Combat {
             }
             let center = a.center(vpm as u32);
             // Only what's down on the ground it runs along, never what flies over it
-            if (center.z - p.position.z).abs() > (2.0 + a.look.body().1) * vpm {
+            if (center.z - p.position.z).abs() > (2.0 + a.body().1) * vpm {
                 continue;
             }
-            let off = (center - p.position).xy().norm() / vpm - a.look.body().1;
+            let off = (center - p.position).xy().norm() / vpm - a.body().1;
             if p.hit.contains(&a.id) {
                 if off < 3.0 && a.boss.is_none() {
                     a.status.push = way * speed;
@@ -2211,7 +2215,7 @@ impl Combat {
                     let cut: Vec<usize> = (0..arena.animals.len())
                         .filter(|&i| {
                             let animal = &arena.animals[i];
-                            animal.health > 0.0 && !animal.look.is_pet() && off_line(animal.center(vpm as u32), a, b) / vpm - animal.look.body().1 < z.radius
+                            animal.health > 0.0 && !animal.look.is_pet() && off_line(animal.center(vpm as u32), a, b) / vpm - animal.body().1 < z.radius
                         })
                         .collect();
                     for i in cut {
@@ -2263,7 +2267,7 @@ impl Combat {
                 let cut: Vec<usize> = (0..arena.animals.len())
                     .filter(|&i| {
                         let a = &arena.animals[i];
-                        a.health > 0.0 && !a.look.is_pet() && !z.hit.contains(&a.id) && ((a.center(vpm as u32) - z.position).xy().norm() / vpm - reached).abs() < 1.2 + a.look.body().1
+                        a.health > 0.0 && !a.look.is_pet() && !z.hit.contains(&a.id) && ((a.center(vpm as u32) - z.position).xy().norm() / vpm - reached).abs() < 1.2 + a.body().1
                     })
                     .collect();
                 for i in cut {

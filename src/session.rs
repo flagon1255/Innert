@@ -674,7 +674,7 @@ impl App {
         self.bases.load_world(there.section(bases::WORLD_SECTION).unwrap_or_default());
         self.building = building::Building::default();
         self.building.applied = self.bases.version;
-        self.game.leave_world(realm.seed);
+        self.game.travel(realm.seed);
         self.game.restore_world(&there);
         self.enter_realm();
         // In front of the gate or the portal, looking out from it, stood on the ground once the

@@ -710,7 +710,7 @@ impl Combat {
                 let caught = (0..arena.animals.len()).find(|&i| {
                     let a = &arena.animals[i];
                     let to = a.center(vpm as u32) - p.position;
-                    a.health > 0.0 && !a.look.is_pet() && !p.hit.contains(&a.id) && to.xy().norm() < (0.5 + a.look.body().1) * vpm && to.z.abs() < 2.5 * vpm
+                    a.health > 0.0 && !a.look.is_pet() && !p.hit.contains(&a.id) && to.xy().norm() < (0.5 + a.body().1) * vpm && to.z.abs() < 2.5 * vpm
                 });
                 if let Some(i) = caught {
                     let at = p.position;
@@ -767,7 +767,7 @@ impl Combat {
         let caught: Vec<usize> = (0..arena.animals.len())
             .filter(|&i| {
                 let animal = &arena.animals[i];
-                animal.health > 0.0 && !animal.look.is_pet() && !p.hit.contains(&animal.id) && off_segment(animal.center(vpm as u32), a, b) < (TWIN_CUT + animal.look.body().1) * vpm
+                animal.health > 0.0 && !animal.look.is_pet() && !p.hit.contains(&animal.id) && off_segment(animal.center(vpm as u32), a, b) < (TWIN_CUT + animal.body().1) * vpm
             })
             .collect();
         for i in caught {

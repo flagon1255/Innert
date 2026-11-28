@@ -2830,6 +2830,10 @@ impl App {
             if let Some(m) = setting("boss_move").filter(|_| capture.is_some()).and_then(bosses::Move::named) {
                 game.force_boss_move(m);
             }
+            // `--set boss_pit=3` blows a pit that many meters round under it, to see it bound out
+            if let Some(radius) = setting("boss_pit").filter(|_| capture.is_some()).and_then(|v| v.parse::<f64>().ok()) {
+                game.pit_bosses(radius);
+            }
         }
         // `--set aerie_show=1` has avians and gargoyles fight with nobody about as if someone were,
         // and `aerie_trace=1` says what each is doing twice a second, see avians.rs
@@ -2924,6 +2928,14 @@ impl App {
             let turn = setting("enemy_turn").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).to_radians();
             game.summon_pack(&world, &water_level, &looks, start, ahead, distance, turn, flag("enemy_calm", false), pose);
             println!("enemy: {}", looks.iter().map(|l| l.name()).collect::<Vec<_>>().join(", "));
+            // `enemy_demi=1` makes them demi-bosses of the kind each grows into, see src\demis.rs, out
+            // in the open to be seen, and `boss_move=storm` has them make only that move
+            if flag("enemy_demi", false) {
+                game.promote_demis();
+                if let Some(m) = setting("boss_move").filter(|_| capture.is_some()).and_then(bosses::Move::named) {
+                    game.force_boss_move(m);
+                }
+            }
             // `enemy_health=0.6` starts them hurt, their bars and levels showing
             if let Some(fraction) = setting("enemy_health").and_then(|v| v.parse::<f64>().ok()) {
                 game.hurt_monsters(fraction);
@@ -3489,8 +3501,12 @@ impl App {
                     "desert ruins" | "pyramid" if pick % 5 == 3 => animals::Look::DuneWyrm,
                     "pyramid" | "desert ruins" if pick % 3 == 1 => animals::Look::SandPharaoh,
                     "desert ruins" if pick % 3 == 0 => animals::Look::Cinderback,
-                    // The Lantern Widow in half the flooded churches, a drake in the rest
+                    // The Lantern Widow in half the flooded churches, the Fenhulk in a quarter, a drake
+                    // in the rest, see src\bosses\roster\wardens.rs
                     "flooded church" if pick % 2 == 0 => animals::Look::LanternWidow,
+                    "flooded church" if pick % 4 == 1 => animals::Look::Fenhulk,
+                    // The Gloamdelver digging in a fifth of the great caverns
+                    "cavern" if pick % 5 == 1 => animals::Look::Gloamdelver,
                     // The Skymane on the high towers, see src\dragons\skymane.rs, and the Grotto Squid
                     // in the pools of the waterfall caves, see src\bosses\kraken.rs
                     "watchtower" if pick % 6 == 2 => animals::Look::Skymane,
@@ -3648,13 +3664,27 @@ impl App {
         self.game.set_stalls(&self.world, &|x, y| water.surface_at(x, y), stalls);
         self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
         self.game.set_guards(&self.world, &|x, y| water.surface_at(x, y), guards);
-        // A demi-boss down in one in five of the open ravines, see src\demis.rs
-        let demis: Vec<game::DemiLair> = landscape
-            .sites
-            .iter()
-            .filter(|site| site.kind == worldgen::LURKER_SITE)
-            .map(|site| game::DemiLair { position: to_voxels(site.position), heading: (site.facing[1] as f64).atan2(site.facing[0] as f64), key: site.position.map(|v| (v * 10.0).round() as i64) })
-            .collect();
+        // A demi-boss down in one in five of the open ravines, the desert's, the snow's and the
+        // swamps' their own kinds, and out in front of a third of the ruins no boss keeps an
+        // armoured dead thing, see src\demis.rs
+        let climate = self.terrain_settings();
+        let ravines = landscape.sites.iter().filter(|site| site.kind == worldgen::LURKER_SITE).map(|site| {
+            let c = worldgen::climate(&climate, site.position[0], site.position[1]);
+            let key = demis::ravine(site.position.map(|v| (v * 10.0).round() as i64), c.snow, c.desert, c.jungle);
+            game::DemiLair { position: to_voxels(site.position), heading: (site.facing[1] as f64).atan2(site.facing[0] as f64), key }
+        });
+        let ruins = landscape.sites.iter().filter_map(|site| {
+            let key = site.position.map(|v| (v * 10.0).round() as i64);
+            let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
+            if pick < BOSS_CHANCE || pick % 3 != 0 || !matches!(site.kind, "castle" | "watchtower" | "colonnade" | "shrine" | "desert ruins" | "pyramid") {
+                return None;
+            }
+            let [fx, fy] = site.facing;
+            let length = (fx * fx + fy * fy).sqrt().max(1e-3);
+            let at = [site.position[0] + fx / length * 12.0, site.position[1] + fy / length * 12.0, site.position[2]];
+            Some(game::DemiLair { position: to_voxels(at), heading: (fy as f64).atan2(fx as f64), key: demis::keyed(key, demis::TOMB) })
+        });
+        let demis: Vec<game::DemiLair> = ravines.chain(ruins).collect();
         self.game.set_demis(&self.world, &|x, y| water.surface_at(x, y), demis);
         self.game.set_shrines(&self.world, shrines);
         self.place_omens();
@@ -5224,6 +5254,7 @@ impl App {
                     capture.shots.push(f + 2);
                 }
             }
+            ("summons", f) => self.summons_step(f, eye),
             ("hunt", 20) => {
                 println!("frame {frame}: aiming at something: {}", self.game.has_target());
                 self.game.primary(eye);
@@ -5790,6 +5821,109 @@ impl App {
             && let Some(message) = after
         {
             println!("frame {frame}: message \"{message}\"");
+        }
+    }
+
+    /// `--script summons`, a necromancer's dead raised and fighting, for contact sheets, see
+    /// combat\signatures\summons.rs: the Bone Archers, the Bone Phalanx and the Grave Colossus
+    /// raised ahead, eight of the dead, going for the nearest of a gang of bandits there. Then with
+    /// `--set summons_part=strike` the player turns to a bandit off to the right and strikes it with
+    /// a bolt of their own, and all of them turn on it; with `summons_part=behind` a crossbowman
+    /// behind shoots the player in the back, and all of them turn on that, the player turning to
+    /// see; with `summons_part=none` the same fight without them. A shot every `--set
+    /// summons_every=10` frames from frame 280 to 600, and what they're
+    /// after said every 15. Best with `--step 0.016667`.
+    fn summons_step(&mut self, f: usize, eye: Vector3<f64>) {
+        let settings = settings_from_args();
+        let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        let part = setting("summons_part").unwrap_or_else(|| "strike".into());
+        let every: usize = setting("summons_every").and_then(|v| v.parse().ok()).unwrap_or(10);
+        let vpm = self.world.voxels_per_meter as f64;
+        let feet = self.player.as_ref().map_or(eye - Vector3::new(0.0, 0.0, 1.6 * vpm), |p| p.position);
+        if f == 1 {
+            if self.player.is_none() {
+                self.player = Some(Player::new(eye, &self.world));
+            }
+            self.camera.rotation.x = -0.32;
+        }
+        if f == 2 {
+            // Which way the player faces, kept for where everything's put
+            self.play.heading = self.camera.rotation.z + std::f64::consts::FRAC_PI_2;
+            let ahead = Vector3::new(self.play.heading.cos(), self.play.heading.sin(), 0.0);
+            let right = Vector3::new(ahead.y, -ahead.x, 0.0);
+            let water = &self.water;
+            let level = |x: f64, y: f64| water.surface_at(x, y);
+            let mut foes = Vec::new();
+            for k in 0..3 {
+                foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Bandit, feet + (ahead * (11.0 + k as f64) + right * (k as f64 - 1.0) * 1.6) * vpm));
+            }
+            // Further off than the gang, so it's not what they'd go for themselves
+            foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Bandit, feet + (right * 16.0 + ahead * 2.0) * vpm));
+            // Behind, or behind to one side or the other if that's water
+            let behind = [0.0, 0.6, -0.6, 1.1, -1.1].into_iter().find_map(|side| self.game.place_foe(&self.world, &level, animals::Look::Crossbowman, feet + (right * side - ahead) * 16.0 * vpm));
+            if behind.is_none() {
+                println!("frame {f}: no crossbowman put down behind");
+            }
+            foes.extend(behind);
+            self.play.foes = foes;
+            println!("frame {f}: foes {:?}", self.play.foes);
+        }
+        let flat_of = |heading: f64| Vector3::new(heading.cos(), heading.sin(), 0.0);
+        // The three summonings, one after another
+        // Each used once the weapon's up in hand
+        let casting = [(4, "archers_crystal"), (90, "phalanx_binding"), (176, "colossus_focus")];
+        let mut controls = combat::Controls::default();
+        // `summons_part=none`: the same without any of the dead, to weigh what they cost to draw
+        for (from, id) in casting.into_iter().filter(|_| part != "none") {
+            if f == from && !self.game.hold_part(id) {
+                println!("frame {f}: no part {id}");
+            }
+            if (from + 1..from + 86).contains(&f) {
+                controls = self.game.power_controls((f as f64 - from as f64 - 30.0) / 60.0, 1.0 / 60.0);
+            }
+        }
+        let foe = |k: usize, app: &Self| app.play.foes.get(k).and_then(|&id| app.game.foe_at(id));
+        match part.as_str() {
+            "behind" => {
+                // Roused, shooting the player in the back, and the player turning to see a moment
+                // after
+                if f == 290
+                    && let Some(&id) = self.play.foes.get(4)
+                {
+                    self.game.rouse(id);
+                }
+                if f >= 330
+                    && let Some(at) = foe(4, self)
+                {
+                    self.camera.look_at(voxels_to_camera(at, self.world.size));
+                    self.camera.rotation.x = self.camera.rotation.x.min(-0.12);
+                }
+            }
+            _ => {
+                // Turned to the one off to the right and striking it
+                if f >= 300
+                    && let Some(at) = foe(3, self)
+                {
+                    self.camera.look_at(voxels_to_camera(at, self.world.size));
+                    if (310..322).contains(&f) {
+                        controls = combat::Controls { attack: true, holding: true, ..Default::default() };
+                    }
+                }
+            }
+        }
+        if f < 300 && f > 2 {
+            let face = flat_of(self.play.heading);
+            self.camera.look_at(voxels_to_camera(eye + face * 10.0 * vpm - Vector3::new(0.0, 0.0, 3.2 * vpm), self.world.size));
+        }
+        self.script_controls = controls;
+        if f % 15 == 0 {
+            println!("frame {f}: {}", self.game.summons_line());
+        }
+        if (280..=600).contains(&f)
+            && (f - 280) % every.max(1) == 0
+            && let Some(capture) = &mut self.capture
+        {
+            capture.shots.push(f + 2);
         }
     }
 

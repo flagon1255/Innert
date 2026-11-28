@@ -59,8 +59,12 @@ pub const TENDRILS: usize = BOLT_BARS + ELEMENT_LOOKS;
 /// and a half high, standing on 0, a glow of the void at their roots: a Bone Cage's, see
 /// combat/signatures/arcana.rs
 pub const BONE_SPIKES: usize = TENDRILS + 1;
+/// The slim rings on the ground showing where something aimed comes down, one for each of
+/// AIM_RINGS sizes, see aim_ring(): a line a radius 1 round 0, flat, as thin as AIM_LINE whatever
+/// size it's drawn at
+pub const AIM_RING: usize = BONE_SPIKES + 1;
 /// How many effect models there are in all
-pub const EFFECT_MODELS: usize = BONE_SPIKES + 1;
+pub const EFFECT_MODELS: usize = AIM_RING + AIM_RINGS;
 pub const STONE_ROUND: f64 = 0.5;
 pub const SLAB_HEIGHT: f64 = 1.6;
 pub const SPEAR_LENGTH: f64 = 1.7;
@@ -1305,6 +1309,82 @@ fn bone_spikes() -> (Model, Vector3<f64>) {
     voxelize(&p, MODEL_RES)
 }
 
+/// How many sizes the slim aim rings are made in, see AIM_RING, the smallest one's radius in
+/// meters, and how much bigger each is than the one before: a third of an octave, so the one
+/// nearest a ring's radius is drawn at most 12% bigger or smaller than it was made, and its line
+/// that much wider or thinner. From a quarter of a meter round to nearly 13.
+pub const AIM_RINGS: usize = 18;
+const AIM_SMALLEST: f64 = 0.25;
+const AIM_STEP: f64 = 1.259_921_049_894_873;
+/// How wide an aim ring's line is across the ground, in meters: two of the world's voxels, or on
+/// rings under two meters round AIM_THIN of the radius, so the small ones aren't thick with it
+pub const AIM_LINE: f64 = 0.125;
+const AIM_THIN: f64 = 0.07;
+/// The colour an aim ring's drawn in, see AnimalInstance::skinned(), lit by its own light, see
+/// TINT_LIT: a deep warm red, less fierce than the blood glow, that reads on sand and grass by day
+/// and glows softly by night without washing out pale
+pub const AIM_SKIN: u32 = 110 | 20 << 8 | 14 << 16 | 255 << 24;
+/// How many voxels an aim ring's line reaches down under where it's put, and how many it stands
+/// up over it: no more, so where the ground falls away round it the line floats a little over it
+/// rather than standing up as a wall
+const AIM_UNDER: usize = 1;
+const AIM_OVER: usize = 1;
+/// Short marks pointing in from the line at its four quarters on rings at least AIM_TICKS_FROM
+/// meters round, as long as AIM_TICK of the radius but no longer than AIM_TICK_MOST meters
+const AIM_TICKS_FROM: f64 = 2.0;
+const AIM_TICK: f64 = 0.08;
+const AIM_TICK_MOST: f64 = 0.35;
+
+/// The radius of aim ring `k`, see AIM_RINGS, in meters
+fn aim_ring_radius(k: usize) -> f64 {
+    AIM_SMALLEST * AIM_STEP.powi(k as i32)
+}
+
+/// How big aim ring `k`'s voxels are as it's made, in meters: the world's own, a sixteenth of a
+/// meter, or finer for those under three meters round, so they're still round and their line thin
+fn aim_ring_voxel(k: usize) -> f64 {
+    (1.0 / 16.0f64).min(aim_ring_radius(k) / 48.0)
+}
+
+/// Which model to draw a slim aim ring `radius` meters round with, and its voxels a meter as
+/// combat::place() takes them: it's drawn at size `radius`, the line round exactly that far out
+pub fn aim_ring_for(radius: f64) -> (usize, f64) {
+    let k = ((radius.max(1e-3) / AIM_SMALLEST).ln() / AIM_STEP.ln()).round().clamp(0.0, (AIM_RINGS - 1) as f64) as usize;
+    (AIM_RING + k, aim_ring_radius(k) / aim_ring_voxel(k))
+}
+
+/// Slim aim ring `k`, see AIM_RING: a line AIM_LINE wide round 0 at radius 1, of pale marble drawn
+/// in AIM_SKIN and lit by its own light, so it shows by night, AIM_UNDER and AIM_OVER voxels
+/// under and over 0, with short marks in from its four quarters on the bigger ones, so where it's aimed reads like a sight laid on the
+/// ground without hiding what's under it. Made voxel by voxel: its sizes are in radii, so the
+/// line's the same width in meters whichever size it's drawn at.
+fn aim_ring(k: usize) -> (Model, Vector3<f64>) {
+    let radius = aim_ring_radius(k);
+    let voxel = aim_ring_voxel(k);
+    // Voxels a radius, the line's half width and the marks' length, in radii
+    let res = radius / voxel;
+    let half = (AIM_THIN * radius).clamp(1.5 * voxel, AIM_LINE) * 0.5 / radius;
+    let tick = if radius >= AIM_TICKS_FROM { (AIM_TICK * radius).min(AIM_TICK_MOST) / radius } else { 0.0 };
+    let side = (2.0 * (1.0 + half) * res).ceil() as usize + 2;
+    let height = AIM_UNDER + AIM_OVER;
+    let mut voxels = vec![AIR; side * side * height];
+    let middle = side as f64 * 0.5;
+    for y in 0..side {
+        for x in 0..side {
+            let (px, py) = ((x as f64 + 0.5 - middle) / res, (y as f64 + 0.5 - middle) / res);
+            let r = px.hypot(py);
+            let line = (r - 1.0).abs() <= half;
+            let mark = tick > 0.0 && r <= 1.0 && r >= 1.0 - half - tick && (px.abs() <= half || py.abs() <= half);
+            if line || mark {
+                for z in 0..height {
+                    voxels[x + (y + z * side) * side] = MARBLE;
+                }
+            }
+        }
+    }
+    (Model { size: [side as u32, side as u32, height as u32], voxels }, Vector3::new(0.0, 0.0, -(AIM_UNDER as f64) / res))
+}
+
 fn ellipsoid_part(c: [f64; 3], radii: [f64; 3], material: u8) -> crate::animals::Part {
     crate::animals::ellipsoid(c, radii, material)
 }
@@ -1340,6 +1420,9 @@ pub fn models() -> Vec<(Model, Vector3<f64>)> {
     }
     jobs.push(Box::new(tendrils));
     jobs.push(Box::new(bone_spikes));
+    for k in 0..AIM_RINGS {
+        jobs.push(Box::new(move || aim_ring(k)));
+    }
     let next = AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
     let mut made: Vec<(usize, (Model, Vector3<f64>))> = std::thread::scope(|scope| {
@@ -1394,6 +1477,43 @@ mod tests {
         }
         let bytes: usize = models.iter().map(|(m, _)| m.voxels.len()).sum();
         println!("{} effect models, {:.1} MB, made in {:.0} ms", models.len(), bytes as f64 / 1e6, took.as_secs_f64() * 1000.0);
+    }
+
+    /// The slim aim rings, drawn as combat draws them at any radius rings are put down at: the
+    /// line goes all the way round exactly that far out, is no wider than a little over AIM_LINE
+    /// wherever it's drawn, and all the sizes together stay small
+    #[test]
+    fn aim_rings_are_slim_and_true() {
+        let models = models();
+        for radius in [0.8, 1.0, 1.5, 2.4, 2.8, 3.5, 4.5, 5.0, 6.0, 7.5, 9.0, 10.0, 12.0] {
+            let (index, res) = aim_ring_for(radius);
+            let (m, anchor) = &models[index - BLASTS];
+            let side = m.size[0] as usize;
+            assert_eq!(m.size[0], m.size[1]);
+            // Its top layer, which is what's seen, a voxel over where it's put
+            let top = (m.size[2] - 1) as usize;
+            let solid = |(x, y): (i64, i64)| x >= 0 && y >= 0 && (x as usize) < side && (y as usize) < side && m.voxels[x as usize + (y as usize + top * side) * side] != AIR;
+            assert!(m.size[2] <= 2 && -anchor.z * radius <= 1.01 * radius / res, "{radius} m: reaches {} m down", -anchor.z * radius);
+            // How big a voxel is drawn, in meters, and where a point that far out is in it
+            let voxel = radius / res;
+            let middle = side as f64 * 0.5;
+            let at = |meters: f64, a: f64| ((a.cos() * meters / voxel + middle).floor() as i64, (a.sin() * meters / voxel + middle).floor() as i64);
+            for k in 0..720 {
+                let a = k as f64 / 720.0 * TAU;
+                assert!(solid(at(radius, a)), "{radius} m: a gap at {a:.3}");
+                // Clear just inside and outside the line, but where a mark points in
+                let off = AIM_LINE * 1.12 * 0.5 + 1.5 * voxel;
+                assert!(!solid(at(radius + off, a)), "{radius} m: wider than it should be outside at {a:.3}");
+                let quarter = (a / (TAU / 4.0)).round() * TAU / 4.0;
+                if radius < AIM_TICKS_FROM || ((a - quarter).abs() * radius) > AIM_LINE + 2.0 * voxel {
+                    assert!(!solid(at(radius - off, a)), "{radius} m: wider than it should be inside at {a:.3}");
+                }
+            }
+        }
+        let rings = &models[AIM_RING - BLASTS..AIM_RING - BLASTS + AIM_RINGS];
+        let bytes: usize = rings.iter().map(|(m, _)| m.voxels.len()).sum();
+        println!("{AIM_RINGS} aim rings, {:.2} MB", bytes as f64 / 1e6);
+        assert!(bytes < 3_500_000, "the aim rings take {bytes} bytes");
     }
 
     /// What's on the outside of `model`, by material: the voxels next to air
