@@ -6,11 +6,10 @@ the commit it landed in.
 
 ## Queued
 
-14. **A gentler sound in place of the fanfare** (2026-11-29, "Remove the phanphare sound, change it
-    to somehing less daunting"). The coordinator, on AVI directly.
-
 15. **Hand cannons held closer, without their stick** (2026-11-29, "Also, make cannons closser to
     me, remove their stick"). RUNNING in `cannonhold`.
+    - And war fans further right in first person (2026-11-29, "War wind blowers  should be more
+      right to screen, because it covers"); read as the war fan family. Same agent, own commit.
 
 Still owed: a quiet-machine frame-time A/B of everything merged since 2026-11-24.
 
@@ -55,6 +54,10 @@ than ending a turn to wait.
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- A soft run of plucked strings in place of the war-horn "fanfare" for levelling up, chests, loot
+  and the like, made in code (audio.rs plucked()); the two horn recordings removed (4fdbd657,
+  2026-11-29).
 
 - Cave camps instead of the cave orbs: bandit (40%), risen-dead (30%) and empty camps by a burning
   fire, one light each, with crackle, gear and rattle sounds; and creatures near the player are
