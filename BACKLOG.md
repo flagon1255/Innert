@@ -53,7 +53,8 @@ cut off by a restart).
     falling should enabled by default"). RUNNING in `trees2` from 484fd897+.
 
 13. **A slimmer targeting circle** (2026-11-28, "Change the targeting circle, it covers too much",
-    "make it slimmer maybe"). RUNNING in `aimring`.
+    "make it slimmer maybe", "or just on screen target", then "nvm about on screen"). RUNNING in
+    `aimring`: just a slim ground ring, the same radius.
 
 ## Loose ends (found along the way, not yet asked for)
 
