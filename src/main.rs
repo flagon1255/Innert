@@ -2292,11 +2292,16 @@ impl Placed {
             // Back along the way in from the fire, as far as there's room, looking at it
             let vpm = world.voxels_per_meter as f64;
             let fire = Vector3::new(c.fire[0] as f64 * vpm - origin[0] as f64, c.fire[1] as f64 * vpm - origin[1] as f64, c.fire[2] as f64 * vpm);
-            let way = Vector3::new(c.way[0] as f64, c.way[1] as f64, 0.0);
-            let low = fire + Vector3::new(0.0, 0.0, 1.3 * vpm);
+            let low = fire + Vector3::new(0.0, 0.0, 1.6 * vpm);
             let want = setting("cave_camp_distance").and_then(|v| v.parse::<f64>().ok()).unwrap_or(c.room as f64 + 2.2);
-            let room = (1..=(want * vpm) as i64).take_while(|&k| worldgen::is_passable(world.material_at((low.x + way.x * k as f64) as i64, (low.y + way.y * k as f64) as i64, low.z as i64))).count() as f64;
-            let eye = fire + way * (room - 0.4 * vpm).max(1.5 * vpm) + Vector3::new(0.0, 0.0, 1.65 * vpm);
+            let room = |d: Vector3<f64>| (1..=(want * vpm) as i64).take_while(|&k| worldgen::is_passable(world.material_at((low.x + d.x * k as f64) as i64, (low.y + d.y * k as f64) as i64, low.z as i64))).count() as f64;
+            // The way with the most room, toward the way in if there's as much that way
+            let toward = Vector3::new(c.way[0] as f64, c.way[1] as f64, 0.0);
+            let way = (0..32).map(|k| k as f64 / 32.0 * std::f64::consts::TAU).map(|a| Vector3::new(a.cos(), a.sin(), 0.0)).max_by(|a, b| (room(*a) + a.dot(&toward)).total_cmp(&(room(*b) + b.dot(&toward)))).unwrap_or(toward);
+            let at = low + way * (room(way) - 0.5 * vpm).max(1.5 * vpm);
+            // Standing on the floor there, which may be higher or lower than at the fire
+            let floor = (0..(4.0 * vpm) as i64).map(|k| at.z - k as f64).find(|&z| !worldgen::is_passable(world.material_at(at.x as i64, at.y as i64, z as i64 - 1))).unwrap_or(fire.z);
+            let eye = Vector3::new(at.x, at.y, floor + 1.6 * vpm);
             camera.position = voxels_to_camera(eye, world.size);
             let target = voxels_to_camera(fire + Vector3::new(0.0, 0.0, 0.5 * vpm), world.size);
             camera.look_at(target);
@@ -2519,7 +2524,7 @@ impl Placed {
             camera.look_at(target);
         }
         let down_in_chasm = chasm.is_some() && matches!(crevice_view, Some("bottom" | "demi" | "fight"));
-        let indoors = dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city || down_in_chasm;
+        let indoors = dungeon.is_some() || cavern.is_some() || cave_camp.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city || down_in_chasm;
         // Into the world that moves on from here a strip at a time
         let (world, pieces, river_springs) = match &landscape {
             Some(landscape) => into_window(world, landscape),
