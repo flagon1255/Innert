@@ -1,0 +1,29 @@
+{
+  "what": "Belfry Grotesque, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    23,
+    21,
+    14
+  ],
+  "pivot": [
+    8.659200000000002,
+    10.4192,
+    4.5920000000000005
+  ],
+  "anchor": [
+    0.17754999999999987,
+    0.005049999999999999,
+    -0.28700000000000003
+  ],
+  "origin": [
+    -9,
+    -10,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4471,
+    "bad7e3b756cc7a1b"
+  ]
+}

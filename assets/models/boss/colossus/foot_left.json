@@ -1,0 +1,29 @@
+{
+  "what": "Earthbreaker Colossus, foot left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    23,
+    18,
+    17
+  ],
+  "pivot": [
+    8.704,
+    8.975999999999999,
+    10.064
+  ],
+  "anchor": [
+    0.17474999999999996,
+    0.0015000000000000568,
+    -0.629
+  ],
+  "origin": [
+    -9,
+    -9,
+    -10
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    13844,
+    "12e37b84663defe8"
+  ]
+}

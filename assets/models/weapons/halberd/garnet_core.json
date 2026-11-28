@@ -1,0 +1,37 @@
+{
+  "what": "Halberd, core: Garnet Core",
+  "voxels_per_meter": 192.0,
+  "size": [
+    9,
+    9,
+    12
+  ],
+  "pivot": [
+    4.408000000000001,
+    4.569599999999999,
+    -301.0
+  ],
+  "anchor": null,
+  "origin": [
+    -4,
+    -5,
+    301
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.6075999999999999
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      2.0576000000000003
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2538,
+    "1195d0cfc354b0ea"
+  ]
+}

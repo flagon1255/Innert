@@ -1,0 +1,29 @@
+{
+  "what": "Veinbinder, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    51,
+    33,
+    43
+  ],
+  "pivot": [
+    25.2,
+    16.32,
+    17.6
+  ],
+  "anchor": [
+    0.018750000000000044,
+    0.011249999999999982,
+    -1.1
+  ],
+  "origin": [
+    -25,
+    -16,
+    -18
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    132131,
+    "6f2d4f5b6ca8a758"
+  ]
+}

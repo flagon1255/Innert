@@ -1,0 +1,29 @@
+{
+  "what": "Wandwright, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    13,
+    34
+  ],
+  "pivot": [
+    8.327646380200903,
+    4.941179292650695,
+    22.60727272727273
+  ],
+  "anchor": [
+    -0.14547789876255646,
+    0.09742629420933158,
+    -1.4129545454545456
+  ],
+  "origin": [
+    -8,
+    -5,
+    -23
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    6213,
+    "ac2345ec1aa6301f"
+  ]
+}

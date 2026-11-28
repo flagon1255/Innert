@@ -1,0 +1,37 @@
+{
+  "what": "Axe, core: Star Core",
+  "voxels_per_meter": 192.0,
+  "size": [
+    13,
+    5,
+    11
+  ],
+  "pivot": [
+    6.600000000000001,
+    2.5695999999999994,
+    -113.0
+  ],
+  "anchor": null,
+  "origin": [
+    -7,
+    -3,
+    113
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2336
+    ],
+    "tip": [
+      0.2,
+      0.0,
+      0.6195999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1731,
+    "3f36d767c483846b"
+  ]
+}

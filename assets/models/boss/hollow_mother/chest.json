@@ -1,0 +1,29 @@
+{
+  "what": "Hollow Mother, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    13,
+    23,
+    40
+  ],
+  "pivot": [
+    8.28,
+    11.04,
+    16.192
+  ],
+  "anchor": [
+    -0.11124999999999996,
+    0.028750000000000053,
+    -1.012
+  ],
+  "origin": [
+    -8,
+    -11,
+    -16
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5708,
+    "c88643165a446aa3"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Thunder Drake, tail 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    22,
+    10,
+    12
+  ],
+  "pivot": [
+    16.64,
+    4.992,
+    5.4912
+  ],
+  "anchor": [
+    -0.35250000000000004,
+    0.0005000000000000004,
+    -0.3432
+  ],
+  "origin": [
+    -17,
+    -5,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5980,
+    "7c02e2007929218f"
+  ]
+}

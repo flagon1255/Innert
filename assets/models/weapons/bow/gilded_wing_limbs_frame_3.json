@@ -1,0 +1,52 @@
+{
+  "what": "Bow, limbs: Gilded Wings, frame 3 of 3",
+  "voxels_per_meter": 160.0,
+  "size": [
+    41,
+    8,
+    213
+  ],
+  "pivot": [
+    37.67999999999999,
+    3.84,
+    2.4
+  ],
+  "anchor": null,
+  "origin": [
+    -38,
+    -4,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.65
+    ],
+    "nock_1": [
+      -0.039999999999999966,
+      0.0,
+      0.68
+    ],
+    "nock_2": [
+      -0.17199999999999996,
+      0.0,
+      0.68
+    ],
+    "nock_3": [
+      -0.30399999999999994,
+      0.0,
+      0.68
+    ],
+    "tip": [
+      -0.039999999999999966,
+      0.0,
+      0.68
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    19355,
+    "901a28cafaf0eef5"
+  ]
+}

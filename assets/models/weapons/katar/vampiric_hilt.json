@@ -1,0 +1,37 @@
+{
+  "what": "Katar, hilt: Vampiric Hilt",
+  "voxels_per_meter": 192.0,
+  "size": [
+    22,
+    5,
+    48
+  ],
+  "pivot": [
+    10.943999999999999,
+    2.4559999999999995,
+    0.19199999999999984
+  ],
+  "anchor": null,
+  "origin": [
+    -11,
+    -2,
+    0
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.1476
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.5196000000000001
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    6184,
+    "9587f700c7960a56"
+  ]
+}

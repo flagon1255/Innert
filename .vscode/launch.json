@@ -2,6 +2,15 @@
     "version": "0.2.0",
     "configurations": [
         {
+            "name": "Run Innert (release)",
+            "type": "cppvsdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/release/innert.exe",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "cargo build --release",
+            "console": "integratedTerminal"
+        },
+        {
             "name": "Debug Innert",
             "type": "cppvsdbg",
             "request": "launch",

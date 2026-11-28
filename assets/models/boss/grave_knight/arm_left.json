@@ -1,0 +1,29 @@
+{
+  "what": "Grave Knight, arm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    2,
+    15
+  ],
+  "pivot": [
+    0.9856000000000001,
+    0.9856000000000001,
+    13.6576
+  ],
+  "anchor": [
+    0.0008999999999999911,
+    0.0008999999999999911,
+    -0.8536
+  ],
+  "origin": [
+    -1,
+    -1,
+    -14
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1476,
+    "c04a4f7923af2580"
+  ]
+}

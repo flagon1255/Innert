@@ -1,0 +1,29 @@
+{
+  "what": "Armoured skeleton, thigh right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    2,
+    8
+  ],
+  "pivot": [
+    1.0,
+    0.8999999999999999,
+    7.720000000000001
+  ],
+  "anchor": [
+    0.0,
+    0.0062500000000000056,
+    -0.48250000000000004
+  ],
+  "origin": [
+    -1,
+    -1,
+    -8
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1372,
+    "f591325aa742ded7"
+  ]
+}

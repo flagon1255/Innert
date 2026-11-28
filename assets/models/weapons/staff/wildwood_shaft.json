@@ -1,0 +1,37 @@
+{
+  "what": "Staff, shaft: Wildwood Shaft",
+  "voxels_per_meter": 150.0,
+  "size": [
+    15,
+    14,
+    247
+  ],
+  "pivot": [
+    6.9442772077056745,
+    7.4314226004418655,
+    3.29
+  ],
+  "anchor": null,
+  "origin": [
+    -7,
+    -7,
+    -3
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.8
+    ],
+    "tip": [
+      0.07,
+      0.0,
+      1.7200000000000002
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    42141,
+    "f0d666b6e0fea51b"
+  ]
+}

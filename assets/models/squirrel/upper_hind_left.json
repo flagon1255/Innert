@@ -1,0 +1,29 @@
+{
+  "what": "Squirrel, upper hind left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    1,
+    2,
+    2
+  ],
+  "pivot": [
+    0.54,
+    1.1400000000000001,
+    1.28
+  ],
+  "anchor": [
+    -0.0025000000000000022,
+    -0.00875,
+    -0.08
+  ],
+  "origin": [
+    -1,
+    -1,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1268,
+    "f847ac9ab6f7bfd6"
+  ]
+}

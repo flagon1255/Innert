@@ -1,0 +1,29 @@
+{
+  "what": "Bleeding Hart, upper fore right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    9,
+    29
+  ],
+  "pivot": [
+    4.16,
+    4.16,
+    24.0
+  ],
+  "anchor": [
+    0.02124999999999999,
+    0.02124999999999999,
+    -1.5
+  ],
+  "origin": [
+    -4,
+    -4,
+    -24
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4729,
+    "31af2a8a35ce6582"
+  ]
+}

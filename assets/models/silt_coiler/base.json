@@ -1,0 +1,25 @@
+{
+  "what": "Silt coiler, standing frame (1 of 39 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    78,
+    14,
+    8
+  ],
+  "pivot": [
+    39.0,
+    7.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -39,
+    -7,
+    0
+  ],
+  "note": "The standing frame. The game draws this look in baked frames, walking and attacking: what you change here is changed in every other frame the same way, where that frame has the same there. Export with --export-frames for a file per frame, which replaces that frame outright.",
+  "written": [
+    5339,
+    "534d2fa9440d4503"
+  ]
+}

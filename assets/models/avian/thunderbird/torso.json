@@ -1,0 +1,29 @@
+{
+  "what": "Thunderbird, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    78,
+    35,
+    39
+  ],
+  "pivot": [
+    34.943999999999996,
+    17.0352,
+    19.4688
+  ],
+  "anchor": [
+    0.2535000000000003,
+    0.02905000000000002,
+    -1.2168
+  ],
+  "origin": [
+    -35,
+    -17,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    175443,
+    "9e122051b3856359"
+  ]
+}

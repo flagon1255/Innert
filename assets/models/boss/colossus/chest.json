@@ -1,0 +1,29 @@
+{
+  "what": "Earthbreaker Colossus, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    46,
+    77,
+    60
+  ],
+  "pivot": [
+    25.023999999999997,
+    38.08,
+    4.896000000000004
+  ],
+  "anchor": [
+    -0.12649999999999983,
+    0.026250000000000107,
+    -0.30600000000000027
+  ],
+  "origin": [
+    -25,
+    -38,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    200265,
+    "6f0f867043b80480"
+  ]
+}

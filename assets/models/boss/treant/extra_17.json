@@ -1,0 +1,29 @@
+{
+  "what": "Ancient Treant, extra 17",
+  "voxels_per_meter": 16.0,
+  "size": [
+    24,
+    10,
+    26
+  ],
+  "pivot": [
+    4.8,
+    4.8,
+    20.8
+  ],
+  "anchor": [
+    0.45,
+    0.012500000000000011,
+    -1.3
+  ],
+  "origin": [
+    -5,
+    -5,
+    -21
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4888,
+    "3f67dfd0f62ee573"
+  ]
+}

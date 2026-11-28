@@ -1,0 +1,29 @@
+{
+  "what": "Wingmaker, arm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    2,
+    3,
+    6
+  ],
+  "pivot": [
+    1.0,
+    1.2000000000000002,
+    5.399999999999999
+  ],
+  "anchor": [
+    0.0,
+    0.01874999999999999,
+    -0.3374999999999999
+  ],
+  "origin": [
+    -1,
+    -1,
+    -5
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1308,
+    "b8b2477cfbc3ab86"
+  ]
+}

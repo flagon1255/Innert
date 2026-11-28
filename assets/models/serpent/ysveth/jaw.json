@@ -1,0 +1,29 @@
+{
+  "what": "Coil Unending, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    91,
+    39,
+    24
+  ],
+  "pivot": [
+    19.344,
+    19.344,
+    19.840000000000003
+  ],
+  "anchor": [
+    1.63475,
+    0.009749999999999925,
+    -1.2400000000000002
+  ],
+  "origin": [
+    -19,
+    -19,
+    -20
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    107289,
+    "9d10c1401c8e0f89"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Bandit brute, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    6,
+    10
+  ],
+  "pivot": [
+    2.5,
+    3.0,
+    0.2960000000000029
+  ],
+  "anchor": [
+    0.03125,
+    0.0,
+    -0.018500000000000183
+  ],
+  "origin": [
+    -3,
+    -3,
+    0
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1659,
+    "6984f65112d2e2dc"
+  ]
+}

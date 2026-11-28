@@ -1,0 +1,29 @@
+{
+  "what": "Elder Cinder Wyrm, hind shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    14,
+    9,
+    29
+  ],
+  "pivot": [
+    4.228395114836671,
+    4.2048000000000005,
+    24.0462508075417
+  ],
+  "anchor": [
+    0.17322530532270808,
+    0.018449999999999966,
+    -1.5028906754713562
+  ],
+  "origin": [
+    -4,
+    -4,
+    -24
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5361,
+    "bce95550b5b195cc"
+  ]
+}

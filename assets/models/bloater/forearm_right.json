@@ -1,0 +1,29 @@
+{
+  "what": "Bloater, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    3,
+    4
+  ],
+  "pivot": [
+    0.7079999999999997,
+    2.0760000000000005,
+    3.4919999999999973
+  ],
+  "anchor": [
+    0.08075000000000002,
+    -0.03600000000000003,
+    -0.21824999999999983
+  ],
+  "origin": [
+    -1,
+    -2,
+    -3
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1313,
+    "b798458abdb66d29"
+  ]
+}

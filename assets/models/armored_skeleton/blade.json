@@ -1,0 +1,29 @@
+{
+  "what": "Armoured skeleton, blade",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    5,
+    12
+  ],
+  "pivot": [
+    0.20000000000000018,
+    2.5,
+    11.2
+  ],
+  "anchor": [
+    0.26875,
+    0.0,
+    -0.7
+  ],
+  "origin": [
+    0,
+    -3,
+    -11
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1353,
+    "9138627e60fe7f44"
+  ]
+}

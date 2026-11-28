@@ -1,0 +1,29 @@
+{
+  "what": "Sunken Pharaoh, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    13,
+    12
+  ],
+  "pivot": [
+    3.9439999999999995,
+    6.264,
+    1.1600000000000001
+  ],
+  "anchor": [
+    0.03475000000000003,
+    0.014749999999999985,
+    -0.07250000000000001
+  ],
+  "origin": [
+    -4,
+    -6,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2979,
+    "2d633c798bfde4ea"
+  ]
+}

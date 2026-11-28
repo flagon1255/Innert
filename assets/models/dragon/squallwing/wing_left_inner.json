@@ -1,0 +1,29 @@
+{
+  "what": "squallwing, wing left inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    19,
+    20,
+    3
+  ],
+  "pivot": [
+    14.36186446924022,
+    1.0920000000000005,
+    1.3920000000000001
+  ],
+  "anchor": [
+    -0.3038665293275138,
+    0.55675,
+    -0.08700000000000001
+  ],
+  "origin": [
+    -14,
+    -1,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2316,
+    "4bc82a9932c50abe"
+  ]
+}

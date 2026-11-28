@@ -1,0 +1,42 @@
+{
+  "what": "Whip, handle: Gilded Bone Handle",
+  "voxels_per_meter": 192.0,
+  "size": [
+    16,
+    7,
+    53
+  ],
+  "pivot": [
+    8.182707953912338,
+    3.4559999999999995,
+    -1.9171274560290668
+  ],
+  "anchor": null,
+  "origin": [
+    -8,
+    -3,
+    2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.1692
+    ],
+    "lash_root": [
+      0.0,
+      0.0,
+      0.32920000000000005
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.32920000000000005
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    7784,
+    "370ebf5d5356b10b"
+  ]
+}

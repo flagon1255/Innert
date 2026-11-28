@@ -1,0 +1,29 @@
+{
+  "what": "Sunstinger, femur right 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    29
+  ],
+  "pivot": [
+    2.392,
+    2.392,
+    26.311999999999998
+  ],
+  "anchor": [
+    0.006750000000000006,
+    0.006750000000000006,
+    -1.6444999999999999
+  ],
+  "origin": [
+    -2,
+    -2,
+    -26
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2757,
+    "07422f1717e8cca8"
+  ]
+}

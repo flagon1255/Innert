@@ -1,0 +1,29 @@
+{
+  "what": "ashwing, neck 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    13,
+    7,
+    9
+  ],
+  "pivot": [
+    3.2,
+    3.2,
+    3.6799999999999997
+  ],
+  "anchor": [
+    0.20625,
+    0.01874999999999999,
+    -0.22999999999999998
+  ],
+  "origin": [
+    -3,
+    -3,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2351,
+    "7abd69b2c83282b6"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "what": "Maul, blade: Avalanche Maul",
+  "voxels_per_meter": 192.0,
+  "size": [
+    110,
+    78,
+    88
+  ],
+  "pivot": [
+    54.79680000000001,
+    39.59445124678649,
+    -140.0
+  ],
+  "anchor": null,
+  "origin": [
+    -55,
+    -40,
+    140
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.28509999999999996
+    ],
+    "tip": [
+      0.28,
+      0.0,
+      0.9815999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1200386,
+    "61c9ce1e2ec3067f"
+  ]
+}

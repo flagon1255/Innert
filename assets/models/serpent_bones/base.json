@@ -1,0 +1,25 @@
+{
+  "what": "Serpent bones, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    119,
+    33,
+    11
+  ],
+  "pivot": [
+    59.5,
+    16.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -60,
+    -17,
+    0
+  ],
+  "note": "",
+  "written": [
+    4661,
+    "c4c31a227288220f"
+  ]
+}

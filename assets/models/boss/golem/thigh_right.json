@@ -1,0 +1,29 @@
+{
+  "what": "Stone Warden, thigh right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    10,
+    18
+  ],
+  "pivot": [
+    4.96,
+    4.96,
+    12.96
+  ],
+  "anchor": [
+    0.0025000000000000022,
+    0.0025000000000000022,
+    -0.81
+  ],
+  "origin": [
+    -5,
+    -5,
+    -13
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5456,
+    "03de0f5ee6f897da"
+  ]
+}

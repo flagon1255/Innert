@@ -1,0 +1,37 @@
+{
+  "what": "Staff, shaft: Twisted Shaft",
+  "voxels_per_meter": 150.0,
+  "size": [
+    7,
+    7,
+    243
+  ],
+  "pivot": [
+    3.290000000000001,
+    3.249999999999999,
+    1.63
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -3,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.8
+    ],
+    "tip": [
+      0.07,
+      0.0,
+      1.7200000000000002
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    22117,
+    "fbb28bc1ca500530"
+  ]
+}

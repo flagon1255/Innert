@@ -1,0 +1,29 @@
+{
+  "what": "Jeweller, forearm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    2,
+    3
+  ],
+  "pivot": [
+    1.084,
+    1.6600000000000001,
+    2.3840000000000003
+  ],
+  "anchor": [
+    0.057249999999999995,
+    -0.04125000000000001,
+    -0.14900000000000002
+  ],
+  "origin": [
+    -1,
+    -2,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1277,
+    "2d16c0be184a0cb0"
+  ]
+}

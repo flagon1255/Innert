@@ -1,0 +1,29 @@
+{
+  "what": "Ironhide, upper hind right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    12,
+    24
+  ],
+  "pivot": [
+    5.76,
+    5.76,
+    17.28
+  ],
+  "anchor": [
+    0.015000000000000013,
+    0.015000000000000013,
+    -1.08
+  ],
+  "origin": [
+    -6,
+    -6,
+    -17
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    7812,
+    "42c44a97a1794a2f"
+  ]
+}

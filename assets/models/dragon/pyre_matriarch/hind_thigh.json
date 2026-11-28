@@ -1,0 +1,29 @@
+{
+  "what": "Pyre Matriarch, hind thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    16,
+    14,
+    36
+  ],
+  "pivot": [
+    6.6528,
+    6.6528,
+    28.8288
+  ],
+  "anchor": [
+    0.0842,
+    0.021699999999999997,
+    -1.8018
+  ],
+  "origin": [
+    -7,
+    -7,
+    -29
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    14593,
+    "cf16893d69fa5cb9"
+  ]
+}

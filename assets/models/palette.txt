@@ -1,0 +1,108 @@
+# Colour index = material id, see src\worldgen.rs (material) and the palette in shaders\traverse.comp.
+# Paint with these colours. Colour indices past the last material, and colours changed in MagicaVoxel's
+# palette, become the material nearest their colour when the game reads the file.
+# index  rgb      name
+    1  477a2b   grass
+    2  805938   dirt
+    3  948f8c   stone
+    4  dbbd80   sand
+    5  f2f7ff   snow
+    6  1a4d73   water
+    7  734a2b   wood
+    8  458a26   leaves
+    9  eb2424   red flower
+   10  fad624   yellow flower
+   11  ccc7bd   clay
+   12  6b8f38   grass tip
+   13  1a5c1a   dark leaves
+   14  f2bf1f   yellow leaves
+   15  f26b0f   orange leaves
+   16  c7140f   red leaves
+   17  9447d9   purple flower
+   18  f5f5eb   white flower
+   19  ad998a   rock
+   20  527a24   moss
+   21  e6f5fa   foam
+   22  61a133   grass blade
+   23  1a5233   pine
+   24  8f877a   gravel
+   25  2673f2   blue flower
+   26  f273b3   pink flower
+   27  66bf33   fern
+   28  e6e0d1   birch bark
+   29  fab3cc   blossom
+   30  8cbf40   willow
+   31  d91f1a   mushroom cap
+   32  ebe0c7   mushroom stem
+   33  8ca64d   reed
+   34  66401f   cattail
+   35  4dad26   palm leaf
+   36  8c6b47   palm wood
+   37  73665c   dead wood
+   38  261f1a   dark bark
+   39  5c381f   brown fur
+   40  291a12   dark fur
+   41  cc5c1f   red fur
+   42  cc995c   tan fur
+   43  85858a   gray fur
+   44  f0ebe0   white fur
+   45  080808   eye
+   46  e6808c   nose
+   47  eb8c33   ginger fur
+   48  f2d9a6   cream fur
+   49  e01a1a   apple
+   50  b83d38   meat
+   51  f2ebd6   bone
+   52  ccb88f   temple stone
+   53  80705c   dark temple stone
+   54  ad3324   red paint
+   55  298f8a   teal paint
+   56  80f2ff   crystal
+   57  ffcc73   flame
+   58  f2e6c7   wax
+   59  e0a870   sandstone
+   60  9e6b47   carved sandstone
+   61  adada3   stone brick
+   62  6b6b66   mortar
+   63  dbccad   limestone
+   64  339424   jungle grass
+   65  ccb366   dry grass
+   66  4d8f38   cactus
+   67  2e7a1a   vine
+   68  bd6b42   clay pot
+   69  ccd1db   steel
+   70  575c66   dark steel
+   71  fac242   gold
+   72  b37033   bronze
+   73  663b21   leather
+   74  991a1f   cloth
+   75  dbd1b3   linen
+   76  1a1421   obsidian
+   77  ebe6d1   bowstring
+   78  b8e0fa   ice
+   79  ff801f   glowing: fire
+   80  8cd9ff   frost
+   81  b3ccff   storm
+   82  73ff40   poison
+   83  cc73ff   arcane
+   84  731fbf   void
+   85  f2141f   blood
+   86  ffeb99   holy
+   87  9ee029   lime leaves
+   88  75080f   crimson leaves
+   89  946145   clay bank, as it lies in the ground
+   90  b3dbe0   glass
+   91  cca857   thatch
+   92  edebe3   marble
+   93  4d5461   slate
+   94  383638   basalt
+   95  85573d   iron ore
+   96  5c8f7a   copper ore
+   97  d6bd8f   birch planks
+   98  4d301c   dark oak planks
+   99  a86b3d   pine planks
+  100  c29966   palm planks
+  101  bdbab3   cut stone
+  102  243d9e   blue cloth
+  103  9e9980   lamp glass, unlit
+  104  3d2b1f   oil lamp wick, unlit

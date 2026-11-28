@@ -1,0 +1,29 @@
+{
+  "what": "Weaponsmith, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    8,
+    23
+  ],
+  "pivot": [
+    4.934117647058822,
+    4.198823529411765,
+    10.722352941176469
+  ],
+  "anchor": [
+    -0.02713235294117637,
+    -0.012426470588235289,
+    -0.6701470588235293
+  ],
+  "origin": [
+    -5,
+    -4,
+    -11
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    3060,
+    "f0d88bc4d2522092"
+  ]
+}

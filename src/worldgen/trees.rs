@@ -8,6 +8,9 @@
 
 use super::*;
 
+mod kinds;
+pub(crate) use kinds::Species;
+
 /// The leaves of a crown in three shades, deep inside, the body of it and the sunlit tips, and the
 /// odd speckle of blossom or berries among them, AIR for none, on `bloom` leaves in 256
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -64,6 +67,24 @@ const SHRUBS: [Canopy; 5] = [
     Canopy::new(LEAVES, LEAVES_LIME, FLOWER_YELLOW),
     Canopy::new(LEAVES, FERN, LEAVES_LIME),
 ];
+/// Green crown `k` of GREENS, as assets\trees.json has it
+fn greens(k: usize) -> Canopy {
+    let [a, b, c] = book().greens[k];
+    Canopy::new(a, b, c)
+}
+
+/// Crown `k` of those turned in autumn, AUTUMN, as assets\trees.json has it
+fn autumns(k: usize) -> Canopy {
+    let [a, b, c] = book().autumn[k];
+    Canopy::new(a, b, c)
+}
+
+/// Shrub `k` of SHRUBS, as assets\trees.json has it
+fn shrubs(k: usize) -> Canopy {
+    let [a, b, c] = book().shrubs[k];
+    Canopy::new(a, b, c)
+}
+
 /// Moss over the tops of rocks: dark down in it, bright green, and lighter at the tips
 const MOSSY: Canopy = Canopy::new(MOSS, FERN, LEAVES_LIME);
 
@@ -239,6 +260,12 @@ enum Form {
 pub(super) const TREE_CELL: f32 = 7.5;
 pub(super) const TREE_SALT: u32 = 0x7a3e;
 
+/// How big a willow grown from `r` is next to most, rolled on its own: from a young one to an old
+/// spreading one
+fn willow_size(r: u32) -> f32 {
+    0.8 + 0.45 * unit(hash(r ^ 0x3172))
+}
+
 /// How far the leaves have turned at `x`, `y`: they turn in patches, warmer the higher this is
 pub(super) fn autumn(settings: &TerrainSettings, x: f32, y: f32) -> f32 {
     fbm(x / 120.0, y / 120.0, 2, settings.seed.wrapping_add(6))
@@ -309,6 +336,15 @@ impl Terrain {
         let forest = fbm(x / 80.0, y / 80.0, 3, seed.wrapping_add(4));
 
         let c = climate(&self.settings, x, y);
+        // Now and then one drawn by hand in MagicaVoxel instead, if any are, see hand_made()
+        let land = if c.jungle > 0.5 { "jungle" } else if c.desert > 0.5 { "desert" } else if c.snow > 0.5 { "snow" } else { "woods" };
+        if let Some(shapes) = hand_made(land, x, y, base, r) {
+            return Object::new(shapes, rng.0);
+        }
+        // Now and then one of the newer kinds, from rolls of their own, see kinds.rs
+        if let Some(species) = self.species(x, y, base, r, wild, &c) {
+            return self.grow_species(species, x, y, base, r, wild);
+        }
         if c.jungle > 0.5 {
             return Object::new(self.jungle_tree(x, y, base, &mut rng), rng.0);
         }
@@ -329,30 +365,32 @@ impl Terrain {
             let spruce = rng.next() < 0.5;
             self.conifer(x, y, base, spruce, false, &mut rng)
         } else if base - sea_level < 2.5 {
-            if c.desert + c.jungle > 0.25 && rng.next() < 0.6 { self.palm(x, y, base, &mut rng) } else { self.willow(x, y, base, &mut rng) }
+            if c.desert + c.jungle > 0.25 && rng.next() < 0.6 { self.palm(x, y, base, &mut rng) } else { self.willow(x, y, base, willow_size(r), &mut rng) }
         } else if rng.next() < smoothstep(0.15, 0.45, c.desert) * 0.85 {
             // Towards the desert, flat-topped trees of the dry lands
             self.acacia(x, y, base, &mut rng)
         } else {
             // Mostly grown, some young, and in the thick of the woods bigger, where the leaves have
             // turned bigger still, and the odd ancient giant
+            let b = book();
             let age = rng.next();
             let turned = smoothstep(-0.4, 0.4, autumn(&self.settings, x, y));
             let thick = if wild { smoothstep(-0.15, 0.3, forest) } else { 0.0 };
-            let size = if age < 0.12 { rng.range(0.45, 0.65) } else { rng.range(0.8, 1.0) + (0.04 + 0.08 * turned) * thick };
+            let size = if age < b.young { rng.range(b.young_size[0], b.young_size[1]) } else { rng.range(b.grown_size[0], b.grown_size[1]) + (0.04 + 0.08 * turned) * thick };
             if wild && forest > 0.3 && age > 0.965 + 0.015 * turned {
                 return Object::new(self.ancient(x, y, base, &mut rng), rng.0);
             }
             // Groves where oaks or maples have the upper hand, few blossoming where the leaves
             // have turned, and only now and then a poplar
+            let w = &b.kinds;
             let kinds = [
-                (Kind::Broad, 0.3 + 0.35 * grove),
-                (Kind::Upright, 0.38 - 0.25 * grove),
-                (Kind::Spreading, 0.06),
-                (Kind::Birch, 0.07),
-                (Kind::Blossom, 0.05 - 0.04 * turned),
-                (Kind::Poplar, 0.03),
-                (Kind::Willow, 0.02),
+                (Kind::Broad, w.broad[0] + w.broad[1] * grove),
+                (Kind::Upright, w.upright[0] + w.upright[1] * grove),
+                (Kind::Spreading, w.spreading),
+                (Kind::Birch, w.birch),
+                (Kind::Blossom, w.blossom[0] + w.blossom[1] * turned),
+                (Kind::Poplar, w.poplar),
+                (Kind::Willow, w.willow),
             ];
             let mut roll = rng.next() * kinds.iter().map(|k| k.1).sum::<f32>();
             let kind = kinds.iter().find(|k| {
@@ -377,17 +415,27 @@ impl Terrain {
                 Kind::Blossom => {
                     // In flower: blossom all over the leaves, rather than a cloud of pink
                     let flower = [BLOSSOM, FLOWER_PINK, FLOWER_PINK, FLOWER_WHITE][(rng.next() * 3.99) as usize];
-                    let canopy = GREENS[(rng.next() * 2.99) as usize].speckled(flower, rng.range(36.0, 56.0));
+                    let canopy = greens((rng.next() * 2.99) as usize).speckled(flower, rng.range(36.0, 56.0));
                     self.leafy(x, y, base, size * 0.85, Form::Blossom, lean, BARK_DARK, canopy, &mut rng)
                 }
                 Kind::Poplar => {
                     let canopy = self.canopy(x, y, &mut rng);
                     self.poplar(x, y, base, size, canopy, &mut rng)
                 }
-                Kind::Willow => self.willow(x, y, base, &mut rng),
+                Kind::Willow => self.willow(x, y, base, willow_size(r), &mut rng),
             }
         };
         Object::new(shapes, rng.0)
+    }
+
+    /// A tree leaning out over a river in the milder lands: a willow, or now and then a bald
+    /// cypress with its knees round it, see kinds.rs
+    pub(super) fn riverside_tree(&self, x: f32, y: f32, ground: f32, r: u32) -> Object {
+        if unit(hash(r ^ 0xc7c5)) < 0.4 {
+            return self.grow_species(Species::Cypress, x, y, ground, r, true);
+        }
+        let mut rng = Rng(hash(r ^ 0x3171));
+        Object::new(self.willow(x, y, ground, willow_size(r), &mut rng), rng.0)
     }
 
     /// Which way and how far a tree at `x`, `y` leans: out over the slope it's on, a little
@@ -405,17 +453,18 @@ impl Terrain {
     fn canopy(&self, x: f32, y: f32, rng: &mut Rng) -> Canopy {
         let turned = smoothstep(-0.4, 0.4, autumn(&self.settings, x, y)) * 0.85;
         let canopy = if rng.next() < turned {
-            AUTUMN[[0, 1, 2, 2, 3, 3][(rng.next() * 5.99) as usize]]
+            autumns([0, 1, 2, 2, 3, 3][(rng.next() * 5.99) as usize])
         } else if rng.next() < turned * 1.5 {
-            GREENS[1 + (rng.next() * 1.99) as usize]
+            greens(1 + (rng.next() * 1.99) as usize)
         } else {
-            GREENS[(rng.next() * 2.99) as usize]
+            greens((rng.next() * 2.99) as usize)
         };
         // Red ones often have pale blossom or berries among them
-        let flowering = if canopy.body == LEAVES_RED { 0.35 } else { 0.12 };
+        let b = book();
+        let flowering = if canopy.body == LEAVES_RED { b.bloom_red } else { b.bloom };
         if rng.next() < flowering {
             let speckle = if rng.next() < 0.6 { FLOWER_WHITE } else { FLOWER_PINK };
-            return canopy.speckled(speckle, rng.range(16.0, 36.0));
+            return canopy.speckled(speckle, rng.range(b.bloom_speckles[0], b.bloom_speckles[1]));
         }
         canopy
     }
@@ -500,19 +549,17 @@ impl Terrain {
     /// crown is a cluster of them with clefts between
     #[allow(clippy::too_many_arguments)]
     fn leafy(&self, x: f32, y: f32, base: f32, size: f32, form: Form, lean: [f32; 2], bark: u8, canopy: Canopy, rng: &mut Rng) -> Vec<Shape> {
-        let (height, spread, rise, lobe) = match form {
-            Form::Broad => (rng.range(2.0, 2.7), rng.range(2.9, 3.6), rng.range(0.22, 0.45), rng.range(1.45, 1.8)),
-            Form::Spreading => (rng.range(2.2, 3.0), rng.range(1.8, 2.6), rng.range(0.35, 0.8), rng.range(1.3, 1.7)),
-            Form::Upright => (rng.range(2.6, 3.4), rng.range(1.7, 2.3), rng.range(0.8, 1.2), rng.range(1.35, 1.65)),
-            Form::Blossom => (rng.range(1.8, 2.4), rng.range(1.8, 2.4), rng.range(0.25, 0.6), rng.range(1.0, 1.3)),
+        let book = book();
+        let f = match form {
+            Form::Broad => &book.broad,
+            Form::Spreading => &book.spreading,
+            Form::Upright => &book.upright,
+            Form::Blossom => &book.blossom,
         };
+        let (height, spread, rise, lobe) = (rng.range(f.height[0], f.height[1]), rng.range(f.spread[0], f.spread[1]), rng.range(f.rise[0], f.rise[1]), rng.range(f.lobe[0], f.lobe[1]));
         let (height, spread, lobe) = (height * size, spread * size, lobe * size);
-        let flat = match form {
-            Form::Blossom => 0.75,
-            Form::Broad => 0.78,
-            _ => 1.0,
-        };
-        let radius = if form == Form::Broad { rng.range(0.3, 0.4) } else { rng.range(0.22, 0.32) } * size;
+        let flat = f.flat;
+        let radius = rng.range(f.trunk[0], f.trunk[1]) * size;
         let bark = (bark, if bark == WOOD { DEAD_WOOD } else { AIR });
         let tilt = rng.range(0.0, 0.25);
         let tilt_angle = rng.range(0.0, TAU);
@@ -520,11 +567,11 @@ impl Terrain {
         let top = [x + (lean[0] + tilt_angle.cos() * tilt) * height, y + (lean[1] + tilt_angle.sin() * tilt) * height, base + height];
 
         let mut t = Parts::default();
-        self.trunk(&mut t.wood, foot, top, radius, 0.7, bark, if size > 0.7 { 4 + (rng.next() * 1.99) as usize } else { 0 }, rng);
+        self.trunk(&mut t.wood, foot, top, radius, f.taper, bark, if size > 0.7 { 4 + (rng.next() * 1.99) as usize } else { 0 }, rng);
 
         // Broad ones fork lower into more limbs, with more masses of leaves along them, so the dome
         // is full rather than a ring of them round an empty middle
-        let (limbs, low, along) = if form == Form::Broad { (5 + (rng.next() * 2.99) as usize, 0.7, 0.75) } else { (3 + (rng.next() * 2.99) as usize, 0.8, 0.4) };
+        let (limbs, low, along) = (f.limbs + (rng.next() * 2.99) as usize, f.fork, f.along);
         let spin = rng.range(0.0, TAU);
         let mut highest: f32 = top[2];
         for i in 0..limbs {
@@ -577,7 +624,7 @@ impl Terrain {
         }
         // Where the leaves have turned, as red or golden as the rest
         if rng.next() < smoothstep(-0.2, 0.4, autumn(&self.settings, x, y)) {
-            canopy = AUTUMN[[0, 2, 2, 3][(rng.next() * 3.99) as usize]];
+            canopy = autumns([0, 2, 2, 3][(rng.next() * 3.99) as usize]);
         }
 
         let mut t = Parts::default();
@@ -602,13 +649,20 @@ impl Terrain {
     /// Tall and slender with white bark, and small masses of light leaves close round its top half,
     /// with sky showing here and there between them
     fn birch(&self, x: f32, y: f32, base: f32, size: f32, rng: &mut Rng) -> Vec<Shape> {
+        // Now and then one bent well over, rolled on its own from where the rest are rolled from
+        let own = hash(rng.0 ^ 0xb1c4);
         let height = rng.range(6.0, 8.5) * size;
         let radius = rng.range(0.11, 0.16) * size.max(0.7);
-        let top = [x + rng.range(-0.4, 0.4), y + rng.range(-0.4, 0.4), base + height];
+        let mut top = [x + rng.range(-0.4, 0.4), y + rng.range(-0.4, 0.4), base + height];
+        if unit(own) < 0.2 {
+            let a = unit(own >> 16) * TAU;
+            top[0] += a.cos() * height * 0.15;
+            top[1] += a.sin() * height * 0.15;
+        }
         let mut t = Parts::default();
         self.trunk(&mut t.wood, [x, y, base], top, radius * 1.2, 0.35, (BIRCH_BARK, BARK_DARK), if size > 0.7 { 3 } else { 0 }, rng);
 
-        let canopy = if autumn(&self.settings, x, y) > 0.1 { AUTUMN[0] } else { GREENS[2] };
+        let canopy = if autumn(&self.settings, x, y) > 0.1 { autumns(0) } else { greens(2) };
         let branches = 6 + (rng.next() * 2.99) as usize;
         let spin = rng.range(0.0, TAU);
         let small = size.max(0.6);
@@ -673,10 +727,10 @@ impl Terrain {
     }
 
     /// A thick, short trunk with limbs arching out, each ending in a mass of leaves, from which
-    /// long curtains of leaves hang down nearly to the ground
-    pub(super) fn willow(&self, x: f32, y: f32, base: f32, rng: &mut Rng) -> Vec<Shape> {
-        let height = rng.range(2.4, 3.2);
-        let radius = rng.range(0.3, 0.42);
+    /// long curtains of leaves hang down nearly to the ground, `size` times as big as most
+    pub(super) fn willow(&self, x: f32, y: f32, base: f32, size: f32, rng: &mut Rng) -> Vec<Shape> {
+        let height = rng.range(2.4, 3.2) * size;
+        let radius = rng.range(0.3, 0.42) * size.max(0.8);
         let top = [x + rng.range(-0.4, 0.4), y + rng.range(-0.4, 0.4), base + height];
         let mut t = Parts::default();
         let mut strands = Vec::new();
@@ -687,9 +741,9 @@ impl Terrain {
         for i in 0..limbs {
             let angle = (i as f32 + rng.range(-0.3, 0.3)) / limbs as f32 * TAU;
             let dir = normalize([angle.cos(), angle.sin(), rng.range(0.5, 0.9)]);
-            let end = add(top, scale(dir, rng.range(1.6, 2.4)));
+            let end = add(top, scale(dir, rng.range(1.6, 2.4) * size));
             t.wood.push(Shape::wood(top, end, radius * 0.5, radius * 0.25, WOOD));
-            self.lobe(&mut t, end, rng.range(0.8, 1.1), 0.85, canopy, AIR, rng);
+            self.lobe(&mut t, end, rng.range(0.8, 1.1) * size.max(0.8), 0.85, canopy, AIR, rng);
 
             // Strands hanging down from round the mass at its end, drifting outwards a little,
             // with narrow leaves along them
@@ -720,12 +774,16 @@ impl Terrain {
     /// Spruces are narrow, their boughs drooping, firs broader and darker with level boughs. In the
     /// snow, snow lies along the top of each bough.
     fn conifer(&self, x: f32, y: f32, base: f32, spruce: bool, snowy: bool, rng: &mut Rng) -> Vec<Shape> {
+        // Rolled on their own, from where the rest are rolled from: the odd old giant, and some
+        // with fresher tips
+        let own = hash(rng.0 ^ 0xc0f1);
         let young = rng.next() < 0.15;
-        let size = if young { rng.range(0.4, 0.6) } else { rng.range(0.85, 1.15) };
+        let size = if young { rng.range(0.4, 0.6) } else { rng.range(0.85, 1.15) * if unit(own) < 0.07 { 1.3 } else { 1.0 } };
+        let fresh = unit(own >> 16) < 0.3;
         let (height, crown, droop, needles) = if spruce {
-            (rng.range(8.0, 13.0), rng.range(1.5, 2.0), 0.4, Canopy::new(PINE, PINE, LEAVES_DARK))
+            (rng.range(8.0, 13.0), rng.range(1.5, 2.0), 0.4, Canopy::new(PINE, PINE, if fresh { LEAVES } else { LEAVES_DARK }))
         } else {
-            (rng.range(7.0, 11.0), rng.range(2.0, 2.7), 0.15, Canopy::new(PINE, LEAVES_DARK, LEAVES))
+            (rng.range(7.0, 11.0), rng.range(2.0, 2.7), 0.15, Canopy::new(PINE, LEAVES_DARK, if fresh { LEAVES_LIME } else { LEAVES }))
         };
         let (height, crown) = (height * size, crown * size);
         let radius = rng.range(0.18, 0.26) * size.max(0.6);
@@ -891,7 +949,7 @@ impl Terrain {
         let flowering = rng.next() < meadow;
         let canopy = if flowering {
             let flower = [FLOWER_BLUE, FLOWER_PINK, FLOWER_WHITE, FLOWER_YELLOW][(rng.next() * 3.99) as usize];
-            GREENS[(rng.next() * 2.99) as usize].speckled(flower, rng.range(50.0, 80.0))
+            greens((rng.next() * 2.99) as usize).speckled(flower, rng.range(50.0, 80.0))
         } else if rng.next() < 0.35 {
             Canopy::new(LEAVES_DARK, LEAVES, FERN).speckled(FLOWER_RED, 22.0)
         } else {
@@ -915,9 +973,9 @@ impl Terrain {
         let patch = unit(hash3((x / 9.0).floor() as i32 as u32, (y / 9.0).floor() as i32 as u32, self.settings.seed ^ 0x5b0b));
         let pick = if rng.next() < 0.6 { patch } else { rng.next() };
         let mut canopy = if rng.next() < turned * 0.9 {
-            SHRUBS[[0, 0, 0, 1, 1, 2, 2, 3, 4][(pick * 8.99) as usize]]
+            shrubs([0, 0, 0, 1, 1, 2, 2, 3, 4][(pick * 8.99) as usize])
         } else {
-            [GREENS[2], SHRUBS[4], SHRUBS[3]][(pick * 2.99) as usize]
+            [greens(2), shrubs(4), shrubs(3)][(pick * 2.99) as usize]
         };
         // Red ones speckled pale, like the berries and the last of the blossom on them
         if canopy.body == LEAVES_RED && rng.next() < 0.6 {
@@ -1190,5 +1248,637 @@ pub(super) fn rock(shape: &Shape, moss: u8, p: Vec3, voxel: f32, h: u32) -> u8 {
         STONE
     } else {
         shape.material
+    }
+}
+
+// What trees are grown from, as assets\trees.json has it
+
+/// How the trees of the broad-leaved woods, their crowns and the shrubs under them are grown: each
+/// number as the code had it, unless assets\trees.json says otherwise. Read again when that's
+/// saved, for the strips of the world built after. Materials are ids, see assets\models\palette.txt.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct TreeBook {
+    /// What share of trees in each land, "woods", "jungle", "desert" and "snow", are hand-made
+    /// ones from assets\models\trees\<land>\, 0 to 1: none unless it's said
+    pub hand_made: std::collections::BTreeMap<String, f32>,
+    /// How likely each kind of broad-leaved tree is next to the others: a broad oak or maple and an
+    /// upright one more and less likely in groves, by how much, one in flower less likely where the
+    /// leaves have turned
+    pub kinds: KindWeights,
+    /// Of the broad-leaved trees, how many are young, and how big young and grown ones are next to
+    /// most
+    pub young: f32,
+    pub young_size: [f32; 2],
+    pub grown_size: [f32; 2],
+    pub broad: FormBook,
+    pub spreading: FormBook,
+    pub upright: FormBook,
+    pub blossom: FormBook,
+    /// The crowns' leaves, deep inside, the body and the tips: green ones, ones turned in autumn,
+    /// and the shrubs under trees whose leaves have turned
+    pub greens: [[u8; 3]; 3],
+    pub autumn: [[u8; 3]; 4],
+    pub shrubs: [[u8; 3]; 5],
+    /// How likely a crown's in flower, a red one and the rest, and how thick the blossom is, in
+    /// leaves of 256
+    pub bloom_red: f32,
+    pub bloom: f32,
+    pub bloom_speckles: [f32; 2],
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct KindWeights {
+    pub broad: [f32; 2],
+    pub upright: [f32; 2],
+    pub spreading: f32,
+    pub birch: f32,
+    pub blossom: [f32; 2],
+    pub poplar: f32,
+    pub willow: f32,
+}
+
+/// A form of broad-leaved tree: how tall its trunk is, how far its limbs reach and how steeply they
+/// rise, how big the masses of leaves at their ends are, in meters at its size, as ranges; how flat
+/// its crown is; how thick its trunk is and how much it tapers; how many limbs it has at the
+/// fewest, how far up the trunk they fork, from 0 to 1, and how likely a smaller mass of leaves
+/// partway along each is
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FormBook {
+    pub height: [f32; 2],
+    pub spread: [f32; 2],
+    pub rise: [f32; 2],
+    pub lobe: [f32; 2],
+    pub flat: f32,
+    pub trunk: [f32; 2],
+    pub taper: f32,
+    pub limbs: usize,
+    pub fork: f32,
+    pub along: f32,
+}
+
+impl Default for TreeBook {
+    fn default() -> Self {
+        let canopy = |c: Canopy| [c.inner, c.body, c.tip];
+        let form = |height, spread, rise, lobe, flat, trunk, limbs, fork, along| FormBook { height, spread, rise, lobe, flat, trunk, taper: 0.7, limbs, fork, along };
+        TreeBook {
+            hand_made: ["woods", "jungle", "desert", "snow"].iter().map(|l| (l.to_string(), 0.0)).collect(),
+            kinds: KindWeights { broad: [0.3, 0.35], upright: [0.38, -0.25], spreading: 0.06, birch: 0.07, blossom: [0.05, -0.04], poplar: 0.03, willow: 0.02 },
+            young: 0.12,
+            young_size: [0.45, 0.65],
+            grown_size: [0.8, 1.0],
+            broad: form([2.0, 2.7], [2.9, 3.6], [0.22, 0.45], [1.45, 1.8], 0.78, [0.3, 0.4], 5, 0.7, 0.75),
+            spreading: form([2.2, 3.0], [1.8, 2.6], [0.35, 0.8], [1.3, 1.7], 1.0, [0.22, 0.32], 3, 0.8, 0.4),
+            upright: form([2.6, 3.4], [1.7, 2.3], [0.8, 1.2], [1.35, 1.65], 1.0, [0.22, 0.32], 3, 0.8, 0.4),
+            blossom: form([1.8, 2.4], [1.8, 2.4], [0.25, 0.6], [1.0, 1.3], 0.75, [0.22, 0.32], 3, 0.8, 0.4),
+            greens: GREENS.map(canopy),
+            autumn: AUTUMN.map(canopy),
+            shrubs: SHRUBS.map(canopy),
+            bloom_red: 0.35,
+            bloom: 0.12,
+            bloom_speckles: [16.0, 36.0],
+        }
+    }
+}
+
+impl Default for KindWeights {
+    fn default() -> Self {
+        TreeBook::default().kinds
+    }
+}
+
+impl Default for FormBook {
+    fn default() -> Self {
+        TreeBook::default().broad
+    }
+}
+
+/// Where the trees' numbers are read from
+pub fn book_path() -> std::path::PathBuf {
+    crate::assets::root().parent().map_or_else(|| "trees.json".into(), |p| p.join("trees.json"))
+}
+
+/// The trees' numbers, and the hand-made trees of each land, as assets\trees.json and
+/// assets\models\trees have them, read once and again after reload_trees()
+struct Book {
+    numbers: TreeBook,
+    /// Each land's hand-made trees: the boxes each is made of, in meters from the middle of its foot
+    hand: std::collections::BTreeMap<String, Vec<Vec<([f32; 3], [f32; 3], u8)>>>,
+}
+
+static BOOK: std::sync::RwLock<Option<std::sync::Arc<Book>>> = std::sync::RwLock::new(None);
+
+/// Reads the trees' numbers and hand-made trees again as the next are grown, as when they've been
+/// saved
+pub fn reload_trees() {
+    *BOOK.write().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+fn the_book() -> std::sync::Arc<Book> {
+    if let Some(b) = BOOK.read().unwrap_or_else(|e| e.into_inner()).as_ref() {
+        return b.clone();
+    }
+    let numbers = if crate::assets::enabled() {
+        std::fs::read_to_string(book_path()).ok().and_then(|t| match serde_json::from_str::<TreeBook>(&t) {
+            Ok(b) => Some(b),
+            Err(e) => {
+                eprintln!("{}: {e}. Using the trees as the code has them.", book_path().display());
+                None
+            }
+        })
+    } else {
+        None
+    }
+    .unwrap_or_default();
+    let mut hand = std::collections::BTreeMap::new();
+    for (land, share) in &numbers.hand_made {
+        if *share > 0.0 {
+            hand.insert(land.clone(), hand_made_trees(land));
+        }
+    }
+    let book = std::sync::Arc::new(Book { numbers, hand });
+    *BOOK.write().unwrap_or_else(|e| e.into_inner()) = Some(book.clone());
+    book
+}
+
+fn book() -> TreeBookRef {
+    TreeBookRef(the_book())
+}
+
+struct TreeBookRef(std::sync::Arc<Book>);
+
+impl std::ops::Deref for TreeBookRef {
+    type Target = TreeBook;
+    fn deref(&self) -> &TreeBook {
+        &self.0.numbers
+    }
+}
+
+/// The hand-made trees of `land`, each .vox in assets\models\trees\<land>\, as boxes of a material
+/// in meters from the middle of the bottom of its file, or from its pivot if a .json beside it
+/// says where that is
+fn hand_made_trees(land: &str) -> Vec<Vec<([f32; 3], [f32; 3], u8)>> {
+    let dir = crate::assets::root().join("trees").join(land);
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Vec::new() };
+    let mut out = Vec::new();
+    let mut paths: Vec<std::path::PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("vox"))).collect();
+    paths.sort();
+    for path in paths {
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let Ok(file) = crate::vox::read(&bytes) else { continue };
+        let g = &file.grid;
+        let map = crate::assets::material_map_of(&file.palette);
+        let vpm = 16.0;
+        let middle = [g.size[0] as f32 * 0.5, g.size[1] as f32 * 0.5, 0.0];
+        // Runs along x of one material, then those alike in rows after one another joined
+        let mut boxes: Vec<([u32; 3], [u32; 3], u8)> = Vec::new();
+        for z in 0..g.size[2] {
+            let mut rows: Vec<(u32, u32, u32, u8, u32)> = Vec::new();
+            for y in 0..g.size[1] {
+                let mut x = 0;
+                while x < g.size[0] {
+                    let m = map[g.get([x, y, z]) as usize];
+                    if m == AIR {
+                        x += 1;
+                        continue;
+                    }
+                    let start = x;
+                    while x < g.size[0] && map[g.get([x, y, z]) as usize] == m {
+                        x += 1;
+                    }
+                    if let Some(r) = rows.iter_mut().find(|r| r.0 == start && r.1 == x && r.3 == m && r.2 + r.4 == y) {
+                        r.4 += 1;
+                    } else {
+                        rows.push((start, x, y, m, 1));
+                    }
+                }
+            }
+            boxes.extend(rows.into_iter().map(|(x0, x1, y, m, h)| ([x0, y, z], [x1, y + h, z + 1], m)));
+        }
+        let to_m = |v: [u32; 3]| [0, 1, 2].map(|a| (v[a] as f32 - middle[a]) / vpm);
+        out.push(boxes.into_iter().map(|(lo, hi, m)| (to_m(lo), to_m(hi), m)).collect());
+    }
+    out
+}
+
+/// A hand-made tree for `land` at `x`, `y` on ground `base` meters high, as many in every hundred
+/// of its trees as assets\trees.json says, picked by `r`; None for one grown the usual way. Rolled
+/// on its own, so the trees grown the usual way are just as they would be.
+fn hand_made(land: &str, x: f32, y: f32, base: f32, r: u32) -> Option<Vec<Shape>> {
+    let book = the_book();
+    let share = book.numbers.hand_made.get(land).copied().unwrap_or(0.0);
+    if share <= 0.0 {
+        return None;
+    }
+    let trees = book.hand.get(land).filter(|t| !t.is_empty())?;
+    let pick = |salt: u32| hash(r ^ salt) as f32 / u32::MAX as f32;
+    if pick(0x6a11) >= share {
+        return None;
+    }
+    let tree = &trees[(pick(0x3c55) * trees.len() as f32) as usize % trees.len()];
+    // Turned a quarter at a time, so its voxels stay on the world's
+    let turn = (pick(0x51d0) * 4.0) as u32 % 4;
+    let spin = |p: [f32; 3]| match turn {
+        0 => p,
+        1 => [-p[1], p[0], p[2]],
+        2 => [-p[0], -p[1], p[2]],
+        _ => [p[1], -p[0], p[2]],
+    };
+    Some(
+        tree.iter()
+            .map(|(lo, hi, m)| {
+                let (a, b) = (spin(*lo), spin(*hi));
+                let lo = [a[0].min(b[0]) + x, a[1].min(b[1]) + y, lo[2] + base];
+                let hi = [a[0].max(b[0]) + x, a[1].max(b[1]) + y, hi[2] + base];
+                Shape::block(lo, hi, *m, AIR)
+            })
+            .collect(),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A hash of the trees, bushes, dead wood and rocks grown at many spots, every number of every
+    /// shape of them: so a change to how they're grown, or to where their numbers come from, shows
+    pub(crate) fn grown_hash() -> u64 {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 4, seed: 1, grass_tufts: false };
+        let (terrain, _) = generate_terrain(&settings, [0, 0], &RiverCache::default());
+        let mut h = 0xcbf2_9ce4_8422_2325u64;
+        let mut eat = |v: f32| {
+            h = (h ^ v.to_bits() as u64).wrapping_mul(0x0100_0000_01b3);
+        };
+        let mut objects = Vec::new();
+        for i in 0..400u32 {
+            // Spots all over the landscape, near and far, in every kind of land
+            let (x, y) = ((i % 20) as f32 * 97.3 - 600.0, (i / 20) as f32 * 89.1 - 700.0);
+            let base = 20.0 + (i % 7) as f32;
+            let r = i.wrapping_mul(0x9e37_79b9);
+            objects.push(terrain.wild_tree(x, y, base, r));
+            objects.push(terrain.tree(x, y, base, r ^ 1));
+            objects.push(terrain.bush(x, y, base, 0.5, 0.5, r ^ 2));
+            objects.extend(terrain.deadwood(x, y, base, r ^ 3));
+            objects.push(terrain.mossy_rock(x, y, base, i % 2 == 0, MOSS, r ^ 4));
+        }
+        for o in &objects {
+            for s in &o.shapes {
+                for v in s.a.iter().chain(&s.b).chain(&[s.radius_a, s.radius_b]) {
+                    eat(*v);
+                }
+                if let Some((axes, half)) = &s.flat {
+                    for v in axes.iter().flatten().chain(half) {
+                        eat(*v);
+                    }
+                }
+                if let Some(half) = &s.boxed {
+                    for v in half {
+                        eat(*v);
+                    }
+                }
+                eat(s.material as f32);
+                eat(s.accent as f32);
+            }
+        }
+        h
+    }
+
+    /// The newer kinds of tree placed over a square `side` meters across round `at` of the land of
+    /// `seed`, as the world's built: each, and where its foot is, in meters
+    fn grown_in(seed: u32, at: [f32; 2], side: u32) -> Vec<(Species, [f32; 2])> {
+        grown_with_height(seed, at, side).into_iter().map(|(s, p, _)| (s, p)).collect()
+    }
+
+    /// The same, with how high each reaches over its foot
+    fn grown_with_height(seed: u32, at: [f32; 2], side: u32) -> Vec<(Species, [f32; 2], f32)> {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 2, seed, grass_tufts: false };
+        let origin = at.map(|v| ((v - side as f32 * 0.5) * 2.0).floor() as i64);
+        let terrain = place_for(&settings, origin, [side * 2, side * 2], &RiverCache::default());
+        terrain
+            .objects
+            .iter()
+            .filter_map(|o| {
+                let (species, foot) = o.species?;
+                terrain.inside(foot[0], foot[1]).then(|| (species, foot, o.max[2] - height_at(&settings, foot[0], foot[1])))
+            })
+            .collect()
+    }
+
+    /// Each of the newer kinds of tree grows where it belongs, and only there: the jungle's giants
+    /// in the jungle, Joshua trees in the desert and baobabs at its edge, larches and snags among the
+    /// pines and in the snow, oaks, beeches and maples in the milder woods, cypresses by the rivers,
+    /// mangroves on the Sunken Reach's shores, the dreaming realm's in its halves and rime trees in
+    /// the frozen realm
+    #[test]
+    fn new_kinds_grow_in_their_lands() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 2, seed: 1, grass_tufts: false };
+        let mut found: std::collections::HashMap<Species, usize> = Default::default();
+        for (seed, at) in sample_spots() {
+            let s = TerrainSettings { seed, ..settings };
+            let land = land_of(seed);
+            for (species, [x, y]) in grown_in(seed, at, 320) {
+                *found.entry(species).or_default() += 1;
+                let c = climate(&s, x, y);
+                let fits = match species {
+                    Species::Kapok | Species::Banyan => c.jungle > 0.4,
+                    Species::Joshua => c.desert > 0.4,
+                    Species::Baobab => c.desert > 0.05 && c.desert < 0.6,
+                    Species::Rime => c.snow > 0.4,
+                    Species::Snag | Species::Larch => land == Land::Normal || land == Land::Ice || land == Land::Sky,
+                    Species::Mangrove => c.desert + c.jungle > 0.15 || land == Land::Water,
+                    Species::Dreambloom => land == Land::Dream && dream_blood(x, y) < 0.5,
+                    Species::Bloodthorn => land == Land::Dream && dream_blood(x, y) > 0.5,
+                    Species::Oak | Species::Beech | Species::Maple | Species::Cypress => c.jungle.max(c.desert).max(c.snow) < 0.6 && land != Land::Dream,
+                };
+                assert!(fits, "a {} at {x:.0}, {y:.0} of {land:?} land, {:.2} jungle, {:.2} desert, {:.2} snow", species.name(), c.jungle, c.desert, c.snow);
+            }
+        }
+        println!("{:?}", found);
+        for species in Species::ALL {
+            assert!(found.get(&species).is_some_and(|&n| n > 0), "no {} anywhere: {found:?}", species.name());
+        }
+    }
+
+    /// Where one of each of the newer kinds stands, and how many there are in all, for looking at
+    /// them in the game with `--set at=x,y --set view_tree=1`: `cargo test --release tree_spots --
+    /// --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn tree_spots() {
+        // A few of each, the biggest first, out in the land they belong to
+        let mut each: std::collections::BTreeMap<String, Vec<(f32, String)>> = Default::default();
+        for (seed, at) in sample_spots() {
+            for (species, [x, y], high) in grown_with_height(seed, at, 320) {
+                each.entry(species.name().to_string()).or_default().push((high, format!("{seed:#x} {x:.1},{y:.1} {high:.1} m")));
+            }
+        }
+        for (name, mut spots) in each {
+            spots.sort_by(|a, b| b.0.total_cmp(&a.0));
+            println!("{name} ({}): {}", spots.len(), spots.iter().take(4).map(|s| s.1.clone()).collect::<Vec<_>>().join("; "));
+            // And all of them, with `TREE_SPOTS=1`
+            if std::env::var("TREE_SPOTS").is_ok() {
+                for (_, s) in &spots {
+                    println!("spot {name}: {s}");
+                }
+            }
+        }
+    }
+
+    /// Views of one of each of the newer kinds round `TREE_VIEWS=seed,x,y`, for `--script tour`: a
+    /// grown one near there, from whichever of sixteen ways round it has the fewest other things
+    /// between it and the eye, far enough off to see all of it, the eye a little up: `cargo test
+    /// --release tree_views -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn tree_views() {
+        let Ok(asked) = std::env::var("TREE_VIEWS") else { return };
+        let n: Vec<f32> = asked.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+        let seed = asked.split(',').next().and_then(|s| s.trim().strip_prefix("0x").map_or_else(|| s.trim().parse().ok(), |h| u32::from_str_radix(h, 16).ok())).unwrap();
+        let at = [n[n.len() - 2], n[n.len() - 1]];
+        // At the game's own size of voxel, so what grows where is just as it is there
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 16, seed, grass_tufts: false };
+        let origin = at.map(|v| ((v - 100.0) * 16.0).floor() as i64);
+        let terrain = place_for(&settings, origin, [3200, 3200], &RiverCache::default());
+        let sea = sea_level_m(&settings);
+        let tall = |o: &Object| o.max[2] - height_at(&settings, (o.min[0] + o.max[0]) * 0.5, (o.min[1] + o.max[1]) * 0.5) > 2.5;
+        let mut views = Vec::new();
+        for species in Species::ALL {
+            let mut found: Vec<(&Object, [f32; 2], f32)> = terrain.objects.iter().filter_map(|o| o.species.filter(|s| s.0 == species).map(|(_, f)| (o, f, o.max[2] - height_at(&settings, f[0], f[1])))).filter(|(_, f, _)| (f[0] - at[0]).abs() < 85.0 && (f[1] - at[1]).abs() < 85.0).collect();
+            if found.is_empty() {
+                continue;
+            }
+            // Grown, not the biggest nor a sapling, standing as clear of other trees as any
+            found.sort_by(|a, b| a.2.total_cmp(&b.2));
+            let grown = &found[found.len() / 3..(found.len() * 5 / 6).max(found.len() / 3 + 1)];
+            let crowded = |o: &Object, foot: [f32; 2], r: f32| terrain.objects.iter().filter(|p| !std::ptr::eq(*p, o) && tall(p) && p.max[0] > foot[0] - r && p.min[0] < foot[0] + r && p.max[1] > foot[1] - r && p.min[1] < foot[1] + r).count();
+            let &(subject, foot, high) = grown.iter().min_by_key(|g| crowded(g.0, g.1, 9.0)).unwrap();
+            let ground = height_at(&settings, foot[0], foot[1]);
+            let target = [foot[0], foot[1], ground + high * 0.5];
+            let far = (high * 1.3).max((subject.max[0] - subject.min[0]).max(subject.max[1] - subject.min[1]) * 1.2).max(8.0) + 3.0;
+            let mut best: Option<(usize, String)> = None;
+            for k in 0..16 {
+                let a = k as f32 / 16.0 * TAU;
+                let eye_xy = [foot[0] + a.cos() * far, foot[1] + a.sin() * far];
+                let eye_ground = height_at(&settings, eye_xy[0], eye_xy[1]);
+                let up = (high * 0.4).clamp(2.0, 10.0);
+                let eye = [eye_xy[0], eye_xy[1], eye_ground.max(sea) + up];
+                let blocked = (1..24)
+                    .map(|i| lerp3(eye, target, i as f32 / 24.0))
+                    .filter(|p| p[2] < height_at(&settings, p[0], p[1]) || terrain.objects.iter().any(|o| !std::ptr::eq(o, subject) && (0..3).all(|j| p[j] > o.min[j] && p[j] < o.max[j])))
+                    .count()
+                    + (eye_ground < sea + 0.3) as usize * 6;
+                let d = sub(target, eye);
+                let pitch = d[2].atan2(d[0].hypot(d[1])).to_degrees();
+                // Not looking steeply up or down a slope at it
+                let blocked = blocked + if pitch.abs() > 15.0 { 8 } else { 0 };
+                let view = format!("{:.1},{:.1},{:.1},{:.0},{pitch:.0}", eye[0], eye[1], up, d[1].atan2(d[0]).to_degrees());
+                if best.as_ref().is_none_or(|b| blocked < b.0) {
+                    best = Some((blocked, view));
+                }
+            }
+            let (blocked, view) = best.unwrap();
+            println!("{}: at {:.1},{:.1}, {high:.1} m high, {blocked} of 23 blocked: {view}", species.name(), foot[0], foot[1]);
+            views.push(view);
+        }
+        println!("tour={}", views.join(";"));
+    }
+
+    /// Squares of land to look for each kind of tree in, a seed and a middle: the jungle, the
+    /// desert, its edge, the snow and the milder woods, the widest river near the start, and the
+    /// realms' lands
+    fn sample_spots() -> Vec<(u32, [f32; 2])> {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 2, seed: 1, grass_tufts: false };
+        let mut spots: Vec<(u32, [f32; 2])> = ["jungle", "desert", "snow", "autumn", "temperate"].iter().filter_map(|k| find_climate(&settings, k, [160.0, 160.0])).map(|at| (1, at)).collect();
+        // The edge of the desert, out from its middle
+        let desert = find_climate(&settings, "desert", [160.0, 160.0]).unwrap();
+        let edge = (1..80).map(|k| [desert[0] + k as f32 * 16.0, desert[1]]).find(|p| {
+            let c = climate(&settings, p[0], p[1]);
+            c.desert > 0.2 && c.desert < 0.4 && c.jungle < 0.2
+        });
+        spots.extend(edge.map(|e| (1, e)));
+        let finder = Terrain::around(&settings, [0.0; 2], [1.0; 2]);
+        spots.extend(finder.widest_river_near([112.0, 112.0], &RiverCache::default()).map(|r| (1, r)));
+        // The realms': the dreaming realm's either side of its divide, the frozen realm and the
+        // Sunken Reach's islands
+        spots.push((0xF200_0001, [120.0, 100.0]));
+        spots.push((0xF200_0001, [400.0, 100.0]));
+        spots.push((0xF300_0001, [112.0, 112.0]));
+        let reach = TerrainSettings { seed: 0xF400_0001, ..settings };
+        let island = (0..400).map(|k| [(k % 20) as f32 * 40.0, (k / 20) as f32 * 40.0]).find(|p| height_at(&reach, p[0], p[1]) > sea_level_m(&reach) + 1.0).unwrap();
+        spots.push((0xF400_0001, island));
+        spots
+    }
+
+    /// The trees placed over a square are the same whichever strips round it were placed first, as
+    /// the world's built a strip at a time: each by itself, from where it is
+    #[test]
+    fn new_kinds_grow_the_same_in_any_order() {
+        let settings = TerrainSettings { width_m: 64, height_m: 64, voxels_per_meter: 2, seed: 1, grass_tufts: false };
+        let at = find_climate(&settings, "autumn", [160.0, 160.0]).unwrap();
+        let near = |list: Vec<(Species, [f32; 2])>| {
+            let mut kept: Vec<String> = list.into_iter().filter(|(_, p)| (p[0] - at[0]).abs() < 40.0 && (p[1] - at[1]).abs() < 40.0).map(|(s, p)| format!("{s:?} {:.3} {:.3}", p[0], p[1])).collect();
+            kept.sort();
+            kept
+        };
+        let one = near(grown_in(1, at, 128));
+        let left = grown_in(1, [at[0] - 40.0, at[1]], 128);
+        let right = grown_in(1, [at[0] + 40.0, at[1]], 128);
+        let mut both: Vec<(Species, [f32; 2])> = right.into_iter().chain(left).collect();
+        both.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+        let mut two = near(both);
+        two.dedup();
+        assert!(!one.is_empty());
+        assert_eq!(one, two);
+        // And each grown twice comes out the same
+        let (terrain, _) = generate_terrain(&TerrainSettings { width_m: 16, voxels_per_meter: 4, ..settings }, [0, 0], &RiverCache::default());
+        for species in Species::ALL {
+            let a = terrain.grow_species(species, at[0], at[1], 30.0, 77, true);
+            let b = terrain.grow_species(species, at[0], at[1], 30.0, 77, true);
+            assert_eq!(a.shapes.len(), b.shapes.len());
+            assert!(a.shapes.iter().zip(&b.shapes).all(|(p, q)| p.a == q.a && p.b == q.b && p.radius_a == q.radius_a && p.material == q.material), "{}", species.name());
+        }
+    }
+
+    /// Grows a tree with `grow` at a spot of the milder lands, in a world of its own at the game's
+    /// size of voxel, fells it as the game does and takes it out of the world: how it came down, how
+    /// many voxels it was, and how many of wood, leaves, blossom, moss or snow are left over a meter
+    /// above its foot, hanging in the air
+    fn felled(grow: &dyn Fn(&Terrain, f32, f32, f32) -> Object) -> (crate::felling::Kind, usize, usize) {
+        use crate::gather::{is_trunk, tree_at};
+        let settings = TerrainSettings { width_m: 32, height_m: 64, voxels_per_meter: 16, seed: 1, grass_tufts: false };
+        let at = find_climate(&TerrainSettings { voxels_per_meter: 2, ..settings }, "temperate", [160.0, 160.0]).unwrap();
+        let n = 24 * 16;
+        let origin = at.map(|v| (((v - 12.0) * 16.0) as i64).div_euclid(8) * 8);
+        let heights = Heights::new(&settings, origin, [n, n], 16);
+        let mut terrain = Terrain::new(&settings, &heights);
+        let (cx, cy) = (n as i64 / 2, n as i64 / 2);
+        let (x, y) = ((origin[0] + cx) as f32 / 16.0 + 0.5 / 16.0, (origin[1] + cy) as f32 / 16.0 + 0.5 / 16.0);
+        let column = terrain.column(&heights, cx, cy);
+        let ground = (column.height + 1) as f32 / 16.0;
+        let object = grow(&terrain, x, y, ground);
+        let (lo, hi) = (object.min, object.max);
+        // The land as it'd be with no tree, to tell what's left of the tree from what grows there
+        terrain.index_objects();
+        let bare = terrain.build_from(&heights, 0, settings.size()[2]);
+        terrain.objects = vec![object];
+        terrain.index_objects();
+        let mut world = terrain.build_from(&heights, 0, settings.size()[2]);
+        let foot = column.height as i64 + 1;
+        let hit = (foot..foot + 48).find(|&z| is_trunk(world.material_at(cx, cy, z))).map(|z| [cx, cy, z]).expect("a trunk over its foot");
+        let start = std::time::Instant::now();
+        let tree = tree_at(&world, hit, &|_| false).unwrap_or_else(|| {
+            let round: Vec<u8> = (hit[2] - 3..hit[2] + 3).map(|z| world.material_at(cx, cy, z)).collect();
+            panic!("no tree to fell at {hit:?}, its foot at {foot}, {round:?} under and over where it was hit")
+        });
+        println!("  found it to fell in {:.1} ms", start.elapsed().as_secs_f64() * 1000.0);
+        let plan = crate::felling::plan(&world, tree, None, nalgebra::Vector3::x());
+        let (kind, size) = (plan.kind, plan.size);
+        for (b, list) in &plan.cut {
+            let mut brick = crate::bases::read_brick(&world, *b);
+            for &k in list {
+                brick[k] = AIR;
+            }
+            world.set_brick(*b, &brick);
+        }
+        let to = |v: f32, i: usize| ((v * 16.0) as i64 - origin[i]).clamp(0, n as i64 - 1);
+        let mut left = 0;
+        let mut what: std::collections::BTreeMap<u8, (usize, i64, i64)> = Default::default();
+        for vy in to(lo[1], 1)..=to(hi[1], 1) {
+            for vx in to(lo[0], 0)..=to(hi[0], 0) {
+                for z in foot + 16..(hi[2] * 16.0) as i64 + 2 {
+                    let m = world.material_at(vx, vy, z);
+                    if m != AIR && m != bare.material_at(vx, vy, z) {
+                        left += 1;
+                        let d = ((vx - cx).pow(2) + (vy - cy).pow(2)).isqrt();
+                        let e = what.entry(m).or_insert((0, i64::MAX, 0));
+                        *e = (e.0 + 1, e.1.min(z - foot), e.2.max(d));
+                    }
+                }
+            }
+        }
+        if left > 0 {
+            println!("  left, by material: (count, lowest over its foot, furthest out) {what:?}");
+        }
+        (kind, size, left)
+    }
+
+    /// Every kind of tree comes down whole when it's felled, leaves, blossom, moss and the snow on
+    /// its boughs and all, the biggest of each too, and falls its own way: a Joshua tree swaying back
+    /// like a palm, a snag snapping off over its stump, the grey-barked beech and kapok as any other.
+    /// A stray voxel or so where the tip of a twig has parted from it is let be.
+    #[test]
+    fn every_kind_comes_down_whole() {
+        const STRAY: usize = 3;
+        use crate::felling::Kind;
+        let oldest = (0..400u32).max_by(|&a, &b| kinds::age(a).total_cmp(&kinds::age(b))).unwrap();
+        let mut failed = Vec::new();
+        for species in Species::ALL {
+            for r in [oldest, 5] {
+                let (kind, size, left) = felled(&|t, x, y, g| {
+                    let mut o = t.grow_species(species, x, y, g, r, true);
+                    // In the snow, as larches and snags are, with snow on them
+                    if matches!(species, Species::Larch | Species::Snag) {
+                        let mut rng = Rng(r);
+                        let shapes = if species == Species::Larch { t.larch(x, y, g, kinds::age(r), true, &mut rng) } else { t.snag(x, y, g, kinds::age(r), true, &mut rng) };
+                        o = Object::new(shapes, rng.0);
+                    }
+                    o
+                });
+                let want = match species {
+                    Species::Joshua => Kind::Palm,
+                    Species::Snag => Kind::Dead,
+                    _ => Kind::Broad,
+                };
+                println!("{} ({:.2}): {size} voxels, {left} left, {kind:?}", species.name(), kinds::age(r));
+                if left > STRAY || kind != want {
+                    failed.push(format!("{} grown from {r}: {left} voxels left hanging of {size}, coming down {kind:?}", species.name()));
+                }
+            }
+        }
+        // And the older kinds: the woods' broad-leaved trees, pines in the snow, willows, palms and
+        // the jungle's giants
+        let older: [(&str, &dyn Fn(&Terrain, f32, f32, f32) -> Object); 6] = [
+            ("broad-leaved", &|t, x, y, g| t.wild_tree(x, y, g, 3)),
+            ("broad-leaved", &|t, x, y, g| t.wild_tree(x, y, g, 11)),
+            ("snowy pine", &|t, x, y, g| {
+                let mut rng = Rng(9);
+                Object::new(t.conifer(x, y, g, true, true, &mut rng), rng.0)
+            }),
+            ("willow", &|t, x, y, g| {
+                let mut rng = Rng(4);
+                Object::new(t.willow(x, y, g, 1.2, &mut rng), rng.0)
+            }),
+            ("ancient", &|t, x, y, g| {
+                let mut rng = Rng(6);
+                Object::new(t.ancient(x, y, g, &mut rng), rng.0)
+            }),
+            ("jungle giant", &|t, x, y, g| {
+                let mut rng = Rng(8);
+                Object::new(t.jungle_tree(x, y, g, &mut rng), rng.0)
+            }),
+        ];
+        for (name, grow) in older {
+            let (kind, size, left) = felled(grow);
+            println!("{name}: {size} voxels, {left} left, {kind:?}");
+            if left > STRAY {
+                failed.push(format!("{name}: {left} voxels left hanging of {size}"));
+            }
+        }
+        assert!(failed.is_empty(), "{}", failed.join("\n"));
+    }
+
+    /// Trees grow as they always have, whatever their numbers are read from: their numbers as the
+    /// code has them, and written to assets\trees.json and read back
+    #[test]
+    fn trees_grow_as_they_did() {
+        let h = grown_hash();
+        println!("trees grown: {h:016x}");
+        assert_eq!(h, 0x476f_68e3_2e50_48bb, "the trees grown changed");
+        let book = TreeBook::default();
+        let back: TreeBook = serde_json::from_str(&serde_json::to_string_pretty(&book).unwrap()).unwrap();
+        assert_eq!(back, book);
+        // The file the game ships with is the code's numbers
+        let shipped: TreeBook = serde_json::from_str(&std::fs::read_to_string(book_path()).unwrap()).unwrap();
+        assert_eq!(shipped, book, "assets\\trees.json isn't the code's numbers");
     }
 }

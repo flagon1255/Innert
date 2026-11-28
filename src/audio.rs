@@ -1,7 +1,8 @@
 //! Sound: swings, bowstrings, spells and hits, beasts growling and bones rattling, footsteps on
-//! whatever's underfoot, birds, and the wind and water all around. Every sound is a recording,
-//! kept compressed in assets\sounds and built into the program; see CREDITS.txt there for where
-//! each came from. They're decoded on a thread of their own as soon as the game starts, so they're
+//! whatever's underfoot, birds, and the wind and water all around. Every sound but one is a
+//! recording, kept compressed in assets\sounds and built into the program; see CREDITS.txt there
+//! for where each came from. The one that isn't, the soft run of plucked strings when something
+//! good comes, is made here, see plucked(). They're decoded on a thread of their own as soon as the game starts, so they're
 //! ready long before the menu is. Sounds out in the world are quieter and duller further away and
 //! come from their side. Everything is mixed together and goes out through a limiter, so however
 //! much happens at once it never clips.
@@ -92,6 +93,9 @@ pub enum Sound {
     Creak,
     /// Ice or stone cracking, or a whip
     Crack,
+    /// A whip's crack and only that, sharp and clean: a flail's chain snapping straight behind its
+    /// head
+    WhipCrack,
     /// One beat of a great leathery wing
     Flap,
     /// A spider or a snake hissing
@@ -112,8 +116,19 @@ pub enum Sound {
     Skitter,
     /// An attack rushing just past the ear
     Dodge,
-    /// A gun going off: a crack, a boom, and the roll of it dying away
-    Gunshot,
+    /// A pistol going off: a tight, snappy crack, over quickly
+    Pistol,
+    /// A musket going off: a sharp crack, the powdery blast of its charge, and a short echo coming
+    /// back off the hills
+    Musket,
+    /// A blunderbuss going off: a wide, coarse blast, a crackle of powder under it
+    Blunderbuss,
+    /// A hand cannon going off: a deep, heavy boom with a low thump under it, rolling away a long
+    /// while after
+    Cannon,
+    /// A shell, bomb or keg bursting: black powder going up with a crackle and a deep thump, the
+    /// boom rolling away
+    Shellburst,
     /// A crossbow loosed: its prod slamming forward and the string's slap
     Release,
     /// One click of a windlass's ratchet, or of a bolt dropped into a magazine
@@ -204,6 +219,19 @@ pub enum Sound {
     Thorns,
     /// Coins: gold picked up, paid or taken
     Coins,
+    /// An axe biting into a trunk, a pick on rock, and a spade into earth or clay, see gather.rs
+    Chop,
+    Mine,
+    Dig,
+    /// A tree coming down: its wood groaning, then crashing apart
+    Timber,
+    /// A block set in place, or taken down, see bases.rs
+    Place,
+    DoorOpen,
+    DoorClose,
+    /// Something beating on a door, and a door giving way, splitting into pieces
+    Bang,
+    Splinter,
     /// The wind blowing all around, looped, see Audio::ambience()
     Wind,
     /// Water lapping nearby, looped, see Audio::ambience()
@@ -321,7 +349,48 @@ fn decode_all(threads: usize) -> Library {
             library.entry(sound).or_default().push(clip);
         }
     }
+    library.insert(Sound::Fanfare, (0..PLUCKED.len()).map(|k| finish(Sound::Fanfare, plucked(k), PLUCKED_GAIN)).collect());
     library
+}
+
+/// The notes of the gentle run played when something good comes, in hertz, one run each: a harp
+/// plucked up through a major chord, rather than a war horn blown
+const PLUCKED: [&[f32]; 2] = [&[392.0, 523.25, 659.26, 783.99], &[523.25, 659.26, 783.99, 1046.5]];
+
+/// How loud the plucked runs are, soft beside the sounds of a fight
+const PLUCKED_GAIN: f32 = 0.55;
+
+/// Seconds between one string plucked and the next, and how long the last rings on
+const PLUCK_STEP: f32 = 0.085;
+const PLUCK_RING: f32 = 1.5;
+
+/// Run `k` of PLUCKED, -1 to 1: each string a few soft harmonics dying away, the higher ones
+/// sooner, so it starts bright and mellows, plucked gently rather than struck
+fn plucked(k: usize) -> Vec<f32> {
+    let notes = PLUCKED[k];
+    let length = ((notes.len() - 1) as f32 * PLUCK_STEP + PLUCK_RING) * RATE as f32;
+    let mut samples = vec![0.0f32; length as usize];
+    let harmonics = [1.0, 0.42, 0.2, 0.1, 0.05];
+    for (n, &pitch) in notes.iter().enumerate() {
+        let start = (n as f32 * PLUCK_STEP * RATE as f32) as usize;
+        // The last string a little louder and longer, the run coming to rest on it
+        let last = n == notes.len() - 1;
+        let (loud, ring) = if last { (1.0, 0.9) } else { (0.8, 0.55) };
+        for (t, s) in samples[start..].iter_mut().enumerate() {
+            let time = t as f32 / RATE as f32;
+            // A few milliseconds to sound, so the pluck is soft
+            let attack = (time / 0.006).min(1.0);
+            let mut v = 0.0;
+            for (h, &a) in harmonics.iter().enumerate() {
+                let h = h as f32 + 1.0;
+                v += a * (2.0 * PI * pitch * h * time).sin() * (-time * h.powf(0.7) / ring).exp();
+            }
+            *s += loud * attack * v;
+        }
+    }
+    let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs()));
+    samples.iter_mut().for_each(|s| *s /= peak.max(1e-6));
+    samples
 }
 
 /// Lets the thread it's called on give way to others that are busy
@@ -420,6 +489,18 @@ fn muffle(meters: f32) -> f32 {
     }
     let cutoff = (20000.0 / (1.0 + (meters - 10.0) / 12.0)).max(2000.0);
     1.0 - (-2.0 * PI * cutoff / RATE as f32).exp()
+}
+
+/// How much further than most a sound carries: a cannon's boom and a shell bursting are heard a
+/// long way off, dull and rolling as the air takes the top off them, a musket's or blunderbuss's
+/// crack further than a footstep. 1 for most.
+fn carry(sound: Sound) -> f32 {
+    match sound {
+        Sound::Cannon | Sound::Shellburst => 3.0,
+        Sound::Musket | Sound::Blunderbuss => 2.0,
+        Sound::Pistol => 1.5,
+        _ => 1.0,
+    }
 }
 
 /// The whole mix on its way out, brought down smoothly whenever it would go past CEILING, so that
@@ -571,7 +652,7 @@ impl Audio {
         if let Some(at) = cue.at {
             let to = at - view.eye;
             meters = (to.norm() / view.vpm) as f32;
-            volume /= 1.0 + meters / 5.0;
+            volume /= 1.0 + meters / (5.0 * carry(cue.sound));
             if meters > 0.1 {
                 let right = view.rotation * Vector3::x();
                 pan = (to.normalize().dot(&right) as f32).clamp(-1.0, 1.0) * 0.8;
@@ -643,6 +724,13 @@ impl Audio {
     }
 }
 
+/// Whether `sound` has a recording that decodes, for other modules' tests to check what they play
+/// will be heard
+#[cfg(test)]
+pub fn recorded(sound: Sound) -> bool {
+    RECORDINGS.iter().any(|&(s, bytes, _)| s == sound && decode(bytes).is_some_and(|samples| !samples.is_empty()))
+}
+
 /// Every recording: what it's the sound of, the file, and how much louder or quieter to play it so
 /// all the sounds sit together. A sound with more than one is played as one of them at random.
 /// The files are made by trimming, layering and evening out the recordings credited in
@@ -685,6 +773,9 @@ static RECORDINGS: &[(Sound, &[u8], f32)] = &[
     (Sound::Crack, include_bytes!("../assets/sounds/crack_2.ogg"), 0.72),
     (Sound::Crack, include_bytes!("../assets/sounds/crack_3.ogg"), 1.94),
     (Sound::Crack, include_bytes!("../assets/sounds/crack_4.ogg"), 1.55),
+    // The two of the cracks made from whips' cracks, see CREDITS.txt
+    (Sound::WhipCrack, include_bytes!("../assets/sounds/crack_1.ogg"), 0.75),
+    (Sound::WhipCrack, include_bytes!("../assets/sounds/crack_2.ogg"), 0.72),
     (Sound::Draw, include_bytes!("../assets/sounds/draw_1.ogg"), 1.98),
     (Sound::Twang, include_bytes!("../assets/sounds/twang_1.ogg"), 2.00),
     (Sound::Twang, include_bytes!("../assets/sounds/twang_2.ogg"), 2.14),
@@ -715,9 +806,18 @@ static RECORDINGS: &[(Sound, &[u8], f32)] = &[
     (Sound::Chain, include_bytes!("../assets/sounds/chain_1.ogg"), 0.71),
     (Sound::Chain, include_bytes!("../assets/sounds/chain_2.ogg"), 2.20),
     (Sound::Chain, include_bytes!("../assets/sounds/chain_3.ogg"), 2.81),
-    (Sound::Gunshot, include_bytes!("../assets/sounds/gunshot_1.ogg"), 1.89),
-    (Sound::Gunshot, include_bytes!("../assets/sounds/gunshot_2.ogg"), 1.77),
-    (Sound::Gunshot, include_bytes!("../assets/sounds/gunshot_3.ogg"), 1.68),
+    (Sound::Pistol, include_bytes!("../assets/sounds/pistol_1.ogg"), 1.36),
+    (Sound::Pistol, include_bytes!("../assets/sounds/pistol_2.ogg"), 1.37),
+    (Sound::Pistol, include_bytes!("../assets/sounds/pistol_3.ogg"), 1.22),
+    (Sound::Musket, include_bytes!("../assets/sounds/musket_1.ogg"), 1.79),
+    (Sound::Musket, include_bytes!("../assets/sounds/musket_2.ogg"), 2.09),
+    (Sound::Musket, include_bytes!("../assets/sounds/musket_3.ogg"), 1.09),
+    (Sound::Blunderbuss, include_bytes!("../assets/sounds/blunderbuss_1.ogg"), 1.90),
+    (Sound::Blunderbuss, include_bytes!("../assets/sounds/blunderbuss_2.ogg"), 1.97),
+    (Sound::Blunderbuss, include_bytes!("../assets/sounds/blunderbuss_3.ogg"), 1.21),
+    (Sound::Cannon, include_bytes!("../assets/sounds/cannon_1.ogg"), 1.61),
+    (Sound::Cannon, include_bytes!("../assets/sounds/cannon_2.ogg"), 1.68),
+    (Sound::Cannon, include_bytes!("../assets/sounds/cannon_3.ogg"), 1.88),
     (Sound::Cock, include_bytes!("../assets/sounds/cock_1.ogg"), 0.71),
     (Sound::Cock, include_bytes!("../assets/sounds/cock_2.ogg"), 0.57),
     (Sound::Powder, include_bytes!("../assets/sounds/powder_1.ogg"), 1.39),
@@ -759,6 +859,9 @@ static RECORDINGS: &[(Sound, &[u8], f32)] = &[
     (Sound::Burst, include_bytes!("../assets/sounds/burst_4.ogg"), 0.94),
     (Sound::Boom, include_bytes!("../assets/sounds/boom_1.ogg"), 0.73),
     (Sound::Boom, include_bytes!("../assets/sounds/boom_2.ogg"), 0.81),
+    (Sound::Shellburst, include_bytes!("../assets/sounds/shellburst_1.ogg"), 1.79),
+    (Sound::Shellburst, include_bytes!("../assets/sounds/shellburst_2.ogg"), 1.43),
+    (Sound::Shellburst, include_bytes!("../assets/sounds/shellburst_3.ogg"), 1.37),
     (Sound::Quake, include_bytes!("../assets/sounds/quake_1.ogg"), 1.26),
     (Sound::Quake, include_bytes!("../assets/sounds/quake_2.ogg"), 1.16),
     (Sound::Slam, include_bytes!("../assets/sounds/slam_1.ogg"), 1.36),
@@ -864,8 +967,6 @@ static RECORDINGS: &[(Sound, &[u8], f32)] = &[
     (Sound::Hurt, include_bytes!("../assets/sounds/hurt_2.ogg"), 1.41),
     (Sound::Hurt, include_bytes!("../assets/sounds/hurt_3.ogg"), 1.43),
     (Sound::Hurt, include_bytes!("../assets/sounds/hurt_4.ogg"), 1.59),
-    (Sound::Fanfare, include_bytes!("../assets/sounds/fanfare_1.ogg"), 0.46),
-    (Sound::Fanfare, include_bytes!("../assets/sounds/fanfare_2.ogg"), 0.41),
     (Sound::Step(Ground::Grass), include_bytes!("../assets/sounds/step_grass_1.ogg"), 1.69),
     (Sound::Step(Ground::Grass), include_bytes!("../assets/sounds/step_grass_2.ogg"), 1.16),
     (Sound::Step(Ground::Grass), include_bytes!("../assets/sounds/step_grass_3.ogg"), 1.50),
@@ -900,6 +1001,29 @@ static RECORDINGS: &[(Sound, &[u8], f32)] = &[
     (Sound::Bird, include_bytes!("../assets/sounds/bird_8.ogg"), 0.91),
     (Sound::Wind, include_bytes!("../assets/sounds/wind_1.ogg"), 0.77),
     (Sound::Water, include_bytes!("../assets/sounds/water_1.ogg"), 2.42),
+    (Sound::Chop, include_bytes!("../assets/sounds/chop_1.ogg"), 3.34),
+    (Sound::Chop, include_bytes!("../assets/sounds/chop_2.ogg"), 2.93),
+    (Sound::Chop, include_bytes!("../assets/sounds/chop_3.ogg"), 3.33),
+    (Sound::Mine, include_bytes!("../assets/sounds/mine_1.ogg"), 2.10),
+    (Sound::Mine, include_bytes!("../assets/sounds/mine_2.ogg"), 3.73),
+    (Sound::Mine, include_bytes!("../assets/sounds/mine_3.ogg"), 2.82),
+    (Sound::Dig, include_bytes!("../assets/sounds/dig_1.ogg"), 1.95),
+    (Sound::Dig, include_bytes!("../assets/sounds/dig_2.ogg"), 1.50),
+    (Sound::Timber, include_bytes!("../assets/sounds/timber_1.ogg"), 1.23),
+    (Sound::Timber, include_bytes!("../assets/sounds/timber_2.ogg"), 1.32),
+    (Sound::Place, include_bytes!("../assets/sounds/place_1.ogg"), 2.86),
+    (Sound::Place, include_bytes!("../assets/sounds/place_2.ogg"), 3.80),
+    (Sound::Place, include_bytes!("../assets/sounds/place_3.ogg"), 2.43),
+    (Sound::DoorOpen, include_bytes!("../assets/sounds/door_open_1.ogg"), 2.23),
+    (Sound::DoorOpen, include_bytes!("../assets/sounds/door_open_2.ogg"), 2.74),
+    (Sound::DoorClose, include_bytes!("../assets/sounds/door_close_1.ogg"), 1.29),
+    (Sound::DoorClose, include_bytes!("../assets/sounds/door_close_2.ogg"), 1.34),
+    (Sound::DoorClose, include_bytes!("../assets/sounds/door_close_3.ogg"), 1.97),
+    (Sound::Bang, include_bytes!("../assets/sounds/bang_1.ogg"), 2.54),
+    (Sound::Bang, include_bytes!("../assets/sounds/bang_2.ogg"), 3.22),
+    (Sound::Bang, include_bytes!("../assets/sounds/bang_3.ogg"), 2.54),
+    (Sound::Splinter, include_bytes!("../assets/sounds/splinter_1.ogg"), 1.42),
+    (Sound::Splinter, include_bytes!("../assets/sounds/splinter_2.ogg"), 1.91),
 ];
 
 #[cfg(test)]
@@ -911,9 +1035,10 @@ mod tests {
         use Sound::*;
         let mut all = vec![
             Swing, HeavySwing, Stab, Flick, Hit, Draw, Twang, ArrowHit, Burst, Equip, Crackle, Chest, Pickup, Eat, Bird, Roar, Rumble, Breath, Hurt, Fanfare, Splash, Quake,
-            Whistle, Claw, Web, Creak, Crack, Flap, Hiss, Growl, Howl, Bite, Rattle, Clang, Squelch, Skitter, Dodge, Gunshot, Release, Ratchet, Latch, Powder, Ram, Cock,
+            Whistle, Claw, Web, Creak, Crack, WhipCrack, Flap, Hiss, Growl, Howl, Bite, Rattle, Clang, Squelch, Skitter, Dodge, Pistol, Musket, Blunderbuss, Cannon, Shellburst, Release, Ratchet, Latch, Powder, Ram, Cock,
             Ricochet, Beam, Toll, Summon, Hex, Snap, Volley, Harpoon, Taut, Brace, Reel, Net, Chain, Chitter, Wail, Croak, Screech, Snort, Whirr, Slam, Fuse, Zap, Thunder,
             Gale, Buzz, Bubble, Billow, Shing, Chime, Rocket, Rush, Lasso, Squeeze, Boom, Slither, Sear, Swoop, Thorns, Coins, Wind, Water,
+            Chop, Mine, Dig, Timber, Place, DoorOpen, DoorClose, Bang, Splinter,
         ];
         all.extend((0..9).map(Cast));
         all.extend([Ground::Grass, Ground::Sand, Ground::Stone, Ground::Snow, Ground::Water].map(Step));
@@ -926,7 +1051,7 @@ mod tests {
         let library = decode_all(decoders());
         let count: usize = library.values().map(|v| v.len()).sum();
         println!("decoded {count} sounds on {} threads in {:?}", decoders(), start.elapsed());
-        assert_eq!(count, RECORDINGS.len(), "some sounds didn't decode");
+        assert_eq!(count, RECORDINGS.len() + PLUCKED.len(), "some sounds didn't decode");
         for sound in all_sounds() {
             let versions = library.get(&sound).unwrap_or_else(|| panic!("{sound:?} has no recording"));
             for clip in versions {
@@ -974,7 +1099,7 @@ mod tests {
         let library = decode_all(decoders());
         let (bus, mut mix) = bus(48000);
         let playing = Arc::new(AtomicUsize::new(0));
-        let loud = [Sound::Gunshot, Sound::Boom, Sound::Roar, Sound::Burst, Sound::Hit, Sound::Clang];
+        let loud = [Sound::Cannon, Sound::Musket, Sound::Blunderbuss, Sound::Pistol, Sound::Shellburst, Sound::Boom, Sound::Roar, Sound::Burst, Sound::Hit, Sound::Clang];
         for (k, sound) in loud.iter().cycle().take(60).enumerate() {
             let versions = &library[sound];
             bus.add(voice(versions[k % versions.len()].clone(), 1.0, (k as f32 * 0.7).sin(), 0.9 + 0.01 * k as f32, 0.0, &playing));
@@ -996,6 +1121,10 @@ mod tests {
         assert_eq!(muffle(0.0), 1.0);
         assert_eq!(muffle(9.0), 1.0);
         assert!(muffle(20.0) < 1.0 && muffle(60.0) < muffle(20.0) && muffle(1000.0) > 0.2);
+        // A cannon's boom and a shell bursting are heard furthest, a musket's crack further than
+        // a pistol's, and a pistol's further than a footstep
+        assert!(carry(Sound::Cannon) == carry(Sound::Shellburst) && carry(Sound::Cannon) > carry(Sound::Musket));
+        assert!(carry(Sound::Musket) > carry(Sound::Pistol) && carry(Sound::Pistol) > carry(Sound::Step(Ground::Grass)));
     }
 
     /// `INNERT_SOUND_DUMP=<folder> cargo test --release dump_sounds -- --ignored` writes every

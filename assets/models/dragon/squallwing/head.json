@@ -1,0 +1,29 @@
+{
+  "what": "squallwing, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    18,
+    8,
+    9
+  ],
+  "pivot": [
+    7.104,
+    3.6960000000000006,
+    2.484
+  ],
+  "anchor": [
+    0.1185,
+    0.01899999999999996,
+    -0.15525
+  ],
+  "origin": [
+    -7,
+    -4,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1863,
+    "284557b302d1560b"
+  ]
+}

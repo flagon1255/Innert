@@ -1,0 +1,37 @@
+{
+  "what": "Halberd, hilt: Runed Bone Grip",
+  "voxels_per_meter": 192.0,
+  "size": [
+    12,
+    8,
+    292
+  ],
+  "pivot": [
+    6.408000000000001,
+    3.8400000000000003,
+    1.0752000000000008
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -4,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.6075999999999999
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      2.0576000000000003
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    32918,
+    "9c43cdd94c2515ad"
+  ]
+}

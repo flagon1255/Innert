@@ -1,0 +1,29 @@
+{
+  "what": "Worldpyre Ancient, hind thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    27,
+    24,
+    57
+  ],
+  "pivot": [
+    11.52,
+    11.52,
+    45.120000000000005
+  ],
+  "anchor": [
+    0.12375000000000003,
+    0.030000000000000027,
+    -2.8200000000000003
+  ],
+  "origin": [
+    -12,
+    -12,
+    -45
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    64073,
+    "8dfe8519bc15ad09"
+  ]
+}

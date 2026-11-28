@@ -1,0 +1,37 @@
+{
+  "what": "Scepter, crystal: Quartz Crystal",
+  "voxels_per_meter": 192.0,
+  "size": [
+    7,
+    6,
+    15
+  ],
+  "pivot": [
+    -2.8598709677419354,
+    3.251612903225806,
+    -148.3429677419355
+  ],
+  "anchor": null,
+  "origin": [
+    3,
+    -3,
+    148
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.22499999999999998
+    ],
+    "tip": [
+      0.03387096774193549,
+      0.0,
+      0.8080645161290322
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2069,
+    "b985a82163ad3554"
+  ]
+}

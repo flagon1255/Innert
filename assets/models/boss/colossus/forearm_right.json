@@ -1,0 +1,29 @@
+{
+  "what": "Earthbreaker Colossus, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    20,
+    20,
+    42
+  ],
+  "pivot": [
+    9.792,
+    9.792,
+    32.912
+  ],
+  "anchor": [
+    0.013000000000000012,
+    0.013000000000000012,
+    -2.057
+  ],
+  "origin": [
+    -10,
+    -10,
+    -33
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    29569,
+    "ca1c166f45329265"
+  ]
+}

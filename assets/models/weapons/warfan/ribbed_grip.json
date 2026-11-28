@@ -1,0 +1,37 @@
+{
+  "what": "War Fan, hilt: Ribbed Grip",
+  "voxels_per_meter": 192.0,
+  "size": [
+    11,
+    11,
+    50
+  ],
+  "pivot": [
+    5.756895763867583,
+    5.664042708571534,
+    0.7199999999999998
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -6,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.1476
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.5576
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    7170,
+    "d982af9bcff1074a"
+  ]
+}

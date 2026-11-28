@@ -1,0 +1,29 @@
+{
+  "what": "Mire lurker, frond 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    3,
+    4
+  ],
+  "pivot": [
+    5.4,
+    0.6000000000000001,
+    0.8800000000000008
+  ],
+  "anchor": [
+    -0.15,
+    0.056249999999999994,
+    -0.05500000000000005
+  ],
+  "origin": [
+    -5,
+    -1,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1300,
+    "3c0b51cdd84de6ad"
+  ]
+}

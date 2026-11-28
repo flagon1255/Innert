@@ -1,0 +1,29 @@
+{
+  "what": "Alpha Direwolf, upper fore right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    14
+  ],
+  "pivot": [
+    2.184,
+    2.184,
+    11.256
+  ],
+  "anchor": [
+    0.01974999999999999,
+    0.01974999999999999,
+    -0.7035
+  ],
+  "origin": [
+    -2,
+    -2,
+    -11
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1816,
+    "fd5bcfe990ac8f98"
+  ]
+}

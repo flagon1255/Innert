@@ -1,0 +1,62 @@
+{
+  "what": "Repeating Crossbow, prod: Bramble Prod, frame 3 of 4",
+  "voxels_per_meter": 128.0,
+  "size": [
+    44,
+    67,
+    6
+  ],
+  "pivot": [
+    -34.696,
+    33.536,
+    2.4640000000000004
+  ],
+  "anchor": null,
+  "origin": [
+    35,
+    -34,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.1972,
+      0.0,
+      -0.04
+    ],
+    "mover_handle": [
+      0.2072,
+      0.0,
+      0.16
+    ],
+    "mover_pivot": [
+      0.655,
+      0.0,
+      -0.03
+    ],
+    "nock_1": [
+      0.5193548387096775,
+      0.0,
+      0.006
+    ],
+    "nock_2": [
+      0.38214838709677423,
+      0.0,
+      0.006
+    ],
+    "nock_3": [
+      0.2772,
+      0.0,
+      0.006
+    ],
+    "tip": [
+      0.67,
+      0.0,
+      0.008
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    5305,
+    "6af584cfa670446a"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "what": "Chakram, hilt: Duelist's Hilt",
+  "voxels_per_meter": 192.0,
+  "size": [
+    34,
+    9,
+    11
+  ],
+  "pivot": [
+    16.816,
+    4.704,
+    1.016
+  ],
+  "anchor": null,
+  "origin": [
+    -17,
+    -5,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.014000000000000002
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.15
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    9112,
+    "d4cb696e8f8ec921"
+  ]
+}

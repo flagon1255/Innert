@@ -1,0 +1,29 @@
+{
+  "what": "Harpy, wing left outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    12,
+    2
+  ],
+  "pivot": [
+    5.208,
+    0.7200000000000006,
+    0.8256
+  ],
+  "anchor": [
+    -0.138,
+    0.32999999999999996,
+    -0.0516
+  ],
+  "origin": [
+    -5,
+    -1,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1504,
+    "04ef11a9a0ba66bf"
+  ]
+}

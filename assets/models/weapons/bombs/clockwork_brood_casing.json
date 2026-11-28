@@ -1,0 +1,37 @@
+{
+  "what": "Bombs, casing: Clockwork Brood",
+  "voxels_per_meter": 192.0,
+  "size": [
+    29,
+    29,
+    32
+  ],
+  "pivot": [
+    14.457600000000003,
+    14.23712,
+    0.47615999999999825
+  ],
+  "anchor": null,
+  "origin": [
+    -14,
+    -14,
+    0
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.036300000000000006
+    ],
+    "tip": [
+      0.025,
+      0.0,
+      0.22100000000000003
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    4992,
+    "e661fe3c3774bb54"
+  ]
+}

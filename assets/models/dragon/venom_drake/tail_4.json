@@ -1,0 +1,29 @@
+{
+  "what": "Venom Drake, tail 4",
+  "voxels_per_meter": 16.0,
+  "size": [
+    21,
+    9,
+    7
+  ],
+  "pivot": [
+    17.776,
+    4.256,
+    2.4639991357141335
+  ],
+  "anchor": [
+    -0.45475,
+    0.015249999999999986,
+    -0.15399994598213335
+  ],
+  "origin": [
+    -18,
+    -4,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1948,
+    "ad6cfc3c6c8422c6"
+  ]
+}

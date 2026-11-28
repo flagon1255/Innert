@@ -1,0 +1,29 @@
+{
+  "what": "Harpy Queen, wing left inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    26,
+    33,
+    6
+  ],
+  "pivot": [
+    19.237789622857147,
+    2.217599999999999,
+    2.2176
+  ],
+  "anchor": [
+    -0.38986185142857166,
+    0.89265,
+    -0.1386
+  ],
+  "origin": [
+    -19,
+    -2,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6641,
+    "d0d211830fdfa35f"
+  ]
+}

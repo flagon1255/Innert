@@ -31,6 +31,7 @@ const uint MAT_GRASS = 1;
 const uint MAT_SAND = 4;
 const uint MAT_WATER = 6;
 const uint MAT_FOAM = 21;
+const uint MAT_ICE = 78;
 
 // Bounce light only looks this far (in meters) for what it bounces off, which keeps it cheap
 const float BOUNCE_DISTANCE = 12.0;
@@ -80,6 +81,26 @@ layout(set = 3, binding = 8) uniform View {
     mat4 pixelToRay;
     // Projects a world position into last frame's image: pixel = xy / z, with z the depth stored for it
     mat4 previousWorldToPixel;
+    // The day going round, see src\daynight.rs. pc.sun_direction is towards whichever of the sun
+    // and the moon lights the world; these are each of them for itself. Towards the sun, w unused.
+    vec4 sun;
+    // The sun's own light, 0 once it's set, w: how much the stars show
+    vec4 sunLight;
+    // Towards the moon, w: how bright its disc is
+    vec4 moon;
+    // The light the world's lit by, the sun's or the moon's, w: the moon's phase, radians round from
+    // new, PI full
+    vec4 keyLight;
+    // What the light bounced onto faces is kept relative to, see cacheAdd()
+    vec4 cacheLevel;
+    // The look of the realm the world is, see src\realms.rs and realmGrade(). x: which, REALM_*,
+    // y: where the dreaming realm's divide is, in voxels across the world, z: where the world's
+    // corner is in the whole landscape, in voxels along it, w: how much of the blood-red half the
+    // camera's in, 0 to 1
+    vec4 realm;
+    // The colours the realm's sky is tinted towards, straight up and round the horizon, and how far,
+    // see sky_tint() in src\main.rs
+    vec4 realmSky[2];
 } view;
 
 // No more than 128 bytes, see View
@@ -161,13 +182,32 @@ struct Animal {
     // of a sphere around it centered there
     vec4 position;
     vec4 rotation; // A quaternion turning its model the way it faces in the world
-    vec4 scale; // x: size of its voxels in voxels of the main world
+    float size; // How big its voxels are, in voxels of the main world
+    // For a serpent, how much longer and wider than its model it's drawn, less 1, two halves, and
+    // how far up its bottom's drawn at four points evenly along it, from its back end to its front,
+    // in its own voxels, two halves in each: see shaped() and drapeAt()
+    uint stretch;
+    uvec2 drape;
     uvec4 info; // x: model, y: STILL, MOVING or HELD, z: TINT_* for what weapons did to it
 };
 const uint STILL = 0;
 const uint MOVING = 1;
 // In the player's hand, moving with the camera. It's drawn in front of whatever it's poking into.
 const uint HELD = 2;
+// The player's own body, round the camera: rays from the camera pass it by, so it's only seen in
+// its shadow and in reflections, see src\character\body.rs
+const uint BODY = 3;
+// A townsperson, monster or animal near the camera posed afresh every frame from its pieces, see
+// src\baked.rs: each piece is SEEN, only by rays from the camera, and its frame baked whole is its
+// STAND_IN, which only other rays meet, casting its shadow and seen in reflections. A piece's info.y
+// also has its stand-in in bits 8 to 15, and the first of its own pieces and how many there are
+// in bits 16 to 23 and 24 to 31, so the light on it looks at its own pieces rather than its
+// stand-in. Has to match SEEN and STAND_IN in src\animals.rs.
+const uint SEEN = 4;
+const uint STAND_IN = 5;
+// Drawn in the player's colours, a flag over the rest: its leather in the colour in the low half of
+// info.w, its cloth in that in the high half, each 5, 6 and 5 bits of red, green and blue
+const uint TINT_OUTFIT = 0x100u;
 const uint TINT_NONE = 0;
 const uint TINT_BURNING = 1;
 const uint TINT_FROZEN = 2;
@@ -175,6 +215,11 @@ const uint TINT_POISONED = 3;
 const uint TINT_SHOCKED = 4;
 const uint TINT_CHILLED = 5;
 const uint TINT_HIT = 6;
+// Lit by its own light, as something hanging in the sky is, and never faded into the sky, see
+// src\animals.rs
+const uint TINT_LIT = 7;
+// Lightning, white-hot and brighter the brighter the day, see src\animals.rs
+const uint TINT_BOLT = 8;
 layout(set = 3, binding = 1) readonly buffer Animals {
     Animal animals[];
 };
@@ -244,7 +289,7 @@ const uint FAR_DIRECT_INTERVAL = 16;
 const float SUN_RADIUS = 0.045;
 
 // sRGB albedo per material id. Has to match the material ids in src\worldgen.rs
-const uint PALETTE_SIZE = 89;
+const uint PALETTE_SIZE = 105;
 const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.00, 0.00, 0.00), // air
     vec3(0.28, 0.48, 0.17), // grass
@@ -334,21 +379,129 @@ const vec3 PALETTE[PALETTE_SIZE] = vec3[PALETTE_SIZE](
     vec3(0.95, 0.08, 0.12), // blood
     vec3(1.00, 0.92, 0.60), // holy
     vec3(0.62, 0.88, 0.16), // lime leaves
-    vec3(0.46, 0.03, 0.06)  // crimson leaves
+    vec3(0.46, 0.03, 0.06), // crimson leaves
+    vec3(0.58, 0.38, 0.27), // clay bank, as it lies in the ground
+    vec3(0.70, 0.86, 0.88), // glass
+    vec3(0.80, 0.66, 0.34), // thatch
+    vec3(0.93, 0.92, 0.89), // marble
+    vec3(0.30, 0.33, 0.38), // slate
+    vec3(0.22, 0.21, 0.22), // basalt
+    vec3(0.52, 0.34, 0.24), // iron ore
+    vec3(0.36, 0.56, 0.48), // copper ore
+    vec3(0.84, 0.74, 0.56), // birch planks
+    vec3(0.30, 0.19, 0.11), // dark oak planks
+    vec3(0.66, 0.42, 0.24), // pine planks
+    vec3(0.76, 0.60, 0.40), // palm planks
+    vec3(0.74, 0.73, 0.70), // cut stone
+    vec3(0.14, 0.24, 0.62), // blue cloth
+    vec3(0.62, 0.60, 0.50), // lamp glass, unlit
+    vec3(0.24, 0.17, 0.12)  // oil lamp wick, unlit
 );
 
 // Has to match the material ids in src\worldgen.rs
 const uint MAT_CRYSTAL = 56;
 const uint MAT_FLAME = 57;
+const uint MAT_LAMP_GLASS = 103;
+const uint MAT_OIL_FLAME = 104;
 const uint MAT_STEEL = 69;
 const uint MAT_BRONZE = 72;
+const uint MAT_LEATHER = 73;
+const uint MAT_CLOTH = 74;
 const uint MAT_GLOW_FIRE = 79;
 const uint MAT_GLOW_HOLY = 86;
+
+// The paints the player paints their own body in, see src\character\paint.rs: materials of
+// their own from PAINT_FIRST, past the world's, only ever on the player's body and the arms held
+// before the eye, drawn in these colours whatever colours the player chose their clothes in. Has
+// to match PAINT_FIRST and paint() there.
+const uint PAINT_FIRST = 160u;
+const uint PAINT_SIZE = 73u;
+const vec3 PAINT[PAINT_SIZE] = vec3[PAINT_SIZE](
+    vec3(0.949, 0.839, 0.769), // Porcelain skin
+    vec3(0.918, 0.753, 0.627), // Fair skin
+    vec3(0.839, 0.651, 0.494), // Light skin
+    vec3(0.745, 0.557, 0.384), // Olive skin
+    vec3(0.651, 0.439, 0.282), // Tan skin
+    vec3(0.502, 0.329, 0.212), // Brown skin
+    vec3(0.361, 0.227, 0.149), // Dark skin
+    vec3(0.243, 0.157, 0.110), // Deep skin
+    vec3(0.118, 0.102, 0.094), // Black hair
+    vec3(0.275, 0.173, 0.110), // Dark brown hair
+    vec3(0.463, 0.275, 0.149), // Chestnut hair
+    vec3(0.588, 0.243, 0.133), // Auburn hair
+    vec3(0.839, 0.690, 0.431), // Blond hair
+    vec3(0.667, 0.627, 0.573), // Ash hair
+    vec3(0.910, 0.894, 0.863), // White hair
+    vec3(0.141, 0.173, 0.306), // Raven blue hair
+    vec3(0.769, 0.714, 0.588), // Undyed cloth
+    vec3(0.588, 0.275, 0.157), // Russet cloth
+    vec3(0.627, 0.118, 0.141), // Crimson cloth
+    vec3(0.204, 0.376, 0.204), // Forest cloth
+    vec3(0.408, 0.463, 0.235), // Moss cloth
+    vec3(0.314, 0.510, 0.745), // Sky cloth
+    vec3(0.133, 0.188, 0.376), // Navy cloth
+    vec3(0.376, 0.180, 0.408), // Plum cloth
+    vec3(0.204, 0.204, 0.220), // Charcoal cloth
+    vec3(0.769, 0.588, 0.204), // Ochre cloth
+    vec3(0.408, 0.243, 0.141), // Brown leather gloves
+    vec3(0.157, 0.133, 0.125), // Black leather gloves
+    vec3(0.690, 0.541, 0.361), // Tan suede gloves
+    vec3(0.510, 0.157, 0.133), // Red leather gloves
+    vec3(0.502, 0.494, 0.478), // Grey wool gloves
+    vec3(0.345, 0.220, 0.133), // belt
+    vec3(0.275, 0.180, 0.118), // boots
+    vec3(0.439, 0.412, 0.349), // Undyed trousers
+    vec3(0.349, 0.192, 0.133), // Russet trousers
+    vec3(0.369, 0.114, 0.125), // Crimson trousers
+    vec3(0.157, 0.243, 0.157), // Forest trousers
+    vec3(0.259, 0.286, 0.173), // Moss trousers
+    vec3(0.212, 0.310, 0.427), // Sky trousers
+    vec3(0.122, 0.149, 0.243), // Navy trousers
+    vec3(0.243, 0.145, 0.259), // Plum trousers
+    vec3(0.157, 0.157, 0.165), // Charcoal trousers
+    vec3(0.439, 0.349, 0.157), // Ochre trousers
+    vec3(0.063, 0.055, 0.055), // soot
+    vec3(0.235, 0.243, 0.275), // slate
+    vec3(0.478, 0.478, 0.486), // grey
+    vec3(0.753, 0.761, 0.776), // silver
+    vec3(0.949, 0.941, 0.918), // chalk
+    vec3(0.886, 0.831, 0.714), // bone
+    vec3(0.502, 0.055, 0.071), // blood
+    vec3(0.808, 0.149, 0.133), // scarlet
+    vec3(0.690, 0.376, 0.361), // scar
+    vec3(0.902, 0.557, 0.596), // rose
+    vec3(0.651, 0.322, 0.149), // rust
+    vec3(0.910, 0.502, 0.141), // orange
+    vec3(0.902, 0.722, 0.243), // gold
+    vec3(0.965, 0.878, 0.361), // yellow
+    vec3(0.588, 0.792, 0.275), // lime
+    vec3(0.204, 0.541, 0.227), // green
+    vec3(0.133, 0.502, 0.502), // teal
+    vec3(0.149, 0.275, 0.635), // woad
+    vec3(0.314, 0.588, 0.910), // azure
+    vec3(0.675, 0.855, 0.949), // ice
+    vec3(0.227, 0.149, 0.502), // indigo
+    vec3(0.510, 0.275, 0.714), // violet
+    vec3(0.753, 0.227, 0.596), // magenta
+    vec3(0.306, 0.196, 0.125), // umber
+    vec3(0.714, 0.471, 0.243), // clay
+    vec3(0.596, 0.557, 0.518), // ash
+    vec3(0.345, 0.392, 0.188), // moss
+    vec3(0.086, 0.110, 0.204), // ink
+    vec3(1.000, 0.659, 0.227), // ember
+    vec3(0.698, 0.839, 0.627)  // pale green
+);
 
 // Light given off by glowing materials
 vec3 emission(uint material) {
     if (material == MAT_FLAME)
     return vec3(6.0, 3.2, 1.2);
+    // The roads' lamps, lit as the sun goes down and put out as it comes up, see daylight(): an
+    // iron lamp's glass a steady warm white, an oil lantern's flame a deep orange
+    if (material == MAT_LAMP_GLASS || material == MAT_OIL_FLAME) {
+        float dark = 1 - smoothstep(-0.1, 0.25, view.sun.z);
+        return (material == MAT_LAMP_GLASS ? vec3(5.0, 3.9, 2.4) : vec3(5.5, 2.3, 0.6)) * dark;
+    }
     if (material == MAT_CRYSTAL)
     return vec3(0.5, 1.6, 2.2);
     if (material >= MAT_GLOW_FIRE && material <= MAT_GLOW_HOLY)
@@ -474,6 +627,54 @@ vec3 fromNear(vec3 p) {
 bool insideNear(vec3 p) {
     vec3 q = toNear(p);
     return nearActive() && all(greaterThanEqual(q, vec3(0))) && all(lessThan(q, vec3(pc.near_size.xyz)));
+}
+
+// The realms' own looks, see View::realm. Has to match App::realm_look() in src\session.rs.
+const uint REALM_DREAM = 2;
+const uint REALM_ICE = 3;
+const uint REALM_EMBER = 5;
+// The dreaming realm's divide wanders this many meters either side of its line, over this many
+// meters along it, and its halves give way to each other over this many meters either side of it.
+// Has to match DREAM_DIVIDE in src\worldgen.rs.
+const float DIVIDE_AT = 240.0;
+const float DIVIDE_WANDER = 18.0;
+const float DIVIDE_ALONG = 70.0;
+const float DIVIDE_EDGE = 2.0;
+
+// How much of the dreaming realm's blood-red half a point is, 0 to 1, from where its divide is
+float bloodAt(vec2 p) {
+    if (uint(view.realm.x) != REALM_DREAM)
+    return 0;
+    float vpm = float(max(pc.world_size.w, 1u));
+    float line = view.realm.y + DIVIDE_WANDER * vpm * sin((p.y + view.realm.z) / (DIVIDE_ALONG * vpm));
+    return smoothstep(-DIVIDE_EDGE * vpm, DIVIDE_EDGE * vpm, p.x - line);
+}
+
+// The colours of the land in the realms that have their own: the dreaming realm's soft half washed
+// pale, lilac and rose, its other half bled crimson, the frozen realm a little frosted, the Cinder
+// Crown ashen
+vec3 realmGrade(vec3 albedo, vec3 p) {
+    uint realm = uint(view.realm.x);
+    if (realm == REALM_DREAM) {
+        float lum = dot(albedo, vec3(0.3, 0.55, 0.15));
+        // Washed pale in drifting patches of mint, lilac and rose, where they are in the whole
+        // landscape so they stay put as the world moves on
+        float vpm = float(max(pc.world_size.w, 1u));
+        vec2 g = vec2(p.x + DIVIDE_AT * vpm - view.realm.y, p.y + view.realm.z) / vpm;
+        float drift = sin(g.x / 37.0) + sin(g.y / 53.0 + 1.3) + 0.5 * sin((g.x + g.y) / 23.0);
+        vec3 tint = mix(vec3(0.95, 1.32, 1.12), vec3(1.3, 0.95, 1.42), smoothstep(-1.2, 1.2, drift));
+        tint = mix(tint, vec3(1.42, 1.0, 1.08), smoothstep(1.0, 2.0, drift));
+        vec3 dream = mix(albedo, lum * tint * 1.1 + vec3(0.03, 0.025, 0.035), 0.55);
+        vec3 blood = vec3(lum * 1.7 + 0.025, lum * 0.16, lum * 0.2);
+        return mix(dream, blood, bloodAt(p.xy));
+    }
+    // The frozen realm a little frosted, and the Cinder Crown's ground grey with ash
+    if (realm == REALM_ICE || realm == REALM_EMBER) {
+        bool ash = realm == REALM_EMBER;
+        float lum = dot(albedo, vec3(0.3, 0.55, 0.15));
+        return mix(albedo, lum * (ash ? vec3(0.74, 0.72, 0.74) : vec3(0.92, 1.0, 1.12)), ash ? 0.65 : 0.35);
+    }
+    return albedo;
 }
 
 vec3 materialAlbedo(uint material, uvec3 coord) {
@@ -786,20 +987,38 @@ uint animalCount() {
     return pc.near_size.w;
 }
 
-uvec3 modelSize(uint model) {
-    uint base = weaponModels[0];
-    uint packed = model < base ? animalModels[model * 2 + 1] : weaponModels[1 + (model - base) * 2 + 1];
+// Words in each model's header: where its voxels start, its size, and the size of the box round
+// what's solid in it and where that box is in it. Has to match HEADER_WORDS in src\animals.rs.
+const uint MODEL_HEADER = 4;
+
+uvec3 unpackSize(uint packed) {
     return uvec3(packed & 0x3FFu, (packed >> 10) & 0x3FFu, (packed >> 20) & 0x3FFu);
 }
 
-// Material of one of a model's voxels, 0 for air
-uint modelVoxel(uint model, uvec3 size, uvec3 c) {
-    uint i = c.x + (c.y + c.z * size.y) * size.x;
+// Word `k` of a model's header
+uint modelHeader(uint model, uint k) {
     uint base = weaponModels[0];
-    if (model < base)
-    return animalModels[animalModels[model * 2] + i / 4] >> ((i % 4) * 8) & 0xFFu;
-    uint w = model - base;
-    return weaponModels[1 + weaponModels[1 + w * 2] + i / 4] >> ((i % 4) * 8) & 0xFFu;
+    return model < base ? animalModels[model * MODEL_HEADER + k] : weaponModels[1 + (model - base) * MODEL_HEADER + k];
+}
+
+uvec3 modelSize(uint model) {
+    return unpackSize(modelHeader(model, 1));
+}
+
+// Material of voxel `k` of the box `kept` voxels across round what's solid in a model, an animal's
+// or a weapon's, its voxels starting at `start`: 0 outside it, where there's only air. Below the
+// box wraps round to past it.
+uint keptVoxel(bool weapon, uint start, uvec3 kept, uvec3 k) {
+    if (any(greaterThanEqual(k, kept)))
+    return 0;
+    uint i = k.x + (k.y + k.z * kept.y) * kept.x;
+    return (weapon ? weaponModels[1 + start + i / 4] : animalModels[start + i / 4]) >> ((i % 4) * 8) & 0xFFu;
+}
+
+// Material of one of a model's voxels, 0 for air: only those in the box round what's solid in it
+// are kept, see pack_models() in src\animals.rs
+uint modelVoxel(uint model, uvec3 size, uvec3 c) {
+    return keptVoxel(model >= weaponModels[0], modelHeader(model, 0), unpackSize(modelHeader(model, 2)), c - unpackSize(modelHeader(model, 3)));
 }
 
 vec3 rotate(vec4 q, vec3 v) {
@@ -816,17 +1035,93 @@ vec3 fromAnimal(Animal a, vec3 v) {
     return rotate(a.rotation, v);
 }
 
+// Whether an animal's drawn stretched or draped, a serpent slithering over the ground, see
+// AnimalInstance::shaped() in src\animals.rs
+bool shaped(Animal a) {
+    return a.stretch != 0u || a.drape != uvec2(0);
+}
+
+// How far up a shaped() animal's drawn `x` of its voxels along its model, `length` voxels long: in
+// a straight line between each of its four points and the next
+float drapeAt(Animal a, float x, float length) {
+    vec4 knots = vec4(unpackHalf2x16(a.drape.x), unpackHalf2x16(a.drape.y));
+    float f = clamp(x / length * 3.0, 0.0, 3.0);
+    int k = min(int(f), 2);
+    return mix(knots[k], knots[k + 1], f - float(k));
+}
+
 // A point in an animal's voxels, in voxels of the main world
 vec3 animalToWorld(uint index, vec3 p) {
     Animal a = animals[index];
     uvec3 size = modelSize(a.info.x);
-    return a.position.xyz + fromAnimal(a, (p - vec3(vec2(size.xy) * 0.5, 0)) * a.scale.x);
+    vec3 m = p - vec3(vec2(size.xy) * 0.5, 0);
+    if (shaped(a)) {
+        m.z += drapeAt(a, p.x, float(size.x));
+        m.xy *= unpackHalf2x16(a.stretch) + 1.0;
+    }
+    return a.position.xyz + fromAnimal(a, m * a.size);
+}
+
+// Steps along o + d t through the voxels of a model `size` big, in its own voxels, kept as
+// keptVoxel() has them, through the slice of it from x = along.x to along.y and no further than
+// limit: the t of the first solid one, which it is and the axis it was stepped into along
+bool marchModel(vec3 o, vec3 d, uvec3 size, vec2 along, float limit, bool weapon, uint start, uvec3 kept, uvec3 kept_from, out float t_hit, out ivec3 c_hit, out uint axis_hit) {
+    vec3 inv = clamp(1 / d, vec3(-FLT_MAX), vec3(FLT_MAX));
+    vec3 t1 = (vec3(along.x, 0, 0) - o) * inv;
+    vec3 t2 = (vec3(along.y, vec2(size.yz)) - o) * inv;
+    vec3 tmins = min(t1, t2);
+    vec3 tmaxs = max(t1, t2);
+    float t = max(max(tmins.x, tmins.y), max(tmins.z, 0));
+    float t_exit = min(min(tmaxs.x, tmaxs.y), tmaxs.z);
+    if (t > t_exit || t > limit)
+    return false;
+    uint axis = tmins.x > tmins.y ? (tmins.x > tmins.z ? 0 : 2) : (tmins.y > tmins.z ? 1 : 2);
+    vec3 sgn = sign(d);
+    ivec3 c = clamp(ivec3(floor(o + d * t)), ivec3(0), ivec3(size) - 1);
+    vec3 next = (vec3(c) + max(sgn, vec3(0)) - o) * inv;
+    vec3 delta = abs(inv);
+    float end = min(limit, t_exit);
+    // No ray crosses more of its voxels than its sides together, however fine it's made: a model
+    // finer than the world's, as the weapon in hand, can be more than 512 long
+    int steps = int(size.x + size.y + size.z);
+    for (int k = 0; k < steps && t <= end; k++) {
+        if (keptVoxel(weapon, start, kept, uvec3(c) - kept_from) != 0) {
+            t_hit = t;
+            c_hit = c;
+            axis_hit = axis;
+            return true;
+        }
+        if (next.x < next.y && next.x < next.z) {
+            axis = 0;
+            t = next.x;
+            next.x += delta.x;
+        } else if (next.y < next.z) {
+            axis = 1;
+            t = next.y;
+            next.y += delta.y;
+        } else {
+            axis = 2;
+            t = next.z;
+            next.z += delta.z;
+        }
+        c[axis] += int(sgn[axis]);
+        if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, ivec3(size))))
+        break;
+    }
+    return false;
 }
 
 // Rays besides those from the camera only check this many animals and props, the nearest to the
 // camera, as checking every one for every shadow and bounce costs too much
 const uint SECONDARY_ANIMALS = 24;
 uint g_animal_limit = 0xFFFFFFFFu;
+// Set while lighting what's held, so the player's own body round it doesn't shade it
+bool g_no_body = false;
+// Set while lighting a piece of something posed live, see SEEN: its stand-in, which other rays
+// pass by, and its own pieces, which they look at after the rest
+uint g_stand_in = 0xFFFFFFFFu;
+uint g_own_from = 0;
+uint g_own_to = 0;
 
 // The animals and props whose bounding spheres the camera's rays through this workgroup's tile of
 // pixels might pass through, a bit each, worked out by all its invocations together before any
@@ -865,7 +1160,8 @@ void cullTileAnimals() {
                 float cos_a = sqrt(max(1 - sin_a * sin_a, 0));
                 keep = dot(to, axis) / d >= cos_cone * cos_a - sin_cone * sin_a;
             }
-            if (keep)
+            uint kind = animals[i].info.y & 0xFFu;
+            if (keep && kind != BODY && kind != STAND_IN)
             atomicOr(s_tile_animals[i / 32], 1u << (i % 32));
         }
     }
@@ -884,6 +1180,10 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
     uint word = 0;
     uint bits = tiled ? s_tile_animals[0] : 0;
     uint next = 0;
+    // Other rays, lighting a piece posed live, look at its own pieces after the rest, see SEEN
+    uint own_from = from_camera ? 0 : g_own_from;
+    uint own_to = from_camera ? 0 : g_own_to;
+    bool own = false;
     while (true) {
         uint i;
         if (tiled) {
@@ -896,11 +1196,25 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
             i = word * 32 + findLSB(bits);
             bits &= bits - 1;
         } else {
+            if (next >= count && !own && own_from < own_to) {
+                own = true;
+                next = own_from;
+                count = min(own_to, animalCount());
+            }
             if (next >= count)
             break;
             i = next++;
         }
         Animal a = animals[i];
+        uint kind = a.info.y & 0xFFu;
+        if (kind == BODY && (from_camera || g_no_body))
+        continue;
+        // Pieces posed live are seen only from the camera, and their stand-ins only by other rays,
+        // but for the stand-in of what's being lit, whose own pieces stand for it
+        if (kind == SEEN && !from_camera && !own)
+        continue;
+        if (kind == STAND_IN && (from_camera || i == g_stand_in))
+        continue;
         float limit = from_camera && a.info.y == HELD ? FLT_MAX : max_t;
         // Only animals whose bounding sphere the ray passes through
         vec3 to = a.position.xyz - origin;
@@ -911,28 +1225,46 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
 
         uint model = a.info.x;
         uvec3 size = modelSize(model);
-        float s = a.scale.x;
-        vec3 o = toAnimal(a, -to) / s + vec3(vec2(size.xy) * 0.5, 0);
+        // What's kept of its voxels, looked up once for every step through them
+        bool weapon = model >= weaponModels[0];
+        uint start = modelHeader(model, 0);
+        uvec3 kept = unpackSize(modelHeader(model, 2));
+        uvec3 kept_from = unpackSize(modelHeader(model, 3));
+        float s = a.size;
+        vec3 o = toAnimal(a, -to) / s;
         vec3 d = toAnimal(a, dir) / s;
-        vec3 inv = clamp(1 / d, vec3(-FLT_MAX), vec3(FLT_MAX));
-        vec3 t1 = -o * inv;
-        vec3 t2 = (vec3(size) - o) * inv;
-        vec3 tmins = min(t1, t2);
-        vec3 tmaxs = max(t1, t2);
-        float t = max(max(tmins.x, tmins.y), max(tmins.z, 0));
-        float t_exit = min(min(tmaxs.x, tmaxs.y), tmaxs.z);
-        if (t > t_exit || t > limit)
-        continue;
-
-        uint axis = tmins.x > tmins.y ? (tmins.x > tmins.z ? 0 : 2) : (tmins.y > tmins.z ? 1 : 2);
-        vec3 sgn = sign(d);
-        ivec3 c = clamp(ivec3(floor(o + d * t)), ivec3(0), ivec3(size) - 1);
-        vec3 next = (vec3(c) + max(sgn, vec3(0)) - o) * inv;
-        vec3 delta = abs(inv);
-        for (int k = 0; k < 512 && t <= limit; k++) {
-            if (modelVoxel(model, size, uvec3(c)) != 0) {
+        // A serpent stretched and draped over the ground, see shaped(): the ray's squeezed to
+        // match, and traced through its model a third of its length at a time, sheared up or down
+        // in each third as far as it's draped there, so it goes straight through each
+        int pieces = 1;
+        vec4 knots = vec4(0);
+        if (shaped(a)) {
+            vec2 stretch = unpackHalf2x16(a.stretch) + 1.0;
+            o.xy /= stretch;
+            d.xy /= stretch;
+            knots = vec4(unpackHalf2x16(a.drape.x), unpackHalf2x16(a.drape.y));
+            pieces = knots == vec4(0) ? 1 : 3;
+        }
+        o += vec3(vec2(size.xy) * 0.5, 0);
+        float third = float(size.x) / 3.0;
+        for (int j = 0; j < pieces; j++) {
+            // Nearest first along the ray
+            int piece = d.x < 0 ? pieces - 1 - j : j;
+            vec3 po = o;
+            vec3 pd = d;
+            vec2 along = vec2(0, size.x);
+            if (pieces > 1) {
+                along = vec2(piece, piece + 1) * third;
+                float rise = (knots[piece + 1] - knots[piece]) / third;
+                po.z -= knots[piece] + rise * (o.x - along.x);
+                pd.z -= rise * d.x;
+            }
+            float t;
+            ivec3 c;
+            uint axis;
+            if (marchModel(po, pd, size, along, limit, weapon, start, kept, kept_from, t, c, axis)) {
                 vec3 local_normal = vec3(0);
-                local_normal[axis] = -sgn[axis];
+                local_normal[axis] = -sign(pd[axis]);
                 hit.level = ANIMAL;
                 hit.instance = i;
                 hit.coord = uvec3(c);
@@ -945,22 +1277,6 @@ bool traceAnimals(vec3 origin, vec3 dir, float max_t, inout Hit hit) {
                 found = true;
                 break;
             }
-            if (next.x < next.y && next.x < next.z) {
-                axis = 0;
-                t = next.x;
-                next.x += delta.x;
-            } else if (next.y < next.z) {
-                axis = 1;
-                t = next.y;
-                next.y += delta.y;
-            } else {
-                axis = 2;
-                t = next.z;
-                next.z += delta.z;
-            }
-            c[axis] += int(sgn[axis]);
-            if (any(lessThan(c, ivec3(0))) || any(greaterThanEqual(c, ivec3(size))))
-            break;
         }
     }
     return found;
@@ -1019,35 +1335,135 @@ vec3 voxelPoint(Hit hit, vec3 local) {
     return hit.level == NEAR ? fromNear(p) : p;
 }
 
+// How much of the sky's daylight there is, by how high the sun is. Has to match daylight() in
+// src\daynight.rs.
 float daylight() {
-    return smoothstep(-0.1, 0.25, pc.sun_direction.z);
+    return smoothstep(-0.1, 0.25, view.sun.z);
 }
 
+// The light the world's lit by, towards pc.sun_direction: the sun's, golden low in the sky and
+// never quite white, or at night the moon's, dim and blue, see src\daynight.rs
 vec3 sunColor() {
-    float elevation = pc.sun_direction.z;
-    // Golden low in the sky, never quite white
-    vec3 color = mix(vec3(1.0, 0.45, 0.2), vec3(1.0, 0.9, 0.78), smoothstep(0.0, 0.65, elevation));
-    return color * 2.4 * smoothstep(-0.02, 0.06, elevation);
+    return view.keyLight.rgb;
+}
+
+// The night sky's own colour, darker below the horizon
+vec3 nightSky(vec3 dir) {
+    vec3 night = mix(vec3(0.022, 0.028, 0.050), vec3(0.008, 0.014, 0.040), sqrt(clamp(dir.z, 0, 1)));
+    return mix(night, night * 0.5, clamp(-dir.z * 4.0, 0, 1));
 }
 
 vec3 skyColor(vec3 dir) {
     // A deep, saturated blue
     vec3 zenith = vec3(0.08, 0.3, 0.92);
-    // Warmer horizon around sunrise and sunset
-    vec3 horizon = mix(vec3(0.9, 0.55, 0.35), vec3(0.55, 0.74, 0.98), smoothstep(0.0, 0.35, pc.sun_direction.z));
+    // Warmer horizon around sunrise and sunset, glowing round where the sun's going down
+    vec3 horizon = mix(vec3(0.9, 0.55, 0.35), vec3(0.55, 0.74, 0.98), smoothstep(0.0, 0.35, view.sun.z));
+    // The dreaming realm's sky soft lilac over a rosy horizon, bleeding to deep red over its other
+    // half, and the frozen realm's pale and cold
+    // Worked out once a frame for all the rays that look at the sky, see sky_tint() in src\main.rs
+    zenith = mix(zenith, view.realmSky[0].rgb, view.realmSky[0].a);
+    horizon = mix(horizon, view.realmSky[1].rgb, view.realmSky[1].a);
     vec3 sky = mix(horizon, zenith, sqrt(clamp(dir.z, 0, 1)));
     sky = mix(sky, horizon * 0.4, clamp(-dir.z * 4.0, 0, 1));
-    return sky * mix(0.02, 1.0, daylight());
+    float low = 1 - smoothstep(0.0, 0.22, abs(view.sun.z + 0.02));
+    if (low > 0) {
+        vec2 across = dir.xy / max(length(dir.xy), 1e-4);
+        vec2 sun_across = view.sun.xy / max(length(view.sun.xy), 1e-4);
+        float toward = pow(max(dot(across, sun_across), 0), 3) * (1 - clamp(abs(dir.z) * 2.5, 0, 1));
+        sky += vec3(1.0, 0.42, 0.16) * toward * low * 0.7;
+    }
+    // The night sky, a little lighter round the moon. Has to match zenith() in src\daynight.rs.
+    vec3 night = nightSky(dir);
+    night += vec3(0.045, 0.055, 0.08) * view.moon.w * (0.5 - 0.5 * cos(view.keyLight.w)) * pow(max(dot(dir, view.moon.xyz), 0), 8);
+    float day = daylight();
+    return sky * day + night * (1 - day);
 }
 
-vec3 sunDisc(vec3 dir) {
-    float d = max(dot(dir, pc.sun_direction.xyz), 0);
-    return sunColor() * (pow(d, 2000.0) * 50.0 + pow(d, 12.0) * 0.15);
+// What the realms make of the night sky where it's seen straight on, added to skyColor() there
+// alone, as it lights nothing, so the many other places the sky's looked at don't pay for it: the
+// dreaming realm's night violet, deep red over its bleeding half, and over the frozen realm
+// curtains of pale green light rippling round the sky, about as dark as the normal world's
+vec3 realmNight(vec3 dir) {
+    uint realm = uint(view.realm.x);
+    float dark = 1 - daylight();
+    if (dark <= 0 || realm < REALM_DREAM) {
+        return vec3(0);
+    }
+    // The Cinder Crown's horizon glowing with its lava all night
+    if (realm == REALM_EMBER) {
+        return vec3(0.07, 0.016, 0.003) * (1 - smoothstep(0.0, 0.35, dir.z)) * dark;
+    }
+    if (realm == REALM_DREAM) {
+        vec3 dream_night = mix(vec3(0.030, 0.016, 0.052), vec3(0.046, 0.007, 0.012), view.realm.w);
+        return (dream_night * (0.6 + 0.4 * sqrt(clamp(1 - dir.z, 0, 1))) - nightSky(dir)) * 0.75 * dark;
+    }
+    if (realm != REALM_ICE || dir.z <= 0.04) {
+        return vec3(0);
+    }
+    // Brightest along their wavering lower edge, fading away upwards, in fine folds
+    float around = atan(dir.y, dir.x);
+    float above = dir.z - (0.34 + 0.06 * sin(around * 3.0 + 1.0) + 0.025 * sin(around * 7.0));
+    float band = above < 0 ? exp(-pow(above / 0.03, 2.0)) : exp(-above / 0.13);
+    float folds = 0.55 + 0.45 * sin(around * 43.0 + 3.0 * sin(around * 6.0));
+    return vec3(0.016, 0.085, 0.05) * band * folds * smoothstep(0.04, 0.15, dir.z) * dark;
 }
+
+// The sun and the moon in the sky, and the stars, seen straight on or mirrored, not lighting
+// anything
+vec3 sunDisc(vec3 dir) {
+    float d = max(dot(dir, view.sun.xyz), 0);
+    vec3 color = view.sunLight.rgb * (pow(d, 2000.0) * 50.0 + pow(d, 12.0) * 0.15);
+    if (view.moon.w > 0.001) {
+        // A pale disc far off, darker where its seas are, lit as much as its phase says, the rest
+        // of it just showing, with a soft glow round it as bright as it is
+        vec3 m = view.moon.xyz;
+        float c = dot(dir, m);
+        float phase = view.keyLight.w;
+        float lit_part = 0.5 - 0.5 * cos(phase);
+        // Much bigger than it'd really look, so it's there to see
+        const float MOON_RADIUS = 0.036;
+        if (c > cos(MOON_RADIUS)) {
+            vec3 helper = abs(m.z) < 0.99 ? vec3(0, 0, 1) : vec3(1, 0, 0);
+            vec3 u = normalize(cross(helper, m));
+            vec3 v = cross(m, u);
+            vec2 p = vec2(dot(dir, u), dot(dir, v)) / MOON_RADIUS;
+            float seas = 0.28 * (1 - smoothstep(0.0, 0.45, length(p - vec2(0.25, 0.18))))
+                + 0.2 * (1 - smoothstep(0.0, 0.3, length(p - vec2(-0.3, -0.25))))
+                + 0.15 * (1 - smoothstep(0.0, 0.25, length(p - vec2(0.1, -0.45))));
+            float edge = smoothstep(1.0, 0.9, length(p));
+            // The sphere it is, lit from the side its phase says: from behind when new, from the
+            // front when full
+            vec3 n = vec3(p, sqrt(max(1 - dot(p, p), 0)));
+            vec3 light = vec3(sin(phase), 0, -cos(phase));
+            float day_side = smoothstep(-0.04, 0.08, dot(n, light));
+            color += vec3(0.95, 0.96, 1.0) * 1.6 * (1 - seas) * edge * view.moon.w * mix(0.035, 1.0, day_side);
+        }
+        color += vec3(0.5, 0.55, 0.7) * pow(max(c, 0), 300.0) * 0.25 * view.moon.w * lit_part;
+    }
+    if (view.sunLight.w > 0.001 && dir.z > 0.0) {
+        // Points on a fine grid round the sky, a few of its cells with one, twinkling a little
+        vec3 q = dir * 520.0;
+        vec3 cell = floor(q);
+        uint h = hash(uvec3(ivec3(cell) + 4096));
+        if ((h & 255u) < 7u) {
+            vec3 at = cell + 0.25 + 0.5 * vec3(h >> 8 & 15u, h >> 12 & 15u, h >> 16 & 15u) / 15.0;
+            float near = 1 - smoothstep(0.0, 0.32, length(q - at));
+            float bright = 0.25 + 0.75 * float(h >> 20 & 255u) / 255.0;
+            float twinkle = 0.8 + 0.2 * sin(pc.haze.y * (1.5 + float(h >> 28)) + float(h & 63u));
+            color += vec3(0.9, 0.93, 1.0) * near * bright * twinkle * 0.45 * view.sunLight.w * smoothstep(0.0, 0.15, dir.z);
+        }
+    }
+    return color;
+}
+
+// How much of the sky's own brightness lights what's in shade, for light that's sunlight's
+// rather than the sky's to do the lighting: shade a good deal darker than what the sun's on, the
+// way it is out of doors. The sky itself is drawn as bright as ever.
+const float SKY_FILL = 0.5;
 
 // Cheap stand-in for light from the sky and the ground, used when bounce light is off
 vec3 ambientLight(vec3 normal) {
-    vec3 sky = 0.5 * (skyColor(vec3(0, 0, 1)) + skyColor(normalize(vec3(1, 0, 0.2))));
+    vec3 sky = 0.5 * (skyColor(vec3(0, 0, 1)) + skyColor(normalize(vec3(1, 0, 0.2)))) * SKY_FILL;
     vec3 ground = vec3(0.3, 0.27, 0.2) * (sunColor() * 0.15 + sky * 0.3);
     return mix(ground, sky, normal.z * 0.5 + 0.5);
 }
@@ -1269,9 +1685,35 @@ const uint MAT_GRASS_BLADE = 22;
 // How tall grass grows at most, in meters, for shading its blades from root to tip
 const float BLADE_HEIGHT = 0.45;
 
+// Has to match worldgen::material::CLAY_BANK
+const uint MAT_CLAY = 89;
+// Has to match worldgen::material::GLASS. What's seen through glass, through as many voxels of it
+// as GLASS_PANES at most, is tinted by GLASS_TINT for each, and the sky's mirrored in its face.
+const uint MAT_GLASS = 90;
+const uint GLASS_PANES = 4;
+const vec3 GLASS_TINT = vec3(0.86, 0.94, 0.93);
+vec3 g_glass_tint = vec3(1);
+vec3 g_glass_sheen = vec3(0);
+
 vec3 hitAlbedo(Hit hit, uint material) {
     // Animals each get their own variation, and leaves blown aside keep theirs
     vec3 albedo = materialAlbedo(material, hit.level == ANIMAL ? hit.coord + uvec3(hit.instance * 7919u) : landscapeCoord(hit.level, uvec3(ivec3(hit.coord) - hit.shift)));
+    // The player's body and arms in the colours they chose: leather in one, cloth in the other,
+    // each voxel as much lighter or darker as it was than its material, see TINT_OUTFIT; and
+    // what they've painted on it in its paint's own colour, see PAINT
+    if (hit.level == ANIMAL && (material == MAT_LEATHER || material == MAT_CLOTH || material >= PAINT_FIRST) && (animals[hit.instance].info.z & TINT_OUTFIT) != 0u) {
+        uint packed = animals[hit.instance].info.w;
+        uint c = material == MAT_LEATHER ? packed & 0xFFFFu : packed >> 16;
+        vec3 to = material >= PAINT_FIRST ? PAINT[min(material - PAINT_FIRST, PAINT_SIZE - 1u)] : vec3(float(c >> 11), float((c >> 5) & 63u), float(c & 31u)) / vec3(31, 63, 31);
+        to = pow(to, vec3(2.2));
+        vec3 base = pow(PALETTE[min(material, PALETTE_SIZE - 1)], vec3(2.2));
+        const vec3 LUMA = vec3(0.299, 0.587, 0.114);
+        albedo = to * (dot(albedo, LUMA) / dot(base, LUMA));
+    }
+    // Clay's darker and muddier where it's wet, under the sea or just over it. Only that, as
+    // anything more here costs every ray that hits anything.
+    if (material == MAT_CLAY && hit.level != ANIMAL && voxelPoint(hit, vec3(0.5)).z < pc.sun_direction.w + 0.3 * float(max(pc.world_size.w, 1u)))
+    albedo *= vec3(0.5, 0.62, 0.4);
     // Blades of grass dark down among the roots, lighter and yellower up to their tips
     if (hit.level != ANIMAL && (material == MAT_GRASS_BLADE || material == MAT_GRASS_TIP)) {
         vec3 p = voxelPoint(hit, vec3(0.5) - vec3(hit.shift));
@@ -1284,11 +1726,30 @@ vec3 hitAlbedo(Hit hit, uint material) {
     return albedo;
 }
 
+// The same in the colours of the realm, for the land, not what moves about on it: only for what's
+// seen straight on or from under water, not in reflections, so the many rays that aren't don't
+// pay for it, see realmGrade()
+vec3 realmAlbedo(Hit hit, uint material) {
+    vec3 albedo = hitAlbedo(hit, material);
+    // Not what glows, as the Cinder Crown's lava, which would wash out pale
+    if (hit.level != ANIMAL && view.realm.x > 0.5 && (material < MAT_GLOW_FIRE || material > MAT_GLOW_HOLY))
+    albedo = realmGrade(albedo, voxelPoint(hit, vec3(0.5) - vec3(hit.shift)));
+    return albedo;
+}
+
 // What weapons did to an animal shows on it: burning or poisoned, frozen or crackling with
 // lightning. Tints its albedo, and returns the light it gives off.
 vec3 tintAnimal(Hit hit, inout vec3 albedo) {
     if (hit.level != ANIMAL)
     return vec3(0);
+    // A skin taken on, the whole of it turned towards one colour, light and dark as it was: the
+    // Coil Unending's body taking on each element in turn. Red, green, blue and how far, a byte each.
+    uint skin = animals[hit.instance].info.w;
+    if (skin != 0u && (animals[hit.instance].info.z & TINT_OUTFIT) == 0u) {
+        vec4 to = unpackUnorm4x8(skin);
+        float light = dot(albedo, vec3(0.299, 0.587, 0.114));
+        albedo = mix(albedo, to.rgb * (0.35 + 1.3 * light), to.a);
+    }
     uint tint = animals[hit.instance].info.z;
     // Struck: flashing white for a moment
     if (tint == TINT_HIT) {
@@ -1313,6 +1774,13 @@ vec3 tintAnimal(Hit hit, inout vec3 albedo) {
     }
     if (tint == TINT_SHOCKED)
     return vec3(1.4, 1.8, 3.2) * 2.0 * flare;
+    // Shining in its own colors, whatever light's on it, its seas and craters still showing
+    if (tint == TINT_LIT)
+    return albedo * 1.6;
+    // Lightning blazing over the light round it, the more the brighter the day, so it reads by
+    // day as clearly as a flash does by night
+    if (tint == TINT_BOLT)
+    return albedo * (2.5 + 3.0 * dot(sunColor(), vec3(0.2126, 0.7152, 0.0722)));
     return vec3(0);
 }
 
@@ -1457,10 +1925,11 @@ uint cacheEntry(Hit hit, bool make) {
     return NO_ENTRY;
 }
 
-// The light gathered at a cache entry so far, and how many samples went into it
+// The light gathered at a cache entry so far, and how many samples went into it. It's kept
+// relative to how bright the day is, see cacheAdd().
 vec3 cachedLight(uint e, out uint samples) {
     samples = cache[e + 4];
-    return vec3(cache[e + 1], cache[e + 2], cache[e + 3]) / CACHE_SCALE / float(max(samples, 1u));
+    return vec3(cache[e + 1], cache[e + 2], cache[e + 3]) / CACHE_SCALE / float(max(samples, 1u)) * view.cacheLevel.rgb;
 }
 
 // The shape of the surface round a face, which takes looking at the 26 voxels round it to work out
@@ -1479,9 +1948,11 @@ void unpackShape(uint shape, out vec3 normal, out float ao) {
 }
 
 // Adds a sample of bounced light to a cache entry. Once it has plenty, half of what it has is
-// forgotten, so newer light counts for more.
+// forgotten, so newer light counts for more. It's kept relative to view.cacheLevel, about how bright
+// everything lit by the sun and the sky is, so as the day goes round, what's gathered goes dimmer
+// and warmer with it, rather than having to be gathered again, see src\daynight.rs.
 void cacheAdd(uint e, vec3 light) {
-    uvec3 add = uvec3(clamp(light, vec3(0), vec3(16)) * CACHE_SCALE);
+    uvec3 add = uvec3(min(clamp(light, vec3(0), vec3(16)) / view.cacheLevel.rgb, vec3(64)) * CACHE_SCALE);
     atomicAdd(cache[e + 1], add.x);
     atomicAdd(cache[e + 2], add.y);
     atomicAdd(cache[e + 3], add.z);
@@ -1576,7 +2047,8 @@ vec3 shadeSecondary(vec3 origin, vec3 dir, bool include_sun, float max_distance)
             if (grassAt(ivec2(floor(end.xy)), ground) >= 0 && end.z < ground - UNDERGROUND * float(max(pc.world_size.w, 1u)))
             return skyColor(dir) * 0.04;
         }
-        return skyColor(dir) + (include_sun ? sunDisc(dir) : vec3(0));
+        // Seen in a reflection, the sky as it is; bounced into shade, only so much of it
+        return include_sun ? skyColor(dir) + sunDisc(dir) : skyColor(dir) * SKY_FILL;
     }
 
     uint material = hitMaterial(hit);
@@ -1613,12 +2085,14 @@ vec3 shadeSecondary(vec3 origin, vec3 dir, bool include_sun, float max_distance)
 // How much light survives travelling this many voxels through water
 vec3 waterTransmittance(float distance) {
     float meters = distance / float(max(pc.world_size.w, 1u));
-    return exp(-meters * vec3(0.45, 0.10, 0.08));
+    // Blood rather than water where the camera's in the dreaming realm's red half, see View::realm:
+    // dark and thick, all but the red soaked up
+    return exp(-meters * mix(vec3(0.45, 0.10, 0.08), vec3(0.3, 1.8, 1.6), view.realm.w));
 }
 
 // Light scattered back out by deep water
 vec3 waterScatter() {
-    return vec3(0.02, 0.14, 0.15) * (sunColor() * 0.5 + ambientLight(vec3(0, 0, 1)));
+    return mix(vec3(0.02, 0.14, 0.15), vec3(0.08, 0.004, 0.006), view.realm.w) * (sunColor() * 0.5 + ambientLight(vec3(0, 0, 1)));
 }
 
 float waterFresnel(vec3 dir, vec3 normal) {
@@ -1631,8 +2105,13 @@ vec3 openSeaBelow(vec3 dir) {
     vec3 refracted = refract(dir, up, 1 / 1.33);
     float depth = SEABED_DEPTH * float(max(pc.world_size.w, 1u));
     vec3 transmittance = waterTransmittance(depth / max(-refracted.z, 0.05));
-    vec3 sand = pow(PALETTE[MAT_SAND], vec3(2.2));
-    vec3 seabed = sand * (sunColor() * max(pc.sun_direction.z, 0) + ambientLight(up) * 0.6) * transmittance;
+    // In the frozen realm, pale ice right at the top, see Terrain::column() in src\worldgen.rs, and
+    // in the Cinder Crown, glowing lava
+    bool ice = uint(view.realm.x) == REALM_ICE;
+    bool lava = uint(view.realm.x) == REALM_EMBER;
+    transmittance = ice || lava ? vec3(1) : transmittance;
+    vec3 sand = ice ? pow(PALETTE[MAT_ICE], vec3(2.2)) : lava ? vec3(0.9, 0.3, 0.05) : pow(PALETTE[MAT_SAND], vec3(2.2));
+    vec3 seabed = sand * (sunColor() * max(pc.sun_direction.z, 0) + ambientLight(up) * 0.6 + (lava ? vec3(1.2) : vec3(0))) * transmittance;
     return seabed * transmittance + waterScatter() * (1 - transmittance);
 }
 
@@ -1642,6 +2121,9 @@ vec3 openSeaBelow(vec3 dir) {
 // the water voxel `voxel` is churned up white over that, right through where it's `falling`.
 vec3 shadeWater(vec3 dir, vec3 pos, vec3 normal, bool open_sea, Hit voxel, float foam, bool falling) {
     float fresnel = waterFresnel(dir, normal);
+    // The frozen realm's sea is iced over out past the world as it is in it, see openSeaBelow(): only
+    // half the sky's glare on it
+    fresnel *= open_sea && (uint(view.realm.x) == REALM_ICE || uint(view.realm.x) == REALM_EMBER) ? 0.5 : 1.0;
     vec3 mirrored = reflect(dir, normal);
     vec3 reflection = (pc.flags & FLAG_REFLECTIONS) != 0
         ? shadeSecondary(pos + normal * 1e-3, mirrored, true, REFLECTION_REACH * float(max(pc.world_size.w, 1u)))
@@ -1997,6 +2479,9 @@ float hazePhase(float cos_angle) {
 // shadow into the air, which is what makes sunbeams, plus light from the sky.
 // How much of what's behind the haze atmosphere() last let through, 0-1
 float g_transmittance = 1;
+// Set while shading what a pixel sees directly if it hangs in the sky lit by its own light, see
+// TINT_LIT, so it isn't faded into the sky with what's on the land as far off
+bool g_sky_lit = false;
 
 vec3 atmosphere(vec3 origin, vec3 dir, float distance, vec3 color, inout uint seed) {
     g_transmittance = 1;
@@ -2165,6 +2650,8 @@ vec3 shadeGrass(vec3 origin, vec3 dir, GrassHit grass, inout vec4 guide) {
     // Dark at the root, lighter and yellower towards the tip, a little different blade to blade
     vec3 tip_color = mix(vec3(0.11, 0.29, 0.04), vec3(0.25, 0.34, 0.06), random(seed));
     vec3 albedo = mix(vec3(0.02, 0.06, 0.01), tip_color, smoothstep(0.0, 0.9, h)) * mix(0.8, 1.15, random(seed));
+    if (view.realm.x > 0.5)
+    albedo = realmGrade(albedo, pos);
     // Less light gets down between the blades
     float occlusion = mix(0.2, 1.0, h);
 
@@ -2192,7 +2679,7 @@ vec3 shadeUnderwater(vec3 origin, vec3 dir, inout uint steps, out float distance
     vec3 color;
     float path;
     if (trace(origin, dir, true, FLT_MAX, hit, steps)) {
-        vec3 albedo = hitAlbedo(hit, hitMaterial(hit));
+        vec3 albedo = realmAlbedo(hit, hitMaterial(hit));
         color = albedo * (sunColor() * sunLight(faceCenter(hit), hit.normal) + ambientLight(hit.normal) * 0.6);
         path = hit.t;
         distance = hit.t;
@@ -2223,13 +2710,17 @@ vec3 shade(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out float d
     if (isWater(origin))
     return shadeUnderwater(origin, dir, steps, distance);
 
+    g_sky_lit = false;
+    g_glass_tint = vec3(1);
+    g_glass_sheen = vec3(0);
     vec3 color = shadeSurface(origin, dir, seed, steps, distance, guide);
+    color = color * g_glass_tint + g_glass_sheen;
     color = atmosphere(origin, dir, distance, color, seed);
     float kept = g_transmittance;
     // Only so much of the endless landscape is there at once, so things fade into the sky well
-    // before its edge
+    // before its edge, but for what hangs in the sky
     float fade_end = pc.haze.w;
-    if (fade_end > 0 && distance >= 0) {
+    if (fade_end > 0 && distance >= 0 && !g_sky_lit) {
         // Nearer still where the edge of the piece of the landscape that's there is nearer than
         // that, as when the next piece isn't in yet: then things fade away before it rather than
         // the world being seen to end. Never nearer than a few meters, so what's in hand and at
@@ -2250,8 +2741,33 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     Hit hit;
     // Past where everything's faded into the sky there's no need to look any further
     float far = pc.haze.w > 0 ? pc.haze.w : FLT_MAX;
-    bool solid = trace(origin, dir, false, far, hit, steps);
+    // Glass is seen through: the ray goes on out the far side of each voxel of it, a few at most,
+    // what's behind it a little tinted and the sky mirrored faintly in its face, see shade(). The
+    // one call to trace() in the loop, so the shader holds only the one copy of it.
+    bool solid;
+    float through = 0;
+    uint material = 0;
+    for (uint k = 0;; k++) {
+        solid = trace(origin + dir * through, dir, false, far - through, hit, steps);
+        hit.t += through;
+        material = solid ? hitMaterial(hit) : 0;
+        if (!solid || material != MAT_GLASS || hit.level == ANIMAL || k >= GLASS_PANES)
+        break;
+        vec3 inv = clamp(1 / dir, vec3(-FLT_MAX), vec3(FLT_MAX));
+        vec3 out_t = max((voxelPoint(hit, vec3(0)) - origin) * inv, (voxelPoint(hit, vec3(1)) - origin) * inv);
+        through = min(out_t.x, min(out_t.y, out_t.z)) + 0.02;
+        if (k == 0)
+        g_glass_sheen = skyColor(reflect(dir, hit.normal)) * waterFresnel(dir, hit.normal) * 0.8;
+        g_glass_tint *= GLASS_TINT;
+    }
     g_animal_limit = SECONDARY_ANIMALS;
+    // A piece of something posed live is shaded by its own pieces, not its stand-in, see SEEN
+    if (solid && hit.level == ANIMAL && (animals[hit.instance].info.y & 0xFFu) == SEEN) {
+        uint info = animals[hit.instance].info.y;
+        g_stand_in = (info >> 8) & 0xFFu;
+        g_own_from = (info >> 16) & 0xFFu;
+        g_own_to = g_own_from + (info >> 24);
+    }
     g_sway = false;
     g_clear_leaves = false;
     // Leaves blown aside are lit as they are where they grow, so their light and shade move with
@@ -2278,7 +2794,6 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     float sea_level = pc.sun_direction.w;
     vec3 pos = origin + dir * hit.t;
     vec3 normal = hit.normal;
-    uint material = 0;
     if (wet) {
         distance = water.t;
         // The denoiser leaves water alone
@@ -2300,11 +2815,10 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
         } else {
             distance = -1;
             guide.w = 6;
-            return skyColor(dir) + sunDisc(dir);
+            return skyColor(dir) + sunDisc(dir) + realmNight(dir);
         }
     } else {
         distance = hit.t;
-        material = hitMaterial(hit);
 
         // Seen through the side of the world, the water at its edge continues the open sea
         bool world_edge = hit.level == MAIN
@@ -2331,12 +2845,15 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
     {
         if (hit.level == ANIMAL && animals[hit.instance].info.y != STILL)
         g_dynamic = true;
+        if (hit.level == ANIMAL && (animals[hit.instance].info.z == TINT_LIT || animals[hit.instance].info.z == TINT_BOLT))
+        g_sky_lit = true;
         // Leaves move in the wind, so they can't be averaged over many frames
         if ((pc.flags & FLAG_WIND) != 0 && hit.level != ANIMAL && sways(material))
         g_dynamic = true;
         bool held = hit.level == ANIMAL && animals[hit.instance].info.y == HELD;
         if (held)
         g_held = true;
+        g_no_body = held;
         vec3 face = faceCenter(hit);
 
         bool gi = (pc.flags & FLAG_GI) != 0;
@@ -2394,7 +2911,7 @@ vec3 shadeSurface(vec3 origin, vec3 dir, inout uint seed, inout uint steps, out 
             through = new_through;
         }
 
-        vec3 albedo = hitAlbedo(hit, material);
+        vec3 albedo = realmAlbedo(hit, material);
         vec3 glow = tintAnimal(hit, albedo) + emission(material);
         if (material == MAT_FOAM && hit.level != ANIMAL) {
             albedo *= foamFlow(hit);

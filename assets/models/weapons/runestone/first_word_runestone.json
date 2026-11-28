@@ -1,0 +1,37 @@
+{
+  "what": "Runestone, focus: The First Word",
+  "voxels_per_meter": 192.0,
+  "size": [
+    21,
+    11,
+    29
+  ],
+  "pivot": [
+    10.418688000000001,
+    5.3759999999999994,
+    -25.432000000000002
+  ],
+  "anchor": null,
+  "origin": [
+    -10,
+    -5,
+    25
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.07
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.20700000000000002
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    20672,
+    "86bbdc80c8447724"
+  ]
+}

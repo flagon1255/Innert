@@ -1,0 +1,29 @@
+{
+  "what": "Bloodwake Gargoyle, wing left inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    46,
+    46,
+    9
+  ],
+  "pivot": [
+    33.78677481106064,
+    3.2639999999999993,
+    3.264
+  ],
+  "anchor": [
+    -0.6741734256912899,
+    1.2335,
+    -0.204
+  ],
+  "origin": [
+    -34,
+    -3,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    16390,
+    "b927d014dcb8e60d"
+  ]
+}

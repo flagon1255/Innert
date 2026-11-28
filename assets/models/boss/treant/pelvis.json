@@ -1,0 +1,29 @@
+{
+  "what": "Ancient Treant, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    20,
+    20,
+    8
+  ],
+  "pivot": [
+    9.6,
+    9.6,
+    4.0
+  ],
+  "anchor": [
+    0.025000000000000022,
+    0.025000000000000022,
+    -0.25
+  ],
+  "origin": [
+    -10,
+    -10,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    7475,
+    "144751e167fc55c0"
+  ]
+}

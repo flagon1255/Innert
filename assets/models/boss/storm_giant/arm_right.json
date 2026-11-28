@@ -1,0 +1,29 @@
+{
+  "what": "Thunderborn Giant, arm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    9,
+    24
+  ],
+  "pivot": [
+    4.488,
+    4.488,
+    19.799999999999997
+  ],
+  "anchor": [
+    0.0007499999999999729,
+    0.0007499999999999729,
+    -1.2374999999999998
+  ],
+  "origin": [
+    -4,
+    -4,
+    -20
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4124,
+    "3e8db7947edc1cc1"
+  ]
+}

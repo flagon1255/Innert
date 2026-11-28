@@ -8,8 +8,8 @@ use super::*;
 
 /// At most one town in each TOWN_CELL square, nothing of it further than TOWN_REACH from where
 /// it's planned round, in meters
-const TOWN_CELL: f32 = 500.0;
-const TOWN_REACH: f32 = 100.0;
+pub(super) const TOWN_CELL: f32 = 500.0;
+pub(super) const TOWN_REACH: f32 = 100.0;
 /// How far out from the middle of its square the streets of a town on the land go
 const TOWN_RADIUS: f32 = 28.0;
 /// Half how wide streets are, and how big the stones squares are paved with
@@ -26,7 +26,7 @@ const DOME: f32 = 0.72;
 /// The ways streets go out of a square
 const WAYS: [[f32; 2]; 4] = [[1.0, 0.0], [0.0, 1.0], [-1.0, 0.0], [0.0, -1.0]];
 /// The light lanterns give
-const LANTERN_LIGHT: [f32; 3] = [1.0, 0.66, 0.3];
+const LANTERN_LIGHT: [f32; 3] = [1.0, 0.71, 0.36];
 
 /// How far a cavern's flat floor goes out, next to the widest of the hollow cut for it
 fn floor_width() -> f32 {
@@ -250,11 +250,10 @@ struct Town {
 }
 
 /// What's round a town being planned, worked out once for all the spots tried in its square:
-/// for each square of their own, the caves' hollows and caverns, the ravines and the dungeons
+/// for each square of their own, the caves' hollows and caverns and the dungeons
 #[derive(Default)]
 struct Near {
     caves: HashMap<(i32, i32), CaveProbe>,
-    ravines: HashMap<(i32, i32), Vec<[f32; 4]>>,
     dungeons: HashMap<(i32, i32), Vec<[f32; 4]>>,
 }
 
@@ -358,6 +357,19 @@ impl Terrain {
                 [px, py, height_at(&self.settings, px, py)]
             }
         }
+    }
+
+    /// The town in one TOWN_CELL square as the roads see it, see roads.rs: the middle of its
+    /// square, where each way out of it leaves the town, and where it all is
+    pub(super) fn town_place(&self, cx: i32, cy: i32, cache: &RiverCache) -> Option<roads::Place> {
+        let t = self.town_in(cx, cy, cache)?;
+        let [x, y, _] = t.square;
+        let doors = match &t.cavern {
+            // Out of the cutting the tunnel comes out of the hill into
+            Some(c) => vec![([x + c.way[0] * (c.mouth + 7.0), y + c.way[1] * (c.mouth + 7.0)], c.way)],
+            None => t.streets.iter().map(|&(way, length)| ([x + way[0] * length, y + way[1] * length], way)).collect(),
+        };
+        Some(roads::Place::new(roads::PlaceKey { castle: false, cx, cy }, &self.settings, [x, y], doors, t.bounds))
     }
 
     /// The town in one TOWN_CELL square, if there's room for one at any of a few spots in it. Some
@@ -527,18 +539,9 @@ impl Terrain {
                 }
             }
         }
-        let first = [0, 1].map(|i| ((rect[i] - RAVINE_REACH - 2.0) / RAVINE_CELL).floor() as i32);
-        let last = [0, 1].map(|i| ((rect[i + 2] + RAVINE_REACH + 2.0) / RAVINE_CELL).ceil() as i32);
-        for cy in first[1]..last[1] {
-            for cx in first[0]..last[0] {
-                let ravine = near.ravines.entry((cx, cy)).or_insert_with(|| {
-                    let mut scratch = Features::default();
-                    self.ravine(cx, cy, &mut scratch).map_or(Vec::new(), |o| o.shapes.iter().map(|s| [s.min[0], s.min[1], s.max[0], s.max[1]]).collect())
-                });
-                if ravine.iter().any(|r| overlaps(*r, rect, 3.0)) {
-                    return false;
-                }
-            }
+        // Nor over a ravine, anywhere across it
+        if ravines::over_ravine(&self.settings, rect, 3.0) {
+            return false;
         }
         let margin = 8.0;
         for river in self.rivers_near(cache, [rect[0] - margin, rect[1] - margin], [rect[2] + margin, rect[3] + margin]) {
@@ -692,13 +695,14 @@ impl Terrain {
             t.houses.push(house);
         }
 
-        // Stalls on the corners of the square, between the streets
+        // Stalls on the corners of the square, between the streets: the travelling merchant's, and
+        // one or two specialists' beside it, see src\merchants.rs
         let mut corners = [0, 1, 2, 3];
         for i in (1..4).rev() {
             let j = ((rng.next() * (i + 1) as f32) as usize).min(i);
             corners.swap(i, j);
         }
-        for &k in corners.iter().take(1 + (rng.next() * 2.99) as usize) {
+        for &k in corners.iter().take(2 + (rng.next() * 1.99) as usize) {
             let a = std::f32::consts::FRAC_PI_4 + k as f32 * FRAC_PI_2 + rng.range(-0.2, 0.2);
             let (x, y) = (t.square[0] + a.cos() * (t.radius - 2.2), t.square[1] + a.sin() * (t.radius - 2.2));
             let f = if a.cos().abs() > a.sin().abs() { [-a.cos().signum(), 0.0] } else { [0.0, -a.sin().signum()] };
@@ -749,8 +753,9 @@ impl Terrain {
         // The well, the stalls, and lanterns lighting the square and the streets
         let mut s = Vec::new();
         self.well(t, &mut s, features);
-        for stall in &t.stalls {
-            self.stall(t, stall, &mut s, features, &mut rng);
+        let trades = crate::merchants::town_trades(t.stalls.len(), t.seed);
+        for (stall, &trade) in t.stalls.iter().zip(&trades) {
+            self.stall(t, stall, trade, &mut s, features, &mut rng);
         }
         for (k, &(way, length)) in t.streets.iter().enumerate() {
             let side = if k % 2 == 0 { 1.0 } else { -1.0 };
@@ -761,6 +766,10 @@ impl Terrain {
                 let foot = if along < t.radius { self.paving(t, px, py) } else if surface { height_at(&self.settings, px, py) + 0.03 } else { z };
                 self.lantern_post(&mut s, features, [px, py, foot], [-out[0], -out[1]]);
             }
+            // And where it leaves the town, on its other side, lighting the way in
+            let (px, py) = (x + way[0] * (length - 0.6) - out[0] * (STREET_HALF + 0.6), y + way[1] * (length - 0.6) - out[1] * (STREET_HALF + 0.6));
+            let foot = if surface { height_at(&self.settings, px, py) + 0.03 } else { z };
+            self.lantern_post(&mut s, features, [px, py, foot], out);
         }
         // On the corners of the square with no stall
         for k in 0..4 {
@@ -827,8 +836,9 @@ impl Terrain {
                     let d = rng.range(t.radius + 6.0, TOWN_RADIUS + 2.0);
                     let (px, py) = (x + a.cos() * d, y + a.sin() * d);
                     let spot = around([px, py], [1.0, 1.0]);
+                    // Nor where a road goes on from the end of a street, see roads.rs
                     let crowded = t.houses.iter().any(|h| overlaps(h.rect(), spot, 3.5))
-                        || t.streets.iter().any(|&(way, length)| overlaps(street_rect(t.square, way, [0.0, length], STREET_HALF), spot, 3.0));
+                        || t.streets.iter().any(|&(way, length)| overlaps(street_rect(t.square, way, [0.0, length + 16.0], STREET_HALF), spot, 3.0));
                     if !crowded {
                         objects.push(self.tree(px, py, height_at(&self.settings, px, py), hash(rng.0 ^ 0x7ee)));
                     }
@@ -887,7 +897,7 @@ impl Terrain {
         s.push(block([iu - 0.05, hu + 0.08], [-0.65, 0.65], [f + 2.1, f + 2.3], (WOOD, BARK_DARK)));
 
         // A lantern by the door, or an awning over it in the desert
-        if rng.next() < 0.4 {
+        if rng.next() < 0.6 {
             let side = if rng.next() < 0.5 { 1.0 } else { -1.0 };
             s.push(block([hu - 0.05, hu + 0.36], [side * 0.9 - 0.03, side * 0.9 + 0.03], [f + 2.32, f + 2.38], (DARK_STEEL, AIR)));
             let p = at.point(hu + 0.32, side * 0.9, f + 2.05);
@@ -914,10 +924,18 @@ impl Terrain {
         s.push(block([tu + 0.65, tu + 0.95], [tv - 0.15, tv + 0.15], [f, f + 0.45], (WOOD, BARK_DARK)));
         // Whichever piece of the landscape it's in, so the random numbers run on the same way for
         // every piece the house is built for; those of other pieces aren't kept, see Terrain::place()
-        if rng.next() < 0.6 {
+        let candlelit = rng.next() < 0.6;
+        if candlelit {
             candle(features, at.point(tu, tv + side * 0.15, f + 0.8), &mut rng);
         }
         barrel(s, at.point(iu - 0.38, side * (iv - 0.38), f));
+        // Where there's no candle, most often a lantern hung on a chain from the ceiling over the
+        // table, out of the way of heads, lighting the room and out through the windows and the
+        // door. Rolled apart, so the rest of the house is as it was.
+        if !candlelit && unit(hash(h.seed ^ 0x1a47)) < 0.75 {
+            s.push(block([tu - 0.015, tu + 0.015], [tv - 0.015, tv + 0.015], [top - 0.28, top + 0.05], (DARK_STEEL, AIR)));
+            self.lantern(s, features, at.point(tu, tv, top - 0.55), 7.5);
+        }
 
         // The room inside, and its floorboards
         s.push(at.room([-iu, iu], [-iv, iv], [f, top]));
@@ -1086,8 +1104,13 @@ impl Terrain {
             s.push(clear(Shape::block([x - outer, y - outer, g - 0.4], [x + outer, y + outer, g + 0.5], stone.0, stone.1)).patterned(Pattern::Bricks));
             features.floors.push(Floor { lo: [x - inner, y - inner], hi: [x + inner, y + inner], height: g + 0.15, water: g + 0.48 });
             features.footprints.push([x - outer, y - outer, x + outer, y + outer, g + 0.7]);
+            // A lantern on a post by the basin, where folk come for water after dark
+            self.lantern_post(s, features, [x + outer + 0.6, y + 0.4, self.paving(t, x + outer + 0.6, y + 0.4)], [-1.0, 0.0]);
             return;
         }
+        // A lantern hung on a chain from the ridge of the little roof, over the windlass
+        s.push(clear(Shape::block([x - 0.465, y - 0.015, g + 2.85], [x - 0.435, y + 0.015, g + 3.1], DARK_STEEL, AIR)));
+        self.lantern(s, features, [x - 0.45, y, g + 2.58], 10.0);
         // The little roof, its ridge along the windlass, on posts up to the ridge
         let (eaves, rise) = (g + 2.3, 0.85);
         s.push(clear(Shape::capsule([x - 1.15, y, eaves + rise + 0.04], [x + 1.15, y, eaves + rise + 0.04], 0.12, 0.12, WOOD, AIR, false)));
@@ -1115,11 +1138,26 @@ impl Terrain {
 
     /// A merchant's stall at `at` on the square of town `t`, facing the middle of it: a counter
     /// of goods under a striped awning on four posts, a crate and a barrel beside it, and the
-    /// merchant's spot behind it, "town stall"
-    fn stall(&self, t: &Town, at: &Frame, s: &mut Vec<Shape>, features: &mut Features, rng: &mut Rng) {
+    /// merchant's spot behind it, "town stall". A specialist's, of `trade`, has its awning in their
+    /// colours and the sign of their trade over its front, see trade_sign(), and its spot is theirs,
+    /// see Trade::stall_site().
+    fn stall(&self, t: &Town, at: &Frame, trade: Option<crate::merchants::Trade>, s: &mut Vec<Shape>, features: &mut Features, rng: &mut Rng) {
+        use crate::merchants::Trade;
         let g = self.paving(t, at.x, at.y);
         let clear = |shape: Shape| shape.placed(Placement::Clear);
         let (cloth, stripe) = [(CLOTH, LINEN), (TEMPLE_TEAL, LINEN), (MOSS, LINEN), (TEMPLE_RED, FLOWER_YELLOW)][(rng.next() * 3.99) as usize];
+        let (cloth, stripe) = match trade {
+            None => (cloth, stripe),
+            Some(Trade::Bowyer) => (MOSS, FLOWER_WHITE),
+            Some(Trade::Wandwright) => (FLOWER_PURPLE, GOLD),
+            Some(Trade::Bladesmith) => (TEMPLE_RED, DARK_STEEL),
+            Some(Trade::Gunsmith) => (BARK_DARK, FLOWER_YELLOW),
+            Some(Trade::Jeweller) => (TEMPLE_TEAL, GOLD),
+            Some(Trade::Wingmaker) => (FLOWER_BLUE, FLOWER_WHITE),
+        };
+        if let Some(trade) = trade {
+            Self::trade_sign(s, at, g, trade);
+        }
         let counter = g + 0.92;
         // The goods along the counter
         let mut v = -0.8;
@@ -1168,7 +1206,66 @@ impl Terrain {
         let p = at.point(-1.0, 0.0, 0.0);
         let spot = [p[0], p[1], self.paving(t, p[0], p[1])];
         if self.inside(spot[0], spot[1]) {
-            features.sites.push(Site { kind: "town stall", position: spot, facing: at.f });
+            features.sites.push(Site { kind: trade.map_or("town stall", |t| t.stall_site()), position: spot, facing: at.f });
+        }
+    }
+
+    /// The sign of a specialist's `trade` over the front of their stall at `at`, its paving at `g`: a
+    /// board on top of the awning's front edge, facing out, with what they make on it, a bow and an
+    /// arrow, a staff with a glowing stone, two swords crossed, a musket and a cannonball, a great
+    /// gem, or a pair of wings
+    fn trade_sign(s: &mut Vec<Shape>, at: &Frame, g: f32, trade: crate::merchants::Trade) {
+        use crate::merchants::Trade;
+        let clear = |shape: Shape| shape.placed(Placement::Clear);
+        // Points on the board's face, `v` across and `z` up from its middle
+        let (u, mid) = (0.86, g + 2.78);
+        let on = |v: f32, z: f32| at.point(u, v, mid + z);
+        let bar = |s: &mut Vec<Shape>, a: (f32, f32), b: (f32, f32), r: f32, material: u8| s.push(clear(Shape::capsule(on(a.0, a.1), on(b.0, b.1), r, r, material, AIR, false)));
+        match trade {
+            Trade::Bowyer => {
+                let mut last = (-0.12, -0.3);
+                for k in 1..=8 {
+                    let t = k as f32 / 8.0;
+                    let p = (-0.12 - 0.22 * (t * std::f32::consts::PI).sin(), -0.3 + 0.6 * t);
+                    bar(s, last, p, 0.04, WOOD);
+                    last = p;
+                }
+                bar(s, (-0.12, -0.3), (-0.12, 0.3), 0.025, BOWSTRING);
+                bar(s, (-0.4, 0.0), (0.42, 0.0), 0.03, WOOD);
+                s.push(clear(Shape::sphere(on(0.45, 0.0), 0.06, DARK_STEEL, AIR, false)));
+                s.push(clear(Shape::sphere(on(-0.4, 0.0), 0.06, FLOWER_RED, AIR, false)));
+            }
+            Trade::Wandwright => {
+                bar(s, (-0.35, -0.3), (0.25, 0.2), 0.04, WOOD);
+                s.push(clear(Shape::sphere(on(0.3, 0.24), 0.11, GLOW_ARCANE, AIR, false)));
+            }
+            Trade::Bladesmith => {
+                for d in [-1.0, 1.0] {
+                    bar(s, (-0.38 * d, -0.3), (0.3 * d, 0.3), 0.035, STEEL);
+                    bar(s, (-0.36 * d - 0.07, -0.2), (-0.36 * d + 0.12, -0.26), 0.035, GOLD);
+                }
+            }
+            Trade::Gunsmith => {
+                bar(s, (-0.42, -0.12), (0.3, 0.16), 0.04, DARK_STEEL);
+                bar(s, (-0.42, -0.12), (-0.2, -0.2), 0.07, WOOD);
+                s.push(clear(Shape::sphere(on(0.38, -0.18), 0.1, DARK_STEEL, AIR, false)));
+            }
+            Trade::Jeweller => {
+                s.push(clear(Shape::ellipsoid(on(0.0, 0.02), [0.16, 0.16, 0.2], CRYSTAL, AIR)));
+                s.push(clear(Shape::ellipsoid(on(0.0, -0.05), [0.24, 0.24, 0.06], GOLD, AIR)));
+            }
+            Trade::Wingmaker => {
+                for d in [-1.0, 1.0] {
+                    s.push(clear(Shape::ellipsoid(on(0.25 * d, 0.05), [0.12, 0.12, 0.2], FLOWER_WHITE, AIR)));
+                    bar(s, (0.05 * d, -0.05), (0.45 * d, 0.25), 0.04, FLOWER_WHITE);
+                }
+            }
+        }
+        // The board, and the two posts holding it up off the awning
+        s.push(clear(at.block([0.78, 0.83], [-0.62, 0.62], [mid - 0.3, mid + 0.3], LINEN, AIR)));
+        s.push(clear(at.block([0.74, 0.8], [-0.7, 0.7], [mid - 0.38, mid + 0.38], WOOD, BARK_DARK)));
+        for v in [-0.55, 0.55] {
+            s.push(clear(at.block([0.76, 0.82], [v - 0.04, v + 0.04], [g + 2.3, mid - 0.3], WOOD, AIR)));
         }
     }
 

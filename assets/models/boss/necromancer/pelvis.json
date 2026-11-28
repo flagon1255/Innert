@@ -1,0 +1,29 @@
+{
+  "what": "Necromancer, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    11,
+    11,
+    26
+  ],
+  "pivot": [
+    5.12,
+    5.28,
+    19.2
+  ],
+  "anchor": [
+    0.023749999999999993,
+    0.013749999999999984,
+    -1.2
+  ],
+  "origin": [
+    -5,
+    -5,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5788,
+    "877a6503167a57b2"
+  ]
+}

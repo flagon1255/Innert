@@ -1,0 +1,29 @@
+{
+  "what": "Winter Alpha, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    34,
+    13,
+    15
+  ],
+  "pivot": [
+    16.8,
+    6.048,
+    7.728
+  ],
+  "anchor": [
+    0.012499999999999956,
+    0.028249999999999997,
+    -0.483
+  ],
+  "origin": [
+    -17,
+    -6,
+    -8
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    13348,
+    "3a79e87bb99643f5"
+  ]
+}

@@ -12,7 +12,17 @@ use std::rc::Rc;
 use nalgebra::Vector3;
 use serde::Deserialize;
 
-use crate::animals::{MODEL_RES, Model, Part, ball, cuboid, ellipsoid, limb, voxelize};
+use crate::animals::{MODEL_RES, Model, Part};
+// Tagged with the slot they're drawn for, see src\weapon_parts.rs
+use crate::weapon_parts::{ball, cuboid, ellipsoid, limb, slot, voxelize};
+
+/// What each kind of special ammo looks like in flight, see ammo.rs
+mod ammo;
+/// How a skull focus and a talisman look
+mod relics;
+/// How the third batch's weapons look: a war pick's head, a chakram, a prism and a runestone
+mod foci;
+pub use ammo::{AMMO_RES, AMMO_SHOT_RES, AMMO_STYLES, Puff, Trail, ammo_style};
 use crate::worldgen::material::*;
 
 /// Stats by name, see STATS
@@ -60,8 +70,6 @@ pub enum Style {
     Summon,
     /// A totem, casting slow hexes that home in and eat away at what they catch
     Hex,
-    /// A bell, rung harder the longer the button's held, its toll a shockwave all round
-    Toll,
     /// A battle staff, swung like a polearm, its finishing blow loosing a spell
     Glaive,
     /// A flail, whirled right round so its head sweeps through everything about, and brought down
@@ -75,6 +83,27 @@ pub enum Style {
     Arc,
     /// A censer, swung on its chains, billowing clouds that hang where they drift
     Censer,
+    /// A war fan, snapped open and swept wide and flat across, quick, cutting all it sweeps
+    Fan,
+    /// A katar, punched straight out from the fist, hooked round and driven up from below
+    Punch,
+    /// A naginata, its long curved blade swept down in great arcs, the haft turned over between
+    /// them, and driven out on its point
+    Pole,
+    /// A war pick, its beak hooked down over the top and driven in, the haft levered round
+    Pick,
+    /// Throwing knives, flicked from the hand one after another, a fan of them for a heavy throw
+    Knife,
+    /// A chakram, its sharpened ring hurled spinning flat out ahead and curving back to the hand
+    Ring,
+}
+
+impl Style {
+    /// Whether it's thrown by hand, a fresh one coming up into the hand after: bombs, throwing
+    /// knives, and a chakram, which comes back to it
+    pub fn thrown(self) -> bool {
+        matches!(self, Style::Lob | Style::Knife | Style::Ring)
+    }
 }
 
 /// How a crossbow or gun is built, and so how it's loaded, see crossbow() and gun()
@@ -96,7 +125,7 @@ pub enum Build {
     Musket,
     /// A short gun flaring at its muzzle, firing a spread of shot
     Blunderbuss,
-    /// An iron tube on a wooden tiller, firing shells that burst
+    /// An iron tube on a short wooden stock, held in close by its grip, firing shells that burst
     Cannon,
     /// A small crossbow held up in the off hand by its pistol grip, spanned by a lever folded
     /// under its tiller that the other hand pulls down and back
@@ -376,8 +405,8 @@ pub struct Rarity {
     pub id: String,
     pub display_name: String,
     pub color: [u8; 3],
-    /// How likely a part is to roll this rarity, see roll_rarity()
-    chance: f64,
+    /// How likely a part is to roll this rarity, see Library::odds()
+    pub chance: f64,
     /// How much a part of this rarity adds to the weapon's grade
     power: f64,
     /// How much harder, and how much quicker, a part of this rarity makes the weapon, for its
@@ -422,6 +451,12 @@ pub struct Family {
     /// Stats added on by the weapon's grade, a number for each rarity: how far a whip reaches
     #[serde(default)]
     grade_stats: BTreeMap<String, Vec<f64>>,
+    /// How much of the rarity of its parts shows in how hard it hits, as a power of what their
+    /// damageScale makes of it, see Weapon::work_out(): 1, all of it, for most, and less for a
+    /// flatter rise from common to mythic, for the powder guns, whose one shot after a long load
+    /// has to tell whatever they're made of
+    #[serde(default = "one")]
+    rarity_damage: f64,
     /// How a crossbow or gun is built, and so loaded
     #[serde(default)]
     pub build: Build,
@@ -457,6 +492,15 @@ pub struct Family {
     /// How it swings its heavy blow, if not as its style does, see combat.rs's heavy_keys()
     #[serde(default)]
     pub heavy: Heavy,
+    /// For a tool, what it gathers: "wood", "stone" or "earth", see src\tools.rs. Tools come after
+    /// every weapon in the list, are only ever made, never rolled as loot, and have no specials.
+    #[serde(default)]
+    pub tool: Option<String>,
+    /// Which batch of weapons it came in, 0 for the first, see Library::roll_with(): loot rolls a
+    /// family of the first batch from a seed just as it always did, and gives a later one its
+    /// share of the time besides
+    #[serde(default)]
+    batch: u32,
 }
 
 /// How a melee weapon's heavy blow goes, if it has one of its own rather than its style's
@@ -503,6 +547,9 @@ pub enum Finish {
     Spin,
     /// Raised high and brought straight down
     Slam,
+    /// Two cuts in one blow, crossing: down from high on the right to low on the left, and
+    /// straight back up from low on the right to high on the left
+    Cross,
 }
 
 /// How a staff, scepter or wand casts, see combat.rs's cast_keys(): what the hand does with it as
@@ -525,6 +572,38 @@ pub enum Casting {
     Scoop,
     /// Held up and shown, as a scepter is, then levelled
     Present,
+}
+
+/// What a weapon that casts does with its spell, if not as its style and element have it: a skull
+/// focus's drains the life of what it strikes, a talisman's is a spear of holy lightning, see
+/// combat\faith.rs. And their powers, raising the dead and the great spear, are theirs at any
+/// rarity, see Power::innate().
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Rite {
+    #[default]
+    None,
+    /// A skull focus's: a bolt of death draining what it strikes
+    Drain,
+    /// A talisman's: a spear of holy lightning, through all it meets, arcing on
+    Spear,
+    /// A prism's: a shard of crystal that splits apart in flight into a fan of glittering
+    /// splinters, see combat\foci.rs
+    Prism,
+    /// A runestone's: a rune written on the ground where it's aimed, blasting up a moment later
+    Rune,
+}
+
+impl Rite {
+    /// The rite of the family with id `family`
+    pub fn of(family: &str) -> Rite {
+        match family {
+            "skullfocus" => Rite::Drain,
+            "talisman" => Rite::Spear,
+            "prism" => Rite::Prism,
+            "runestone" => Rite::Rune,
+            _ => Rite::None,
+        }
+    }
 }
 
 /// How a bow's drawn or a crossbow or gun loaded, from what its parts are like, see knack_of()
@@ -582,10 +661,12 @@ impl Family {
             return word;
         }
         let words: [&str; 5] = match (self.kind, self.style) {
-            (Kind::Melee, Style::Stab) => ["Slim", "Short", "", "Long", "Heavy"],
+            (Kind::Melee, Style::Stab | Style::Punch) => ["Slim", "Short", "", "Long", "Heavy"],
+            (Kind::Melee, Style::Fan) => ["Slim", "Small", "", "Broad", "Great"],
             (Kind::Melee, Style::Smash | Style::Quake | Style::Chop | Style::Whirl) => ["Light", "Short", "", "Heavy", "Great"],
-            (Kind::Melee, Style::Thrust | Style::Reap) => ["Short", "Light", "", "Long", "Great"],
+            (Kind::Melee, Style::Thrust | Style::Reap | Style::Pole) => ["Short", "Light", "", "Long", "Great"],
             (Kind::Melee, Style::Lash) => ["Light", "Short", "", "Long", "Heavy"],
+            (Kind::Melee, Style::Pick) => ["Light", "Short", "", "Heavy", "Great"],
             (Kind::Melee, _) => ["Light", "Short", "", "Long", "Great"],
             (Kind::Ranged, Style::Lob) => ["Small", "Light", "", "Heavy", "Great"],
             (Kind::Ranged, _) if self.build == Build::None => ["Short", "Light", "", "Long", "Great"],
@@ -654,7 +735,7 @@ pub struct SynergyDef {
 }
 
 /// What a part looks like. Which fields count depends on its slot, see build_look().
-#[derive(Deserialize, Default)]
+#[derive(Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Visual {
     shape: Option<String>,
@@ -722,6 +803,15 @@ pub struct Component {
     /// The special attack a legendary or mythic part gives the weapon
     #[serde(default)]
     special: Option<Special>,
+    /// The power on right click a weapon with it has, if it has one, in place of its family's:
+    /// the rarest part's that names one, see Power
+    #[serde(default)]
+    power: Option<Power>,
+    /// Which batch of parts it came in, 0 for the first, see Library::roll_with(): loot rolls the
+    /// first batch's parts from a seed just as it always did, and gives a later one's its share of
+    /// the time besides
+    #[serde(default)]
+    batch: u32,
     /// Index of its rarity
     #[serde(skip)]
     pub tier: usize,
@@ -741,6 +831,18 @@ impl Component {
         self.special
     }
 
+    /// The power on right click it gives a weapon in place of its family's, if it does
+    pub fn power(&self) -> Option<Power> {
+        self.power
+    }
+
+    /// Which batch of parts it came in
+    pub fn batch(&self) -> u32 {
+        self.batch
+    }
+}
+
+impl Component {
     /// Whether it fits a weapon of the family with id `family`
     pub fn fits(&self, family: &str) -> bool {
         self.compatible_families.iter().any(|f| f == family)
@@ -817,6 +919,11 @@ impl AmmoDef {
 #[serde(rename_all = "camelCase")]
 pub struct Library {
     pub rarities: Vec<Rarity>,
+    /// How much luck lifts the rarer rarities, see odds(): each is `luck` to the power of this
+    /// more likely again than the one below it, so 1 makes luck 2 double each next one up, and
+    /// less is gentler
+    #[serde(default = "one")]
+    luck_curve: f64,
     /// The power a weapon needs for each rarity as its grade
     grade_power: Vec<f64>,
     /// What each synergy on a weapon adds to its power
@@ -831,6 +938,15 @@ pub struct Library {
 }
 
 const BUILT_IN: &str = include_str!("../assets/weapons.json");
+
+/// Families taken out of the game: each one's id, the family a weapon of it from an older save
+/// comes back as, and the tags it had, for it to come back as rare as it was, see
+/// Library::retired(). Bells, which rang, come back as sceptres.
+const RETIRED: [(&str, &str, &[&str]); 1] = [("bell", "scepter", &["spell", "area", "knockback"])];
+
+/// The most seeds Library::special_seed() tries for a weapon with a special attack: as lucky as
+/// loot that's sure to have one is rolled, it's found in a few
+const SPECIAL_TRIES: usize = 2000;
 
 impl Library {
     /// Reads assets\weapons.json, so it can be changed without building again, or if that's
@@ -912,20 +1028,113 @@ impl Library {
                 return Err(format!("{} is built as a crossbow or gun, so it has to be ranged and have a length", family.id));
             }
         }
+        // Tools last, so loot's rolled from the weapons before them as it always was
+        let weapons = self.weapon_families();
+        if let Some(f) = self.families[weapons..].iter().find(|f| f.tool.is_none()) {
+            return Err(format!("{} comes after the tools: tools go last", f.id));
+        }
         Ok(())
+    }
+
+    /// How many families are weapons, the tools coming after them
+    fn weapon_families(&self) -> usize {
+        self.families.iter().position(|f| f.tool.is_some()).unwrap_or(self.families.len())
     }
 
     pub fn family(&self, id: &str) -> Option<usize> {
         self.families.iter().position(|f| f.id == id)
     }
 
-    /// A rarity, more likely the rarer ones the luckier: `luck` 1 is the chances as they are, more
-    /// makes each rarer tier that much more likely again
-    fn roll_rarity(&self, luck: f64, rng: &mut u32) -> usize {
-        let weights: Vec<f64> = self.rarities.iter().enumerate().map(|(i, r)| r.chance * luck.max(0.0).powi(i as i32)).collect();
-        let total: f64 = weights.iter().sum();
+    /// A weapon of a family since taken out of the game, saved as one of `family` made of `parts`,
+    /// as one of the family it's made as now, see RETIRED: the family, and its parts, those that
+    /// fit it kept and each of the rest swapped for one of the same slot and rarity that does,
+    /// picked by `seed`. If that leaves it rarer or less rare than it was, as the new family's tags
+    /// bring other synergies, as few of the rest as it takes are swapped for others of their
+    /// rarity too, so it comes back as rare as it was. None for a family that was never taken out.
+    pub fn retired(&self, family: &str, parts: &[usize], seed: u32) -> Option<(usize, Vec<usize>)> {
+        let &(_, now, tags) = RETIRED.iter().find(|r| r.0 == family)?;
+        let to = self.family(now)?;
+        let fam = &self.families[to];
+        let grade = |parts: &[usize], own: &[String], effects: &[usize]| {
+            let components: Vec<&Component> = parts.iter().map(|&p| &self.components[p]).collect();
+            let tags = Weapon::tags_of(self, own, effects, &components, Weapon::element_of(&components));
+            Weapon::grade_of(self, &components, self.synergies_for(&tags).len())
+        };
+        let was = grade(parts, &tags.iter().map(|&t| t.to_owned()).collect::<Vec<_>>(), &[]);
+        // For each part, the parts of its slot that fit and are of its rarity, or as near it as
+        // there are, starting from one picked by the seed: itself first if it fits
+        let mut options: Vec<Vec<usize>> = Vec::with_capacity(parts.len());
+        for (k, &p) in parts.iter().enumerate() {
+            let part = &self.components[p];
+            let fitting = |c: &Component| c.fits(now) && c.slot_type == part.slot_type;
+            let nearest = self.components.iter().filter(|c| fitting(c)).map(|c| c.tier.abs_diff(part.tier)).min()?;
+            let mut could: Vec<usize> = (0..self.components.len()).filter(|&c| c != p && fitting(&self.components[c]) && self.components[c].tier.abs_diff(part.tier) == nearest).collect();
+            if !could.is_empty() {
+                let first = hash(seed ^ (k as u32).wrapping_mul(0x9e37_79b9)) as usize % could.len();
+                could.rotate_left(first);
+            }
+            if part.fits(now) {
+                could.insert(0, p);
+            }
+            options.push(could);
+        }
+        let misfits: Vec<bool> = parts.iter().map(|&p| !self.components[p].fits(now)).collect();
+        if misfits.iter().zip(&options).any(|(&m, o)| m && o.is_empty()) {
+            return None;
+        }
+        // Each way of swapping the parts that don't fit and as few of the rest as can be, the first
+        // that leaves it as rare as it was, or the first of all if none does in a good many tries
+        let first: Vec<usize> = options.iter().map(|o| o[0]).collect();
+        let mut tries = 0;
+        let mut masks: Vec<u32> = (0..1u32 << parts.len()).collect();
+        masks.sort_by_key(|m| m.count_ones());
+        for mask in masks {
+            // Each slot's choices: just its part, or what could take its place
+            let choices: Vec<&[usize]> = (0..parts.len())
+                .map(|k| match (mask >> k & 1 == 1, misfits[k]) {
+                    (false, false) => std::slice::from_ref(&parts[k]),
+                    (false, true) => &options[k][..],
+                    (true, false) => &options[k][1..],
+                    // A part that doesn't fit is swapped whatever
+                    (true, true) => &[][..],
+                })
+                .collect();
+            if choices.iter().any(|c| c.is_empty()) {
+                continue;
+            }
+            let ways: usize = choices.iter().map(|c| c.len()).product();
+            for mut way in 0..ways {
+                let mut out = Vec::with_capacity(parts.len());
+                for c in &choices {
+                    out.push(c[way % c.len()]);
+                    way /= c.len();
+                }
+                if grade(&out, &fam.synergy_tags, &fam.effect_defs) == was {
+                    return Some((to, out));
+                }
+                tries += 1;
+                if tries > 20_000 {
+                    return Some((to, first));
+                }
+            }
+        }
+        Some((to, first))
+    }
+
+    /// How likely each rarity is to roll for a part, from common up, the more likely the rarer
+    /// ones the luckier: `luck` 1 is the chances as they are, more makes each rarer one more
+    /// likely again by `luck` to the power of luckCurve, less than 1 less likely, and none at all
+    /// rolls only common parts
+    pub fn odds(&self, luck: f64) -> Vec<f64> {
+        let luck = luck.max(0.0);
+        self.rarities.iter().enumerate().map(|(i, r)| r.chance * luck.powf(i as f64 * self.luck_curve)).collect()
+    }
+
+    /// A rarity picked by `odds`, as odds() gives them: none rarer than there are odds for
+    fn roll_rarity(odds: &[f64], rng: &mut u32) -> usize {
+        let total: f64 = odds.iter().sum();
         let mut pick = random(rng) * total;
-        for (i, w) in weights.iter().enumerate() {
+        for (i, w) in odds.iter().enumerate() {
             if pick < *w {
                 return i;
             }
@@ -935,31 +1144,93 @@ impl Library {
     }
 
     /// Rolls a weapon from `seed`: of `family`, or any family for None. `luck` is as for
-    /// roll_rarity(), from where it was found.
+    /// odds(), from where it was found.
     pub fn generate(&self, seed: u32, family: Option<usize>, luck: f64) -> Weapon {
-        let (family, parts) = self.roll(seed, family, luck);
+        self.generate_with(seed, family, &self.odds(luck))
+    }
+
+    /// The same, each part's rarity rolled by `odds`, see odds()
+    pub fn generate_with(&self, seed: u32, family: Option<usize>, odds: &[f64]) -> Weapon {
+        let (family, parts) = self.roll_with(seed, family, odds);
         Weapon::assemble(self, family, parts, seed)
+    }
+
+    /// What generate_with() would make from `seed`, worked out from its parts alone, quickly,
+    /// without building it: its family, its grade, and its special attack if it has one
+    pub fn preview(&self, seed: u32, family: Option<usize>, odds: &[f64]) -> (usize, usize, Option<Special>) {
+        let (family, parts) = self.roll_with(seed, family, odds);
+        let components: Vec<&Component> = parts.iter().map(|&p| &self.components[p]).collect();
+        let (profile, _, grade) = Weapon::work_out(self, family, &components, roll_size(seed), seed);
+        (family, grade, profile.special.map(|(s, _)| s))
+    }
+
+    /// `seed`, or if the weapon generate() makes from it with `luck` has no special attack, the
+    /// first seed after it, as hash() leads on from it, whose weapon has: for loot that's sure to
+    /// have one. As lucky as it's rolled, the rarer specials are as much rarer than the rest.
+    pub fn special_seed(&self, seed: u32, family: Option<usize>, luck: f64) -> u32 {
+        let odds = self.odds(luck);
+        let mut next = seed;
+        for _ in 0..SPECIAL_TRIES {
+            let (f, parts) = self.roll_with(next, family, &odds);
+            if self.special_in(f, &parts).is_some() {
+                return next;
+            }
+            next = hash(next ^ 0x5bec_1a1);
+        }
+        seed
     }
 
     /// Which family and parts generate() makes a weapon of
     fn roll(&self, seed: u32, family: Option<usize>, luck: f64) -> (usize, Vec<usize>) {
+        self.roll_with(seed, family, &self.odds(luck))
+    }
+
+    /// The same, by `odds`, see odds().
+    ///
+    /// Families and parts come in batches, see Family::batch and Component::batch. A seed rolls
+    /// what it always did from the first batch, drawing the same numbers in the same order, and
+    /// then, from numbers of its own, swaps that for one of a later batch as often as the later
+    /// batch's share of everything that could have been rolled: so every family and part is as
+    /// likely as its weight makes it, and a seed that keeps the first batch's makes the very same
+    /// weapon it always did.
+    fn roll_with(&self, seed: u32, family: Option<usize>, odds: &[f64]) -> (usize, Vec<usize>) {
         let mut rng = hash(seed ^ 0x3ea9_7c11);
-        let family = family.unwrap_or_else(|| (random(&mut rng) * self.families.len() as f64) as usize % self.families.len());
+        // Any weapon, never a tool. The first batch's families come first.
+        let weapons = self.weapon_families().max(1);
+        let first = self.families[..weapons].iter().take_while(|f| f.batch == 0).count().max(1);
+        let family = family.unwrap_or_else(|| {
+            let rolled = (random(&mut rng) * first as f64) as usize % first;
+            let mut later = hash(seed ^ 0x1a7e_ba7c);
+            if weapons > first && random(&mut later) * weapons as f64 >= first as f64 { first + (random(&mut later) * (weapons - first) as f64) as usize % (weapons - first) } else { rolled }
+        });
         let id = &self.families[family].id;
         let mut parts = Vec::new();
-        for slot in &self.families[family].slots {
-            let tier = self.roll_rarity(luck, &mut rng);
+        for (s, slot) in self.families[family].slots.iter().enumerate() {
+            let tier = Library::roll_rarity(odds, &mut rng);
             let fits = |c: &&Component| c.slot_type == *slot && c.compatible_families.contains(id);
+            let of = |t: usize, batch: bool| self.components.iter().enumerate().filter(|(_, c)| fits(c) && c.tier == t && (c.batch > 0) == batch).collect::<Vec<_>>();
             // The rarity rolled, or if nothing fits that the next rarity down
-            let pool = (0..=tier).rev().map(|t| self.components.iter().enumerate().filter(|(_, c)| fits(c) && c.tier == t).collect::<Vec<_>>()).find(|pool| !pool.is_empty());
-            let pool = pool.unwrap_or_else(|| self.components.iter().enumerate().filter(|(_, c)| fits(c)).collect());
-            let total: f64 = pool.iter().map(|(_, c)| c.weight.max(0.0)).sum();
-            let mut pick = random(&mut rng) * total;
-            let chosen = pool.iter().find(|(_, c)| {
-                pick -= c.weight.max(0.0);
-                pick < 0.0
-            });
-            parts.push(chosen.or(pool.last()).unwrap().0);
+            let found = (0..=tier).rev().find(|&t| !of(t, false).is_empty() || !of(t, true).is_empty());
+            let (pool, newer) = match found {
+                Some(t) => (of(t, false), of(t, true)),
+                None => (self.components.iter().enumerate().filter(|(_, c)| fits(c) && c.batch == 0).collect(), self.components.iter().enumerate().filter(|(_, c)| fits(c) && c.batch > 0).collect()),
+            };
+            let weigh = |pool: &[(usize, &Component)]| pool.iter().map(|(_, c)| c.weight.max(0.0)).sum::<f64>();
+            let pick_from = |pool: &[(usize, &Component)], r: f64| {
+                let mut pick = r * weigh(pool);
+                let chosen = pool.iter().find(|(_, c)| {
+                    pick -= c.weight.max(0.0);
+                    pick < 0.0
+                });
+                chosen.or(pool.last()).map(|c| c.0)
+            };
+            // Drawn as it always was, whether it's kept or not, so the next slot's are too
+            let r = random(&mut rng);
+            let kept = pick_from(&pool, r);
+            let mut later = hash(seed ^ 0x7e57_ba7c ^ (s as u32 + 1).wrapping_mul(0x9e37_79b9));
+            let (old, new) = (weigh(&pool), weigh(&newer));
+            let swapped = (new > 0.0 && random(&mut later) * (old + new) >= old).then(|| pick_from(&newer, random(&mut later))).flatten();
+            parts.push(swapped.or(kept).or_else(|| pick_from(&newer, r)).unwrap());
         }
         (family, parts)
     }
@@ -968,8 +1239,14 @@ impl Library {
     /// its parts alone, without building it: as work_out() picks it, the rarest part's that has one.
     /// Of family `family` if that's given, otherwise whichever the seed rolls.
     pub fn special_of(&self, seed: u32, family: Option<usize>, luck: f64) -> Option<Special> {
-        let (_, parts) = self.roll(seed, family, luck);
-        parts.iter().map(|&p| &self.components[p]).filter(|c| c.special.is_some()).min_by_key(|c| std::cmp::Reverse(c.tier)).and_then(|c| c.special)
+        let (f, parts) = self.roll(seed, family, luck);
+        self.special_in(f, &parts)
+    }
+
+    /// The special attack a weapon made of `parts` has, as work_out() picks it
+    fn special_in(&self, family: usize, parts: &[usize]) -> Option<Special> {
+        let fam = &self.families[family];
+        parts.iter().map(|&p| &self.components[p]).filter(|c| c.special.is_some() && special_counts(fam, c)).min_by_key(|c| std::cmp::Reverse(c.tier)).and_then(|c| c.special)
     }
 
     /// For looking at a part: a weapon made with the part with id `part`, of the first family it
@@ -992,7 +1269,18 @@ impl Library {
         let c = &self.components[index];
         let family = self.family(c.compatible_families.first()?)?;
         let luck = [1.0, 2.0, 3.0, 5.0, 8.0, 12.0][c.tier.min(5)];
-        (0..400_000u32).map(hash).find(|&seed| size.is_none_or(|s| roll_size(seed) == s) && self.roll(seed, Some(family), luck).1.contains(&index)).map(|seed| self.generate(seed, Some(family), luck))
+        // A part that brings a power on a weapon none of whose other parts brings one, so it's
+        // its power that's seen
+        let shows = |parts: &[usize]| c.power.is_none() || parts.iter().all(|&p| p == index || self.components[p].power.is_none());
+        (0..400_000u32)
+            .map(hash)
+            .find(|&seed| {
+                size.is_none_or(|s| roll_size(seed) == s) && {
+                    let parts = self.roll(seed, Some(family), luck).1;
+                    parts.contains(&index) && shows(&parts)
+                }
+            })
+            .map(|seed| self.generate(seed, Some(family), luck))
     }
 
     /// The synergies a weapon with `tags` has
@@ -1186,6 +1474,8 @@ pub struct Profile {
     pub synergies: Vec<ActiveSynergy>,
     /// Its special attack, if one of its parts gives it one, and which part
     pub special: Option<(Special, String)>,
+    /// Its power on right click, if it's legendary or mythic or has a part that is, see Power
+    pub power: Option<Power>,
     /// Its overall rarity, as Weapon::grade: what a whip can do grows with it
     pub grade: usize,
     /// How a crossbow or gun is built, and so loaded
@@ -1215,6 +1505,8 @@ pub struct Profile {
     pub casting: Casting,
     /// How it's drawn or loaded, for a bow, crossbow or gun, see knack_of()
     pub knack: Knack,
+    /// What its spell does, for a skull focus or a talisman, see Rite
+    pub rite: Rite,
 }
 
 /// A special attack, unleashed once it's charged up: what legendary and mythic parts give a weapon
@@ -1371,6 +1663,38 @@ pub enum Special {
     Firecrackers,
     /// An arrow bursting where it strikes into a ring of thorns flying out all round
     Thornburst,
+    /// A frost bomb skimmed low that skips along the ground, ice bursting up bigger at every skip
+    Rimeskip,
+    /// A bomb cracking open into clockwork charges that scuttle off after what's near and cling on
+    Scuttlers,
+    /// Three arrows with burning wicks, sticking fast in what they strike and blowing up after
+    Wickfire,
+    /// An arrow bursting into a lantern of light that hangs where it struck, searing and healing
+    Lantern,
+    /// Two balls chained together, spinning apart as they fly, scything through a wide swath
+    Chainshot,
+    /// A cone of barbed caltrops blasted across the ground, crippling what walks over them
+    Caltrops,
+    /// A ball of void tearing a rift open where it strikes, the rift spitting shards at what's near
+    Riftshot,
+    /// Knives of shadow fanning out in the air, then flying one after another at what's near
+    GloamingKnives,
+    /// A lunge from a sheathed blade, the cut flying on as a line of frost that shatters a beat later
+    SeveringDraw,
+    /// Jab after jab as fast as the eye can follow, each flinging a venomous fang on ahead
+    ViperThrusts,
+    /// One great sweep, wisps of what it cut streaming back to heal, then flung on at what's left
+    SoulGleaning,
+    /// The weapon raised for lightning to strike it, then slammed down into a rolling ring of it
+    Stormanvil,
+    /// Three stakes loosed into the ground, lightning strung between them a while
+    Stormstakes,
+    /// A circle of glowing script written on the ground rune by rune, blazing up once it's full
+    Litany,
+    /// A knell of fire flung out, rolling out in a ring, everything it reaches ringing out in turn
+    EmberKnell,
+    /// A hex of blood binding everything near what it strikes together, so all suffer what one does
+    Bloodthread,
 }
 
 impl Special {
@@ -1451,6 +1775,22 @@ impl Special {
             Special::ChainSwing => "Chain Swing",
             Special::Firecrackers => "Firecracker String",
             Special::Thornburst => "Thornburst",
+            Special::Rimeskip => "Rimeskip Charge",
+            Special::Scuttlers => "Scuttling Charges",
+            Special::Wickfire => "Wickfire Arrows",
+            Special::Lantern => "Lantern Arrow",
+            Special::Chainshot => "Chainshot",
+            Special::Caltrops => "Caltrop Blast",
+            Special::Riftshot => "Riftshot",
+            Special::GloamingKnives => "Gloaming Knives",
+            Special::SeveringDraw => "Severing Draw",
+            Special::ViperThrusts => "Viper Thrusts",
+            Special::SoulGleaning => "Soul Gleaning",
+            Special::Stormanvil => "Stormanvil",
+            Special::Stormstakes => "Stormstakes",
+            Special::Litany => "Litany Circle",
+            Special::EmberKnell => "Ember Knell",
+            Special::Bloodthread => "Bloodthread Hex",
         }
     }
 
@@ -1471,7 +1811,7 @@ impl Special {
             Special::Flurry => "Dash forward, slashing at everything near five times.",
             Special::Nova => "A burst of holy light throws everything back and heals you.",
             Special::Rain => "Arrows rain down round where you aim.",
-            Special::Bloodmoon => "Drain the life of every enemy within 14 meters to heal yourself.",
+            Special::Bloodmoon => "A blood moon rises where you aim, draining the life of every enemy in its ring to heal you.",
             Special::Plague => "A great cloud of venom where you aim, lingering.",
             Special::Starfall => "A barrage of stars seeks out the enemies round you.",
             Special::FrostNova => "Ice bursts out all round you, freezing everything within 9 meters.",
@@ -1531,7 +1871,743 @@ impl Special {
             Special::ChainSwing => "Catch your lash on something high ahead and swing from it, carried on and down; you land with a crack that throws back what's round you.",
             Special::Firecrackers => "Fling a string of eight little charges across the ground ahead; they go off one after another, each throwing what's on it.",
             Special::Thornburst => "Loose an arrow that bursts where it strikes into a ring of thorns flying out all round, through everything near.",
+            Special::Rimeskip => "Skim a frost bomb low across the ground: it skips four times, ice bursting up bigger at every skip, and shatters in a great freezing burst.",
+            Special::Scuttlers => "Roll out a bomb that cracks open into six clockwork charges; they scuttle off after the nearest enemies, cling on, and go off.",
+            Special::Wickfire => "Loose three arrows with burning wicks at the nearest enemies; each sticks fast where it strikes, spitting sparks, and blows up two seconds on.",
+            Special::Lantern => "Loose an arrow that bursts into a lantern of light where it strikes; for 7 s it sears every enemy within 8 meters each second, and heals you in its glow.",
+            Special::Chainshot => "Fire two balls chained together; they spin apart as they fly, scything through everything in a two-meter swath and knocking it off its feet.",
+            Special::Caltrops => "Blast a cone of barbed caltrops across the ground ahead; for 8 s whatever walks over them is slowed and bleeds.",
+            Special::Riftshot => "Fire a ball of void that tears a rift open where it strikes; for 5 s the rift spits shards at whatever's nearest, then snaps shut, dragging everything in.",
+            Special::GloamingKnives => "Six knives of shadow fan out in the air above you, then fly one after another at the nearest enemies, bursting into darkness where they strike.",
+            Special::SeveringDraw => "Draw in a flash with a lunge: the cut flies on 13 meters at what's in front as a line of frost hanging in the air through all in its way, and a heartbeat later shatters, cutting and freezing all it crossed.",
+            Special::ViperThrusts => "Jab eight times as fast as the eye can follow, each thrust flinging a venomous fang on ahead through what's in front, poisoning it.",
+            Special::SoulGleaning => "Reap through everything in front; each thing cut gives up a wisp that streams back to heal you, then every wisp gleaned is flung on at what's left.",
+            Special::Stormanvil => "Raise your weapon for the lightning to strike it, then slam it down: a ring of lightning rolls out 14 meters, bolts leaping off it into all it passes.",
+            Special::Stormstakes => "Loose three stakes into the ground ahead; for 6 s lightning strings between them, shocking whatever stands inside or crosses it, and they blow at the end.",
+            Special::Litany => "Write a circle of glowing script where you aim, rune by rune, slowing everything inside, until the circle's full and blazes up in a column of light.",
+            Special::EmberKnell => "Ring out a knell of fire where you aim: a ring of flame rolls out 10 meters, and whatever it reaches rings out in turn, its own ring rolling on from it.",
+            Special::Bloodthread => "Fling a hex of blood that binds everything within 12 meters of where it strikes with threads of blood; for 6 s half of what any of them suffers, the rest suffer too.",
         }
+    }
+}
+
+/// What a legendary or mythic weapon does on right click: a power of its family's, in its element,
+/// its own besides its special attack on R. Where right click already does something, a heavy
+/// blow or a bow's draw, that carries it; a crossbow or gun shoots it, bombs throw it and a weapon
+/// that casts casts it. See combat/signatures/powers.rs.
+///
+/// A part can bring a power of its own in place of its family's, see Component::power: the ones
+/// from Gale on, each with a move of its own, see powers.rs's power_keys().
+#[derive(Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum Power {
+    /// A sword's: a crescent of its element flying on from the heavy blow, through all it meets
+    Crescent,
+    /// A greatsword's: a broad, slow wave of it, throwing back what it cuts
+    Rending,
+    /// A katana's: a thin cut flying far and fast
+    WindCut,
+    /// A dagger's: three small crescents in a fan
+    BladeFan,
+    /// A whip's: its crack running on low over the ground as a wave
+    LashWave,
+    /// An axe's, halberd's, scythe's or battle staff's: a spinning wheel of its element hurled out
+    /// and coming back, cutting both ways
+    Wheel,
+    /// A spear's: a spear of its element hurled through everything in a line
+    Javelin,
+    /// A hammer's, maul's or flail's: the ground split open in a line ahead, erupting step by step
+    Fissure,
+    /// A bow's drawn full: an arrow like a comet, through everything, bursting at the end
+    CometArrow,
+    /// A crossbow's: a bolt that sticks where it strikes and bursts apart into shards
+    BurstBolt,
+    /// A pistol's: a glowing slug glancing from one enemy on to the next
+    Ricochet,
+    /// A musket's: a lance of its element through everything in a line, bursting along it after
+    LanceShot,
+    /// A blunderbuss's: a cone of its element's embers breathed out
+    Breath,
+    /// A hand cannon's: a shell lobbed high onto the crosshair, bursting wide
+    Mortar,
+    /// Bombs': a charge dragging everything round it in, then bursting
+    Vortex,
+    /// A staff's, scepter's or lightning rod's: a great slow orb, bursting wide where it lands
+    Comet,
+    /// A wand's, tome's or totem's: motes seeking out what's near
+    Seekers,
+    /// An orb's or censer's: a ring of its element rolling out all round
+    Nova,
+    /// A war fan's: a whirling funnel of its element sent off along the ground, sweeping up what
+    /// it passes and carrying it along, flinging it off at the end
+    Gale,
+    /// A katar's: five ghostly fists of its element punched out one after another at the crosshair
+    Fists,
+    /// A naginata's: a ring of spinning blades of its element thrown out all round and drawn back
+    /// in, cutting both ways and dragging in what it catches coming back
+    BladeRing,
+    /// A hook of its element on a chain, flung at the crosshair, dragging what it catches to the
+    /// feet: on a scythe, halberd, whip or naginata with a hooked part
+    Hook,
+    /// An anvil of its element dropped out of the sky onto the ring: on a hammer, maul or flail
+    Anvil,
+    /// A spear of its element hurled high to come down on the ring and stake the ground, pulsing:
+    /// on a spear, halberd or naginata
+    Stake,
+    /// An arrow loosed high, bursting over the ring into a rain of arrowlets: on a bow
+    Cloudburst,
+    /// Two weighted balls of its element spinning on a line, winding round what they strike and
+    /// holding it and what's by it fast: on a crossbow
+    Bolas,
+    /// A flare of its element shot high, bursting over the ring and hanging there, burning down on
+    /// what's under it and marking it: on a gun
+    Starshell,
+    /// A beacon of its element set down on the ring, tolling three times, a ring rolling out from
+    /// it each time: on a staff or anything else that casts
+    Beacon,
+    /// A pot of its element lobbed onto the ring, bursting into a wheel of shards skimming out
+    /// along the ground: on bombs
+    Shrapnel,
+    /// A great spear of holy lightning hurled from a talisman, through everything in a line,
+    /// lightning arcing off all it strikes and a bolt coming down where it ends: on a talisman,
+    /// at any rarity
+    Thunderspear,
+    /// A shade of death sent to the ring, raising skeletons out of the ground there, or out of
+    /// the slain lying near, to fight for a while: on a skull focus, at any rarity
+    RaiseDead,
+    /// A war pick's: driven down into the ground, splitting it open in a star of short cracks all
+    /// round, each erupting step by step
+    Starbreak,
+    /// Throwing knives': stepping through the shadows to behind what's aimed at and striking it in
+    /// the back, at any rarity
+    Shadowstep,
+    /// A chakram's: three rings of its element hurled out in a fan, each curving back
+    Ringstorm,
+    /// A prism's: the light split into a fan of rays, each of another element
+    Spectrum,
+    /// A runestone's: a circle of runes written on the ring one by one, then blasting up together
+    Runeburst,
+    /// A spear of holy lightning hurled to stick in the ground or in what it strikes, erupting a
+    /// moment later into lightning leaping all round: on a talisman's rarest parts
+    Vigil,
+    /// Spears of holy lightning raining down out of the sky onto the ring one after another: on a
+    /// talisman's rarest parts
+    Heavenfall,
+    /// Three quick spears of holy lightning hurled one after another: on a talisman's rarest parts
+    Triune,
+    /// Lightning called down out of the sky onto the ring, striking again and again round it
+    Stormcall,
+    /// Ice bursting up out of the ground in a line of spikes, leaving the ground frozen
+    Glacier,
+    /// Tendrils of shadow reaching up out of the ground at the ring, holding what they catch
+    Shadowgrasp,
+    /// Two orbs of its element wheeling round the hand, then flying off spiralling round each other
+    Helix,
+    /// A bolt of lightning splitting at each enemy it strikes into two leaping on to the next, see
+    /// combat/signatures/tempest.rs
+    Forkbolt,
+    /// A ball of lightning drifting slowly out, lashing whatever comes near it, bursting at the end
+    CracklingOrb,
+    /// A crackling tether of lightning from the hand to what it strikes, wringing it till it snaps
+    Stormlash,
+    /// A charge of lightning cast onto the ground, shocking whatever walks onto it
+    StaticField,
+    /// A dash on ahead in a flash, lightning striking all along the way
+    Thunderstep,
+    /// Held to gather a charge, then let go all round in lightning leaping out to everything near
+    Overcharge,
+    /// A blade raised for lightning to strike it, slashed down to throw the bolt on into what's
+    /// ahead, and left charged a while, each blow calling lightning down: on a sword, greatsword,
+    /// katana, axe or dagger, see combat/signatures/thunder.rs
+    Stormbrand,
+    /// A slam sending lightning racing off along the ground after what's near: on a hammer, maul
+    /// or war pick
+    Stormrunners,
+    /// An arrow of lightning splitting at the first thing it strikes into four leaping on to the
+    /// next: on a bow
+    Thundersplit,
+    /// A dead straight rail of lightning shot through everything in a line: on a gun or crossbow
+    Railshot,
+    /// Two chakrams thrown wide and back with lightning strung between them: on a chakram
+    TwinArc,
+    /// A storm gathering over the ring and one great bolt coming down out of it
+    Judgment,
+    /// Lightning poured out of the hand while right click's held, a last surge as it's let go
+    Torrent,
+    /// Lightning breaking up out of the ground round the ring, draining what it strikes
+    Gravebolt,
+    /// A burning rock called down out of the sky onto the ring, leaving the ground burning: on a
+    /// staff, scepter or lightning rod, see combat/signatures/wilds.rs
+    Meteor,
+    /// The weapon swung round twice through fire, flinging cinders out in a wide fan with each
+    /// sweep: on a sword, greatsword, axe, halberd, dagger or katar
+    CinderWhirl,
+    /// An arrow loosed low, leaving a line of fire burning along the ground it flies over: on a
+    /// bow or crossbow
+    Kindling,
+    /// A lance of ice formed in front of the hand and thrust out, through three, shattering at
+    /// the end: on a wand, staff, orb or lightning rod
+    IceLance,
+    /// Three shards of rime thrown in a fan, each freezing what it strikes solid, or lying in wait
+    /// on the ground as a snare: on throwing knives, a chakram, a katar or a dagger
+    RimeSnare,
+    /// A seed thrown to the ring, a wall of brambles bursting up across the way there, holding and
+    /// tearing at what crosses it: on a totem, staff, spear or battle staff
+    Bramble,
+    /// A boulder heaved up out of the ground and hurled, bouncing and rolling on over what's in its
+    /// way: on a hammer, maul, war pick or flail
+    Boulder,
+    /// Seven missiles of arcane light let go one after another, weaving in onto what's aimed at,
+    /// each harder than the last: on a tome, orb, wand or prism, see combat/signatures/arcana.rs
+    Missiles,
+    /// An hourglass of arcane light thrown to the ring, time running slow round it, what's there
+    /// slowed and laid open to every blow: on a runestone, prism, staff or tome
+    Hourglass,
+    /// An orb of death through everything in a line, tearing a wisp of soul out of each that flies
+    /// back to heal you: on a skull focus, scythe or tome
+    SoulHarvest,
+    /// A shard of bone flung at what's aimed at, a cage of bone spikes bursting up round it,
+    /// holding it, then crashing in on it: on a skull focus, scythe, totem or dagger
+    BoneCage,
+    /// A mote of holy light thrown to the ring, a circle of it standing there a while, healing you
+    /// in it and searing what's in it: on a censer, talisman, scepter or orb
+    Sanctuary,
+    /// A brand of light thrown at what's aimed at, a pillar of light coming down on it, healing you:
+    /// on a hammer, scepter, talisman or maul
+    Smite,
+    /// Four armored skeletons raised in a line across the ring, standing their ground there and
+    /// striking what comes near it: a necromancer's, on a skull focus or tome, see
+    /// combat/signatures/summons.rs
+    Phalanx,
+    /// Three skeletons with bows raised at the ring, keeping back and shooting: on a skull focus
+    /// or totem
+    Archers,
+    /// A grave brute raised at the ring, slow and huge, its gravestone of a club striking all round
+    /// where it lands: on a skull focus's rarest skull
+    Colossus,
+    /// Three wraiths raised at the ring, flying at what's near and swooping through it again and
+    /// again: on a skull focus, scythe or dagger
+    Wraiths,
+    /// The slain lying round the ring raised as what they were, to fight for you: on a skull focus,
+    /// tome, scythe or dagger
+    Corpses,
+}
+
+impl Power {
+    /// Every one of them
+    #[cfg(test)]
+    pub const ALL: [Power; 75] = [
+        Power::Crescent,
+        Power::Rending,
+        Power::WindCut,
+        Power::BladeFan,
+        Power::LashWave,
+        Power::Wheel,
+        Power::Javelin,
+        Power::Fissure,
+        Power::CometArrow,
+        Power::BurstBolt,
+        Power::Ricochet,
+        Power::LanceShot,
+        Power::Breath,
+        Power::Mortar,
+        Power::Vortex,
+        Power::Comet,
+        Power::Seekers,
+        Power::Nova,
+        Power::Gale,
+        Power::Fists,
+        Power::BladeRing,
+        Power::Hook,
+        Power::Anvil,
+        Power::Stake,
+        Power::Cloudburst,
+        Power::Bolas,
+        Power::Starshell,
+        Power::Beacon,
+        Power::Shrapnel,
+        Power::Thunderspear,
+        Power::RaiseDead,
+        Power::Starbreak,
+        Power::Shadowstep,
+        Power::Ringstorm,
+        Power::Spectrum,
+        Power::Runeburst,
+        Power::Vigil,
+        Power::Heavenfall,
+        Power::Triune,
+        Power::Stormcall,
+        Power::Glacier,
+        Power::Shadowgrasp,
+        Power::Helix,
+        Power::Forkbolt,
+        Power::CracklingOrb,
+        Power::Stormlash,
+        Power::StaticField,
+        Power::Thunderstep,
+        Power::Overcharge,
+        Power::Stormbrand,
+        Power::Stormrunners,
+        Power::Thundersplit,
+        Power::Railshot,
+        Power::TwinArc,
+        Power::Judgment,
+        Power::Torrent,
+        Power::Gravebolt,
+        Power::Meteor,
+        Power::CinderWhirl,
+        Power::Kindling,
+        Power::IceLance,
+        Power::RimeSnare,
+        Power::Bramble,
+        Power::Boulder,
+        Power::Missiles,
+        Power::Hourglass,
+        Power::SoulHarvest,
+        Power::BoneCage,
+        Power::Sanctuary,
+        Power::Smite,
+        Power::Phalanx,
+        Power::Archers,
+        Power::Colossus,
+        Power::Wraiths,
+        Power::Corpses,
+    ];
+
+    /// Whether it has a move of its own on right click, rather than being carried by a melee
+    /// weapon's heavy blow or a bow drawn full: the ones parts bring, and the new families'
+    pub fn own_move(self) -> bool {
+        !matches!(
+            self,
+            Power::Crescent
+                | Power::Rending
+                | Power::WindCut
+                | Power::BladeFan
+                | Power::LashWave
+                | Power::Wheel
+                | Power::Javelin
+                | Power::Fissure
+                | Power::CometArrow
+                | Power::BurstBolt
+                | Power::Ricochet
+                | Power::LanceShot
+                | Power::Breath
+                | Power::Mortar
+                | Power::Vortex
+                | Power::Comet
+                | Power::Seekers
+                | Power::Nova
+        )
+    }
+
+    /// Whether it's one of a talisman's spears of holy lightning, formed in the hand while it's
+    /// aimed, see faith.rs
+    pub fn spear(self) -> bool {
+        matches!(self, Power::Thunderspear | Power::Vigil | Power::Triune)
+    }
+
+    /// Whether it's lightning whatever's in the weapon, see combat/signatures/tempest.rs
+    pub fn lightning(self) -> bool {
+        matches!(self, Power::Forkbolt | Power::CracklingOrb | Power::Stormlash | Power::StaticField | Power::Thunderstep | Power::Overcharge) || self.thunder()
+    }
+
+    /// Whether it's of the second storm of lightning, see combat/signatures/thunder.rs
+    pub fn thunder(self) -> bool {
+        matches!(self, Power::Stormbrand | Power::Stormrunners | Power::Thundersplit | Power::Railshot | Power::TwinArc | Power::Judgment | Power::Torrent | Power::Gravebolt)
+    }
+
+    /// The school of magic it's of, whatever's in the weapon, for the powers of other schools than
+    /// lightning, see combat/signatures/wilds.rs and arcana.rs: fire, frost, the wild's thorns,
+    /// arcane light, death and holy light; the Boulder Heave is the earth's own, of no element
+    pub fn school(self) -> Option<Element> {
+        Some(match self {
+            Power::Meteor | Power::CinderWhirl | Power::Kindling => Element::Fire,
+            Power::IceLance | Power::RimeSnare => Element::Frost,
+            Power::Bramble => Element::Poison,
+            Power::Missiles | Power::Hourglass => Element::Arcane,
+            Power::SoulHarvest | Power::BoneCage => Element::Void,
+            Power::Sanctuary | Power::Smite => Element::Holy,
+            _ => return None,
+        })
+    }
+
+    /// Whether it's one of the powers of fire, frost, earth and the wild, see
+    /// combat/signatures/wilds.rs
+    pub fn wild(self) -> bool {
+        matches!(self, Power::Meteor | Power::CinderWhirl | Power::Kindling | Power::IceLance | Power::RimeSnare | Power::Bramble | Power::Boulder)
+    }
+
+    /// Whether it raises a necromancer's dead to fight, see combat/signatures/summons.rs: used again
+    /// while it comes round, it sends what it raised at what's aimed at
+    pub fn summons(self) -> bool {
+        matches!(self, Power::Phalanx | Power::Archers | Power::Colossus | Power::Wraiths | Power::Corpses)
+    }
+
+    /// Whether it's one of the powers of arcane light, death and holy light, see
+    /// combat/signatures/arcana.rs
+    pub fn arcane(self) -> bool {
+        matches!(self, Power::Missiles | Power::Hourglass | Power::SoulHarvest | Power::BoneCage | Power::Sanctuary | Power::Smite)
+    }
+
+    /// Whether a family's weapons have its power at any rarity, not only legendary and mythic
+    /// ones: what a necromancer, a priest and a rogue are about, see character::Class
+    pub fn innate(family: &str) -> bool {
+        matches!(family, "skullfocus" | "talisman" | "knives")
+    }
+
+    /// The one a family's legendary and mythic weapons have, by its id
+    pub fn of(family: &str) -> Option<Power> {
+        Some(match family {
+            "sword" => Power::Crescent,
+            "greatsword" => Power::Rending,
+            "katana" => Power::WindCut,
+            "dagger" => Power::BladeFan,
+            "whip" => Power::LashWave,
+            "axe" | "halberd" | "scythe" | "battlestaff" => Power::Wheel,
+            "spear" => Power::Javelin,
+            "hammer" | "maul" | "flail" => Power::Fissure,
+            "bow" => Power::CometArrow,
+            "crossbow" | "arbalest" | "repeater" | "handcrossbow" | "twinprod" | "siegecrossbow" | "harpoon" | "boltthrower" => Power::BurstBolt,
+            "pistol" => Power::Ricochet,
+            "musket" => Power::LanceShot,
+            "blunderbuss" => Power::Breath,
+            "handcannon" => Power::Mortar,
+            "bombs" => Power::Vortex,
+            "staff" | "scepter" | "rod" => Power::Comet,
+            "wand" | "tome" | "totem" => Power::Seekers,
+            "orb" | "censer" => Power::Nova,
+            "warfan" => Power::Gale,
+            "katar" => Power::Fists,
+            "naginata" => Power::BladeRing,
+            "talisman" => Power::Thunderspear,
+            "skullfocus" => Power::RaiseDead,
+            "warpick" => Power::Starbreak,
+            "knives" => Power::Shadowstep,
+            "chakram" => Power::Ringstorm,
+            "prism" => Power::Spectrum,
+            "runestone" => Power::Runeburst,
+            _ => return None,
+        })
+    }
+
+    /// What it is, whatever its element
+    pub fn noun(self) -> &'static str {
+        match self {
+            Power::Crescent => "Crescent",
+            Power::Rending => "Rending Wave",
+            Power::WindCut => "Wind Cut",
+            Power::BladeFan => "Blade Fan",
+            Power::LashWave => "Lash Wave",
+            Power::Wheel => "Wheel",
+            Power::Javelin => "Javelin",
+            Power::Fissure => "Fissure",
+            Power::CometArrow => "Comet Arrow",
+            Power::BurstBolt => "Burst Bolt",
+            Power::Ricochet => "Ricochet",
+            Power::LanceShot => "Lance Shot",
+            Power::Breath => "Breath",
+            Power::Mortar => "Mortar",
+            Power::Vortex => "Vortex",
+            Power::Comet => "Comet",
+            Power::Seekers => "Seekers",
+            Power::Nova => "Nova",
+            Power::Gale => "Gale",
+            Power::Fists => "Fists",
+            Power::BladeRing => "Blade Ring",
+            Power::Hook => "Hook",
+            Power::Anvil => "Anvil",
+            Power::Stake => "Stake",
+            Power::Cloudburst => "Cloudburst",
+            Power::Bolas => "Bolas",
+            Power::Starshell => "Starshell",
+            Power::Beacon => "Beacon",
+            Power::Shrapnel => "Shrapnel",
+            Power::Thunderspear => "Thunderspear",
+            Power::RaiseDead => "Raising",
+            Power::Starbreak => "Starbreak",
+            Power::Shadowstep => "Shadowstep Strike",
+            Power::Ringstorm => "Ringstorm",
+            Power::Spectrum => "Spectrum",
+            Power::Runeburst => "Runeburst",
+            Power::Vigil => "Vigil",
+            Power::Heavenfall => "Heavenfall",
+            Power::Triune => "Triune",
+            Power::Stormcall => "Stormcall",
+            Power::Glacier => "Glacier",
+            Power::Shadowgrasp => "Grasp",
+            Power::Helix => "Helix",
+            Power::Forkbolt => "Forking Bolt",
+            Power::CracklingOrb => "Crackling Orb",
+            Power::Stormlash => "Stormlash Tether",
+            Power::StaticField => "Static Field",
+            Power::Thunderstep => "Thunderstep Dash",
+            Power::Overcharge => "Overcharge Discharge",
+            Power::Stormbrand => "Stormbrand Edge",
+            Power::Stormrunners => "Stormrunner Slam",
+            Power::Thundersplit => "Thundersplit Arrow",
+            Power::Railshot => "Galvanic Railshot",
+            Power::TwinArc => "Twin Arc",
+            Power::Judgment => "Judgment Bolt",
+            Power::Torrent => "Galvanic Torrent",
+            Power::Gravebolt => "Grave Lightning",
+            Power::Meteor => "Cinder Meteor",
+            Power::CinderWhirl => "Cinder Whirl",
+            Power::Kindling => "Kindling Arrow",
+            Power::IceLance => "Ice Lance",
+            Power::RimeSnare => "Rime Snares",
+            Power::Bramble => "Bramble Wall",
+            Power::Boulder => "Boulder Heave",
+            Power::Missiles => "Arcane Missiles",
+            Power::Hourglass => "Hourglass Field",
+            Power::SoulHarvest => "Soul Harvest",
+            Power::BoneCage => "Bone Cage",
+            Power::Sanctuary => "Sanctuary Circle",
+            Power::Smite => "Radiant Smite",
+            Power::Phalanx => "Bone Phalanx",
+            Power::Archers => "Bone Archers",
+            Power::Colossus => "Grave Colossus",
+            Power::Wraiths => "Wraith Flight",
+            Power::Corpses => "Corpse Rising",
+        }
+    }
+
+    /// What it's called, in `element`: a searing crescent, a rime wheel
+    pub fn name(self, element: Option<Element>) -> String {
+        // A talisman's spear is holy lightning, a skull focus's raising death, whatever's in them
+        match (self, element) {
+            (Power::Thunderspear, Some(Element::Storm)) => return "Storm Saint's Thunderspear".to_owned(),
+            (Power::Thunderspear, _) => return "Sanctified Thunderspear".to_owned(),
+            (Power::RaiseDead, Some(Element::Blood)) => return "Blood Raising".to_owned(),
+            (Power::RaiseDead, _) => return "Grave Raising".to_owned(),
+            // A priest's spears are holy lightning whatever's in the talisman
+            (Power::Shadowstep, _) => return "Shadowstep Strike".to_owned(),
+            // A priest's spears are holy lightning whatever's in the talisman
+            (Power::Vigil, _) => return "Vigil Spear".to_owned(),
+            (Power::Heavenfall, _) => return "Heavenfall Spears".to_owned(),
+            (Power::Triune, _) => return "Triune Spears".to_owned(),
+            (Power::Stormcall, _) => return "Stormcall Thunderhead".to_owned(),
+            (Power::Shadowgrasp, Some(Element::Void) | None) => return "Grasping Shadows".to_owned(),
+            (Power::Glacier, Some(Element::Frost) | None) => return "Rising Glacier".to_owned(),
+            // Lightning whatever's in the weapon, and the other schools' their own
+            (p, _) if p.lightning() || p.wild() || p.arcane() || p.summons() => return p.noun().to_owned(),
+            _ => {}
+        }
+        let adjective = match element {
+            Some(Element::Fire) => "Searing",
+            Some(Element::Frost) => "Rime",
+            Some(Element::Storm) => "Thunder",
+            Some(Element::Poison) => "Venom",
+            Some(Element::Arcane) => "Arcane",
+            Some(Element::Void) => "Void",
+            Some(Element::Blood) => "Blood",
+            Some(Element::Holy) => "Radiant",
+            None => "Keen",
+        };
+        format!("{adjective} {}", self.noun())
+    }
+
+    /// Seconds before it can be used again
+    pub fn cooldown(self) -> f64 {
+        match self {
+            Power::Comet | Power::Seekers | Power::Nova => 6.0,
+            Power::CometArrow | Power::Ricochet | Power::Fists | Power::Hook => 7.0,
+            Power::Vortex | Power::Mortar | Power::Anvil | Power::Starshell | Power::Beacon => 9.0,
+            Power::Cloudburst | Power::Shrapnel => 9.0,
+            Power::Thunderspear => 7.0,
+            Power::RaiseDead => 14.0,
+            Power::Shadowstep | Power::Triune | Power::Helix => 6.0,
+            Power::Heavenfall | Power::Stormcall => 10.0,
+            Power::Vigil | Power::Glacier | Power::Shadowgrasp => 8.0,
+            Power::Forkbolt | Power::Thunderstep => 6.0,
+            Power::CracklingOrb | Power::Stormlash | Power::StaticField => 8.0,
+            Power::Overcharge => 9.0,
+            Power::TwinArc => 7.0,
+            Power::Thundersplit | Power::Railshot => 8.0,
+            Power::Stormrunners | Power::Torrent => 9.0,
+            Power::Stormbrand | Power::Gravebolt => 10.0,
+            Power::Judgment => 12.0,
+            Power::Smite => 6.0,
+            Power::IceLance | Power::Missiles => 7.0,
+            Power::CinderWhirl | Power::RimeSnare => 8.0,
+            Power::Kindling | Power::Boulder | Power::SoulHarvest => 9.0,
+            Power::Bramble | Power::BoneCage => 10.0,
+            Power::Hourglass => 11.0,
+            Power::Meteor => 12.0,
+            Power::Sanctuary => 14.0,
+            Power::Wraiths => 12.0,
+            Power::Corpses => 14.0,
+            Power::Archers => 15.0,
+            Power::Phalanx => 16.0,
+            Power::Colossus => 24.0,
+            Power::Runeburst => 10.0,
+            Power::Spectrum => 8.0,
+            _ => 8.0,
+        }
+    }
+
+    /// How many times its spell's mana it costs, for a weapon that casts
+    pub fn mana(self) -> f64 {
+        match self {
+            Power::Comet | Power::Seekers | Power::Nova | Power::Spectrum | Power::Helix | Power::Forkbolt | Power::Thunderstep => 2.0,
+            Power::CracklingOrb | Power::Stormlash | Power::StaticField | Power::Overcharge => 2.5,
+            Power::Beacon | Power::Thunderspear | Power::Vigil | Power::Triune | Power::Glacier | Power::Shadowgrasp => 2.5,
+            Power::RaiseDead | Power::Runeburst | Power::Heavenfall | Power::Stormcall => 3.0,
+            Power::Torrent => 2.0,
+            Power::Gravebolt => 3.0,
+            Power::Judgment => 3.5,
+            Power::Smite => 2.0,
+            Power::IceLance | Power::Missiles | Power::SoulHarvest => 2.5,
+            Power::Bramble | Power::BoneCage | Power::Hourglass => 3.0,
+            Power::Meteor | Power::Sanctuary => 3.5,
+            Power::Wraiths | Power::Corpses | Power::Archers => 3.0,
+            Power::Phalanx => 3.5,
+            Power::Colossus => 4.5,
+            _ => 0.0,
+        }
+    }
+
+    /// How it's used, on a weapon built `build`
+    pub fn how(self, build: Build) -> &'static str {
+        match self {
+            Power::Crescent | Power::Rending | Power::WindCut | Power::BladeFan | Power::LashWave | Power::Wheel | Power::Javelin | Power::Fissure => "Right click: the heavy blow carries it",
+            Power::CometArrow => "Right click to draw, and loose drawn full",
+            Power::BurstBolt if build == Build::Siege => "Right click to brace: the first bolt loosed braced is it",
+            Power::Vortex | Power::Shrapnel => "Hold right click to aim, let go to throw it",
+            Power::Gale | Power::Fists | Power::BladeRing | Power::Hook | Power::Anvil | Power::Stake | Power::Starbreak => "Right click: a move of its own when it's ready, a heavy blow while it comes round",
+            Power::Shadowstep | Power::Ringstorm => "Hold right click to aim, let go to use it",
+            Power::Thunderspear => "Hold right click to aim, the spear forming in the hand, longer for a greater spear; let go to hurl it",
+            Power::Overcharge => "Hold right click to gather the charge, longer for a harder discharge; let go to set it loose",
+            Power::Torrent => "Hold right click to pour it out, up to 3 s while the mana lasts; let go for a last surge",
+            Power::Stormbrand | Power::Stormrunners | Power::TwinArc => "Right click: a move of its own when it's ready, aimed while it's held",
+            Power::Thundersplit => "Right click: loosed when it's ready, aimed while it's held, a draw while it comes round",
+            Power::Kindling if build == Build::None => "Right click: loosed when it's ready, aimed while it's held, a draw while it comes round",
+            Power::CinderWhirl | Power::RimeSnare | Power::Boulder | Power::Bramble | Power::BoneCage | Power::Smite | Power::SoulHarvest => "Right click: a move of its own when it's ready, aimed while it's held",
+            p if p.summons() => "Hold right click to aim, let go to raise them; while it comes round, right click sends all you've raised at what's aimed at",
+            Power::Cloudburst => "Right click: loosed high when it's ready, a draw while it comes round",
+            _ => "Right click",
+        }
+    }
+
+    /// What it does, in `element`
+    pub fn description(self, element: Option<Element>) -> String {
+        let what = match self {
+            Power::Crescent => "A crescent of {e} flies 14 meters on from the heavy blow, cutting through everything in its way.",
+            Power::Rending => "A broad, slow wave of {e} rolls 16 meters on from the heavy blow, cutting through everything and throwing it back.",
+            Power::WindCut => "A thin cut of {e} flies 22 meters on from the heavy blow, fast, through everything in its way.",
+            Power::BladeFan => "Three small crescents of {e} fan out 11 meters from the heavy blow, through everything they meet.",
+            Power::LashWave => "The crack runs on 14 meters low over the ground as a wave of {e}, through everything in its way.",
+            Power::Wheel => "A spinning wheel of {e} is hurled 13 meters out from the heavy blow and comes back, cutting everything both ways.",
+            Power::Javelin => "A spear of {e} is hurled from the heavy thrust, through everything in a line 26 meters on, bursting at the end.",
+            Power::Fissure => "The heavy blow splits the ground open in a line 12 meters ahead, {e} erupting from it step by step, throwing up what stands on it.",
+            Power::CometArrow => "An arrow like a comet of {e}, through everything it meets, bursting where it comes down.",
+            Power::BurstBolt => "A bolt of {e} that sticks where it strikes and a moment later bursts apart, shards of it flying all round.",
+            Power::Ricochet => "A glowing slug of {e} that glances off what it hits on to the next enemy near, four times.",
+            Power::LanceShot => "A lance of {e} through everything in a line, the line it leaves bursting a moment later.",
+            Power::Breath => "Seven embers of {e} breathed out in a cone, bursting where they strike.",
+            Power::Mortar => "A shell of {e} lobbed high onto the crosshair, bursting wide where it comes down.",
+            Power::Vortex => "A charge of {e} that drags everything within 6 meters in to where it lands, then bursts.",
+            Power::Comet => "A great slow orb of {e} that bursts wide where it lands.",
+            Power::Seekers => "Five motes of {e} that each seek out something near, bursting on it.",
+            Power::Nova => "A ring of {e} rolling out 9 meters all round you, through everything it reaches.",
+            Power::Gale => "The fan snapped open and swept wide sends a whirling funnel of {e} 14 meters off along the ground, sweeping up everything it passes, carrying it along and flinging it off at the end.",
+            Power::Fists => "Five ghostly fists of {e} punched out one after another at the crosshair, 16 meters on, each striking the first thing in its way.",
+            Power::BladeRing => "The blade spun round overhead throws a ring of spinning blades of {e} out 9 meters all round you and draws it back in, cutting everything both ways and dragging in what it catches coming back.",
+            Power::Hook => "A hook of {e} on a chain flung 18 meters at the crosshair; what it catches is dragged to your feet and struck again.",
+            Power::Anvil => "Raised high and slammed down, the blow calls an anvil of {e} out of the sky onto the ring, 24 meters off at most, shaking the ground and throwing up everything within 3.5 meters.",
+            Power::Stake => "A spear of {e} hurled high comes down on the ring and stakes the ground there, pulsing three times, striking everything within 3 meters each time.",
+            Power::Cloudburst => "An arrow of {e} loosed high bursts over the ring into a rain of twenty arrowlets coming down on everything under it.",
+            Power::Bolas => "Two weighted balls of {e} spinning on a line wind round what they strike, holding it and what's within 3 meters of it fast for 3 s.",
+            Power::Starshell => "A flare of {e} shot high bursts over the ring and hangs there for 5 s, raining burning sparks on what's under it and marking it to take 30% more.",
+            Power::Beacon => "A beacon of {e} set down on the ring tolls three times, a ring rolling out 5 meters from it each time, through everything it reaches.",
+            Power::Shrapnel => "A pot of {e} lobbed onto the ring bursts into a wheel of twelve shards skimming out 7 meters along the ground, each bursting where it strikes.",
+            Power::Thunderspear => "Aimed while right click's held, a great spear of holy lightning is hurled from the talisman as it's let go, through everything in a line 30 meters on, lightning arcing off all it strikes to what's near, a bolt coming down where it ends.",
+            Power::RaiseDead => "Aimed while right click's held, a shade of death flies to the ring as it's let go and raises three skeletons out of the ground, or out of the slain lying near, to fight for you for 16 s.",
+            Power::Starbreak => "The pick driven down into the ground splits it open in a star of five cracks running 7 meters out all round, {e} erupting from each step by step, throwing up what stands on them.",
+            Power::Shadowstep => "Aimed while right click's held, you step through the shadows as it's let go to behind the enemy nearest the crosshair, up to 16 meters off, and strike it in the back for three times a throw, unseen.",
+            Power::Ringstorm => "Three rings of {e} hurled out in a fan, 15 meters, each curving back to you, cutting everything both ways.",
+            Power::Spectrum => "The light split into a fan of five rays, fire, frost, lightning, arcane and holy, 28 meters, each bursting where it strikes.",
+            Power::Runeburst => "Six runes of {e} written round the ring one after another, 3.5 meters round, blasting up together once the circle's whole.",
+            Power::Vigil => "Aimed while right click's held, a spear of holy lightning hurled as it's let go sticks fast in what it strikes or the ground, crackling, and a moment later erupts, lightning coming down onto it and leaping to everything within 8 meters.",
+            Power::Heavenfall => "Aimed while right click's held, a spear of holy lightning hurled into the sky as it's let go, and nine come down out of it onto the ring one after another, each bursting where it lands.",
+            Power::Triune => "Aimed while right click's held, three quick spears of holy lightning hurled one after another as it's let go, each through everything in its way, lightning arcing off what it strikes.",
+            Power::Stormcall => "An orb of {e} sent up over the ring gathers into a thunderhead, and lightning comes down out of it six times, onto what's under it or anywhere 4 meters round, each bolt leaping on to the next.",
+            Power::Glacier => "Ice bursts up out of the ground in a line of spikes 14 meters ahead, step by step, freezing what it catches, the ground along it frozen 3 s, slowing what stands on it.",
+            Power::Shadowgrasp => "A knot of {e} cast onto the ring, where tendrils reach up out of the ground, holding everything within 3.5 meters fast for 3 s and wringing it.",
+            Power::Helix => "Two orbs of {e} wheel round the hand, then fly off at the crosshair spiralling round each other, 30 meters, each bursting where it strikes.",
+            Power::Forkbolt => "A bolt of lightning hurled at the crosshair, 30 meters, splitting at each enemy it strikes into two that leap on to the next nearest, twice over.",
+            Power::CracklingOrb => "A ball of lightning drifts slowly off at the crosshair, 16 meters, lashing out at whatever comes within 4.5 meters of it, and bursts under a bolt from the sky at the end.",
+            Power::Stormlash => "A crackling tether of lightning lashed at the crosshair, 18 meters, holds fast to what it strikes for 2.6 s, shocking and slowing it, till it snaps.",
+            Power::StaticField => "A charge of lightning cast onto the ring charges the ground 3.5 meters round for 4 s, a bolt leaping up into whatever walks onto it, shocking and slowing it.",
+            Power::Thunderstep => "You dash 9 meters on ahead in a flash, sparks streaming off behind, lightning striking down five times along the way you went.",
+            Power::Overcharge => "Held, lightning gathers crackling in the weapon; let go, it breaks out all round, 10 meters, leaping to every enemy as it reaches it and throwing it back, harder the longer it was held.",
+            Power::Stormbrand => "The blade raised to the sky is struck by lightning and slashed down, the bolt leaping on off it into what the crosshair's on and two more near it, 14 meters; for 8 s after, the blade crackles charged and every blow it lands calls lightning down onto what it strikes.",
+            Power::Stormrunners => "Slammed into the ground, the weapon sends five runners of lightning racing off along it to the ring, 16 meters at most, each turning after an enemy within 5 meters of it and bursting up into it.",
+            Power::Thundersplit => "An arrow of lightning loosed at the crosshair splits at the first thing it strikes into four that leap on to the nearest within 12 meters; where it strikes the ground, lightning comes down onto it.",
+            Power::Railshot => "Lightning winds round the muzzle and goes off as a dead straight rail of it, 45 meters, through everything in the line, coils of it hanging along the way it went.",
+            Power::TwinArc => "Two chakrams thrown wide, 15 meters out and back, lightning strung between them up to 5 meters across, shocking everything the line crosses each way.",
+            Power::Judgment => "A mote sent up over the ring gathers a storm there, lightning crawling in over the ground under it, and a moment later one great bolt comes down, striking everything within 5 meters, hardest within 2.5, and throwing it back.",
+            Power::Torrent => "Held, lightning pours out of the weapon at what's ahead, 11 meters, as long as there's mana, up to 3 s; let go, it ends in a surge of six bolts at once.",
+            Power::Gravebolt => "A mote of storm sent to the ring, and lightning breaks up out of the ground round it, 4 meters, eight times, under each enemy there first; whatever it strikes gives a little of its life back to you.",
+            Power::Meteor => "Raised to the sky, it calls a burning rock down onto the ring, 30 meters off at most, striking everything within 4 meters, hardest within 2, throwing it back and setting it burning; the ground there burns on for 5 s.",
+            Power::CinderWhirl => "Swung round twice through fire, the weapon flings five burning cinders out across the way ahead with each sweep, 10 meters, each bursting where it strikes, and sears everything within 3 meters as it passes.",
+            Power::Kindling => "An arrow of fire loosed low at the crosshair, leaving a line of fire burning along the ground it flies over for 5 s, ten fires at most, and bursting where it strikes.",
+            Power::IceLance => "A lance of ice forms in front of the hand and is thrust out at the crosshair, 35 meters, through the first three things in its way, freezing what's chilled already, and shatters into a spray of shards at the end.",
+            Power::RimeSnare => "Three shards of rime thrown in a fan, 18 meters: one that strikes something bursts into ice, freezing it and holding it fast for 2 s; one that lands on the ground lies there as a snare for 12 s and does the same to the first thing that comes near it.",
+            Power::Bramble => "A seed thrown to the ring, 12 meters off at most, where a wall of brambles bursts up across the way, 9 meters wide, for 6 s, holding fast a moment whatever comes into it and tearing at it, poisoning it.",
+            Power::Boulder => "Slammed down, the weapon heaves a boulder up out of the ground and hurls it onto the ring, 24 meters off at most; where it comes down it bounces and rolls on 6 meters, crushing and throwing aside everything in its way, then breaks apart.",
+            Power::Missiles => "Seven missiles of arcane light let go one after another at what the crosshair's on, 30 meters, weaving in onto it, each striking an eighth harder than the last that struck the same.",
+            Power::Hourglass => "An hourglass of arcane light thrown to the ring, where time runs slow for 5 s: everything within 4.5 meters goes at a third of its pace and takes 25% more from every blow, and as time snaps back it's all struck at once.",
+            Power::SoulHarvest => "An orb of death hurled at the crosshair, 24 meters, through everything in its way, tearing a wisp of soul out of each it passes that flies back to you and heals you, twice as much for what it kills.",
+            Power::BoneCage => "A shard of bone flung at what the crosshair first meets, 22 meters, and a cage of bone spikes bursts up round it, holding fast everything within 2.5 meters, then a moment later crashing in on it, making it bleed.",
+            Power::Sanctuary => "A mote of holy light thrown to the ring, 20 meters off at most, where a circle of light stands 5 meters round for 6 s: standing in it heals you, and whatever's in it is seared and staggered every half second.",
+            Power::Smite => "A brand of light thrown at what the crosshair first meets, 30 meters, and a pillar of light comes down on it, staggering it and healing you a little; what it slays bursts into light striking the two nearest.",
+            Power::Phalanx => "A shade sent to the ring, 10 meters off at most, raises four armored skeletons in a line across the way there for 20 s; they stand their ground, striking and staggering whatever comes within 7 meters of where they stand, and their blows drain life back to you.",
+            Power::Archers => "A shade sent to the ring, 10 meters off at most, raises three skeletons with bows there for 18 s; they keep back and shoot whatever's within 26 meters, and follow you when there's nothing.",
+            Power::Colossus => "A shade sent to the ring, 10 meters off at most, raises a grave brute there for 22 s, slow and huge, its gravestone of a club striking everything within 2.6 meters of where it lands and throwing it back.",
+            Power::Wraiths => "A shade sent to the ring, 10 meters off at most, raises three wraiths there for 12 s; they fly at whatever's near and swoop through it again and again, chilling it.",
+            Power::Corpses => "A shade sent to the ring, 10 meters off at most, raises the slain lying within 12 meters of it as what they were, five at most, to fight for you for 16 s, or two of the long dead out of the ground if none lie there; their blows drain life back to you.",
+        };
+        // The other schools' are their own whatever's in the weapon, and so are the dead raised,
+        // which count among the eight that can be up at once
+        if self.summons() {
+            return format!("{what} No more than {} of the dead raised can be up at once, the oldest crumbling for the new. Costs {} times a spell's mana when cast; every {:.0} s.", crate::combat::MINIONS, self.mana(), self.cooldown());
+        }
+        if self.wild() || self.arcane() {
+            let cost = match self.mana() {
+                m if m > 0.0 => format!(" Costs {m} times a spell's mana when cast; every {:.0} s.", self.cooldown()),
+                _ => format!(" Every {:.0} s.", self.cooldown()),
+            };
+            return format!("{what}{cost}");
+        }
+        // These are theirs whatever's in them
+        if matches!(self, Power::Thunderspear | Power::RaiseDead | Power::Vigil | Power::Heavenfall | Power::Triune) {
+            let rider = if self == Power::RaiseDead { "Each blow they land drains life back to you." } else { "Every enemy it strikes heals you a little, and it strikes harder at what's standing in water." };
+            return format!("{what} {rider} Costs {} times a spell's mana; every {:.0} s.", self.mana(), self.cooldown());
+        }
+        if self.lightning() {
+            return format!("{what} Strikes harder at what's standing in water. Costs {} times a spell's mana; every {:.0} s.", self.mana(), self.cooldown());
+        }
+        if self == Power::Shadowstep {
+            return format!("{what} Every {:.0} s.", self.cooldown());
+        }
+        let rider = match element {
+            Some(Element::Fire) => "What it hits is set burning.",
+            Some(Element::Frost) => "What it hits is chilled, frozen if it's chilled already.",
+            Some(Element::Storm) => "Lightning leaps from what it hits to the next.",
+            Some(Element::Poison) => "What it hits is poisoned.",
+            Some(Element::Arcane) => "What it hits is thrown back.",
+            Some(Element::Void) => "What it hits is dragged in.",
+            Some(Element::Blood) => "What it hits bleeds, and you heal.",
+            Some(Element::Holy) => "What it hits is staggered, and you heal a little.",
+            None => "What it hits is staggered.",
+        };
+        let stuff = element.map_or("steel".to_string(), |e| e.name().to_lowercase());
+        let cost = match self.mana() {
+            m if m == 2.0 => format!(" Costs twice a spell's mana; every {:.0} s.", self.cooldown()),
+            m if m > 0.0 => format!(" Costs {m} times a spell's mana; every {:.0} s.", self.cooldown()),
+            _ => format!(" Every {:.0} s.", self.cooldown()),
+        };
+        format!("{} {rider}{cost}", what.replace("{e}", &stuff))
     }
 }
 
@@ -1567,7 +2643,7 @@ impl Profile {
 
     /// What it shoots, for a bow, crossbow or gun. Bombs are thrown, and take no ammo.
     pub fn shot(&self) -> Option<Shot> {
-        (self.kind == Kind::Ranged && self.style != Style::Lob).then(|| self.build.shot())
+        (self.kind == Kind::Ranged && !self.style.thrown()).then(|| self.build.shot())
     }
 
     /// How many shots a crossbow or gun holds loaded
@@ -1607,8 +2683,35 @@ pub struct Weapon {
     /// How big it was made, of SIZES
     pub size: usize,
     pub profile: Rc<Profile>,
+    /// What its parts make of it at item level 1, before its level's worked in, see set_level()
+    base: Rc<Profile>,
     pub tags: BTreeSet<String>,
     pub look: WeaponLook,
+    /// The item level it dropped at, see levels::drop_level(), and how many jewels are set into
+    /// its sockets, each lifting it a level more, see item_level() and jewels.rs
+    pub level: u32,
+    pub jewels: u32,
+    /// What the skill web makes of it, see set_boost(), and for which of the game's changes to
+    /// what's taken there, see Game::boost_version
+    boost: Boost,
+    pub boosted: u32,
+}
+
+/// What the skill web makes of a weapon's numbers, see skills::Totals::boost(): each a fraction
+/// more, but critical chance, so much more of it, and critical damage, so many times more
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+pub struct Boost {
+    pub damage: f64,
+    pub speed: f64,
+    pub crit_chance: f64,
+    pub crit_damage: f64,
+    pub elemental: f64,
+    pub reach: f64,
+    pub projectile_speed: f64,
+    pub mana_cost: f64,
+    pub area: f64,
+    pub potency: f64,
+    pub knockback: f64,
 }
 
 impl Weapon {
@@ -1618,10 +2721,79 @@ impl Weapon {
         let size = roll_size(seed);
         let (profile, tags, grade) = Weapon::work_out(library, family, &components, size, seed);
         let name = weapon_name(library, family, &components, &profile.synergies, seed, size);
-        let look = build_look(fam, &components);
-        let scale = held_scale(fam, size, look.longest());
+        // A tool's called by its tier, and its rarity's what it rolled, see src\tools.rs
+        let (name, grade) = crate::tools::dress(library, family, &parts, seed).unwrap_or((name, grade));
+        // Its parts' shapes from their files where they've been changed, see src\weapon_parts.rs
+        let look = crate::weapon_parts::build(library, family, &parts, || build_look(fam, &components));
+        let scale = held_scale(fam, size, look.longest()) * held_size(fam);
         let look = look.scaled(scale);
-        Weapon { family, parts, seed, name, grade, size, profile: Rc::new(profile), tags, look }
+        let profile = Rc::new(profile);
+        Weapon { family, parts, seed, name, grade, size, base: profile.clone(), profile, tags, look, level: 1, jewels: 0, boost: Boost::default(), boosted: 0 }
+    }
+
+    /// Its item level: the level it dropped at and one more for each jewel set into it, never over
+    /// levels::ITEM_CAP
+    pub fn item_level(&self) -> u32 {
+        (self.level + self.jewels).clamp(1, crate::levels::ITEM_CAP)
+    }
+
+    /// Made of item level `level` as it dropped, with `jewels` jewels set into it: its blows, its
+    /// special attack and its power on right click harder by levels::weapon_power()
+    pub fn set_level(&mut self, level: u32, jewels: u32) {
+        self.level = level.clamp(1, crate::levels::ITEM_CAP);
+        self.jewels = jewels;
+        self.restat();
+    }
+
+    /// Made what the skill web makes it, `boost`, as of the game's change `version` to it
+    pub fn set_boost(&mut self, boost: Boost, version: u32) {
+        self.boosted = version;
+        if boost != self.boost {
+            self.boost = boost;
+            self.restat();
+        }
+    }
+
+    /// Its numbers worked out again from what its parts make of it, its item level and the skill
+    /// web's boost
+    fn restat(&mut self) {
+        let power = crate::levels::weapon_power(self.item_level());
+        let b = self.boost;
+        let mut profile = (*self.base).clone();
+        let stats = &mut profile.stats;
+        let mut times = |name: &str, by: f64| {
+            if let Some(v) = stats.get_mut(name) {
+                *v *= by.max(0.0);
+            }
+        };
+        let damage = power * (1.0 + b.damage);
+        times("physicalDamage", damage);
+        times("spellDamage", damage);
+        times("elementalDamage", damage * (1.0 + b.elemental));
+        for name in ["attackSpeed", "drawSpeed", "reloadSpeed", "castSpeed"] {
+            times(name, 1.0 + b.speed);
+        }
+        times("range", 1.0 + b.reach);
+        times("projectileSpeed", 1.0 + b.projectile_speed);
+        times("manaCost", 1.0 + b.mana_cost);
+        times("area", 1.0 + b.area);
+        times("statusPotency", 1.0 + b.potency);
+        times("knockback", 1.0 + b.knockback);
+        if b.crit_chance != 0.0 {
+            *stats.entry("critChance".into()).or_insert(0.0) += b.crit_chance;
+        }
+        if b.crit_damage != 0.0 {
+            *stats.entry("critDamage".into()).or_insert(1.5) += b.crit_damage;
+        }
+        self.profile = Rc::new(profile);
+    }
+
+    /// The same weapon at another level, for the cards that compare one level with another
+    #[allow(dead_code)]
+    pub fn at_level(mut self, level: u32) -> Weapon {
+        let jewels = self.jewels;
+        self.set_level(level, jewels);
+        self
     }
 
     /// What the rarity and make of a weapon's parts, and the forge, do to it: how many times
@@ -1647,6 +2819,43 @@ impl Weapon {
         (quality, quickness / heft.powf(0.8), forged)
     }
 
+    /// The element of a weapon made of `components`: the rarest part's that has one, the core or
+    /// crystal first
+    fn element_of(components: &[&Component]) -> Option<Element> {
+        let mut by_rarity: Vec<&Component> = components.to_vec();
+        by_rarity.sort_by_key(|c| std::cmp::Reverse(c.tier));
+        by_rarity.iter().filter(|c| matches!(c.slot_type.as_str(), "core" | "crystal")).chain(by_rarity.iter()).find_map(|c| c.element)
+    }
+
+    /// The tags synergies come of on a weapon of a family with tags `own` and effects
+    /// `own_effects`, made of `components`, its element `element`: the family's, its parts', its
+    /// effects' and their elements', and its element's
+    fn tags_of(library: &Library, own: &[String], own_effects: &[usize], components: &[&Component], element: Option<Element>) -> BTreeSet<String> {
+        let mut tags: BTreeSet<String> = own.iter().cloned().collect();
+        tags.extend(components.iter().flat_map(|c| c.synergy_tags.iter().cloned()));
+        for &def in own_effects.iter().chain(components.iter().flat_map(|c| c.effect_defs.iter())) {
+            let e = &library.effects[def];
+            if e.effect.is_some() {
+                tags.extend(e.synergy_tags.iter().cloned());
+                tags.extend(e.element.map(|e| e.tag().to_owned()));
+            }
+        }
+        tags.extend(element.map(|e| e.tag().to_owned()));
+        tags
+    }
+
+    /// The grade of a weapon made of `components` with `synergies` synergies. It reflects how much
+    /// the weapon can do, not the average of its parts: rare parts and synergies add up, and one
+    /// very rare part lifts the whole weapon close to it. The parts count as if there were four,
+    /// so a crossbow's sight doesn't make it rarer.
+    fn grade_of(library: &Library, components: &[&Component], synergies: usize) -> usize {
+        let parts = components.len().max(1) as f64;
+        let power: f64 = components.iter().map(|c| library.rarities[c.tier].power).sum::<f64>() * 4.0 / parts + library.synergy_power * synergies as f64;
+        let by_power = library.grade_power.iter().rposition(|&p| power >= p).unwrap_or(0);
+        let best = components.iter().map(|c| c.tier).max().unwrap_or(0);
+        by_power.max(best.saturating_sub(1)).min(library.rarities.len() - 1)
+    }
+
     /// What a weapon made of `components` from `seed`, `size` of SIZES big, does: its stats,
     /// effects and synergies, its tags, and its grade
     fn work_out(library: &Library, family: usize, components: &[&Component], size: usize, seed: u32) -> (Profile, BTreeSet<String>, usize) {
@@ -1668,6 +2877,8 @@ impl Weapon {
         // forge quite alike. Bigger reaches further, hits harder and throws what it hits further,
         // but is slower.
         let (quality, pace, forged) = Weapon::forging(library, components, seed);
+        // Only as much of the rarity as its family takes, see Family::rarity_damage
+        let quality = quality.powf(fam.rarity_damage);
         let sized = &SIZES[size.min(SIZES.len() - 1)];
         let mut scale = |name: &str, by: f64| {
             if let Some(v) = stats.get_mut(name) {
@@ -1702,14 +2913,7 @@ impl Weapon {
             }
         }
 
-        // The element comes from the highest rarity part that has one, the core or crystal first
-        let mut by_rarity: Vec<&Component> = components.to_vec();
-        by_rarity.sort_by_key(|c| std::cmp::Reverse(c.tier));
-        let element = by_rarity
-            .iter()
-            .filter(|c| matches!(c.slot_type.as_str(), "core" | "crystal"))
-            .chain(by_rarity.iter())
-            .find_map(|c| c.element);
+        let element = Weapon::element_of(components);
         // Elemental damage without an element is just more of the plain kind
         if element.is_none() {
             let elemental = stats.remove("elementalDamage").unwrap_or(0.0);
@@ -1729,30 +2933,25 @@ impl Weapon {
             }
         }
 
-        let mut tags: BTreeSet<String> = fam.synergy_tags.iter().cloned().collect();
-        tags.extend(components.iter().flat_map(|c| c.synergy_tags.iter().cloned()));
-        tags.extend(effects.iter().flat_map(|e| library.effects[e.def].synergy_tags.iter().cloned()));
-        tags.extend(effects.iter().filter_map(|e| library.effects[e.def].element).map(|e| e.tag().to_owned()));
-        if let Some(e) = element {
-            tags.insert(e.tag().into());
-        }
+        let tags = Weapon::tags_of(library, &fam.synergy_tags, &fam.effect_defs, components, element);
         let synergies = library.synergies_for(&tags);
-
-        // The grade reflects how much the weapon can do, not the average of its parts: rare parts
-        // and synergies add up, and one very rare part lifts the whole weapon close to it. The
-        // parts count as if there were four, so a crossbow's sight doesn't make it rarer.
-        let parts = components.len().max(1) as f64;
-        let power: f64 = components.iter().map(|c| library.rarities[c.tier].power).sum::<f64>() * 4.0 / parts + library.synergy_power * synergies.len() as f64;
-        let by_power = library.grade_power.iter().rposition(|&p| power >= p).unwrap_or(0);
+        let grade = Weapon::grade_of(library, components, synergies.len());
+        let mut by_rarity: Vec<&Component> = components.to_vec();
+        by_rarity.sort_by_key(|c| std::cmp::Reverse(c.tier));
         let best = components.iter().map(|c| c.tier).max().unwrap_or(0);
-        let grade = by_power.max(best.saturating_sub(1)).min(library.rarities.len() - 1);
         for (name, by_grade) in &fam.grade_stats {
             if let Some(value) = by_grade.get(grade).or(by_grade.last()) {
                 *stats.entry(name.clone()).or_insert(0.0) += value;
             }
         }
         // The rarest part with a special attack gives it its own
-        let special = by_rarity.iter().find_map(|c| c.special.map(|s| (s, c.display_name.clone())));
+        let special = by_rarity.iter().filter(|c| special_counts(fam, c)).find_map(|c| c.special.map(|s| (s, c.display_name.clone())));
+        // A power on right click for a legendary or mythic weapon, or one with a part that is
+        let legendary = library.rarities.iter().position(|r| r.id == "legendary").unwrap_or(4);
+        // Its family's, or the rarest part's that brings one of its own
+        let own = by_rarity.iter().find_map(|c| c.power);
+        // A skull focus raises the dead, and a talisman hurls its great spear, at any rarity
+        let power = if grade >= legendary || special.is_some() || best >= legendary || Power::innate(&fam.id) { own.or_else(|| Power::of(&fam.id)) } else { None };
         let (build, caliber, cycle, bolt) = (fam.build, fam.caliber, fam.cycle, fam.bolt);
         let (heavy, finish) = moves_from_parts(fam, components);
         let casting = casting_of(fam, components, &stats, element);
@@ -1767,6 +2966,7 @@ impl Weapon {
             effects,
             synergies,
             special,
+            power,
             grade,
             build,
             caliber,
@@ -1777,6 +2977,7 @@ impl Weapon {
             finish,
             casting,
             knack,
+            rite: Rite::of(&fam.id),
             quality,
             pace,
             forged,
@@ -1802,6 +3003,13 @@ impl Weapon {
 
 /// How far either way a weapon can come out of the forge better or worse than its parts make it
 pub const FORGE_SPREAD: f64 = 0.08;
+
+/// Whether part `c`'s special attack is one a weapon of `family` gets from it: any part's, but
+/// for throwing knives and a chakram, only its blade's, as what they share with blades swung in
+/// the hand is meant for blows struck with it
+pub fn special_counts(family: &Family, c: &Component) -> bool {
+    !matches!(family.style, Style::Knife | Style::Ring) || c.slot_type == "blade"
+}
 
 /// How much of a weapon a part in `slot` is, for how much its rarity and make count for, see
 /// Weapon::forging(): what strikes or shoots most, what powers or channels it next, what it's
@@ -1854,6 +3062,8 @@ fn heaviness(c: &Component) -> f64 {
     // slender one less. Only what's out of the way for its kind: every maul's head is big.
     let big = match v.shape.as_deref().unwrap_or("") {
         "maul_boulder" | "maul_anvil" | "maul_drum" | "double_axe" | "zweihander" | "broad" | "cleaver" | "flail_triple" | "flail_stone" => 1.06,
+        "macuahuitl" | "dane" | "labrys" | "sledge" | "club" | "guandao" | "bisento" | "maul_skull" | "maul_stepped" | "halberd_poleaxe" => 1.06,
+        "tanto" | "fang" | "fan_feather" | "katar_split" => 0.95,
         // A lash of links, or of bone strung like a spine, swings heavy
         "chain" | "spine" => 1.1,
         "needle" | "tapered" | "leaf" | "sabre" => 0.95,
@@ -1877,6 +3087,10 @@ fn moves_from_parts(family: &Family, components: &[&Component]) -> (Heavy, Finis
     let shape = v.shape.as_deref().unwrap_or("");
     let length = v.length.unwrap_or(0.0);
     let keep = family.heavy;
+    // The second batch's shapes, see Component::batch, each with moves of its own
+    if let Some(moves) = newer_moves(family, shape) {
+        return moves;
+    }
     match family.style {
         Style::Thrust if family.heavy == Heavy::Style => match shape {
             "hooked" | "winged" | "trident" | "fork" | "barbed" => (Heavy::Sweep, Finish::Rising),
@@ -1931,12 +3145,70 @@ fn moves_from_parts(family: &Family, components: &[&Component]) -> (Heavy, Finis
     }
 }
 
+/// How a melee weapon of `family` with a head of the second batch's `shape` swings its heavy blow
+/// and its chain's last blow, if it's one of them: a scimitar or a khopesh drawn and cut both ways,
+/// a macuahuitl, a sledge or a great guandao heaved and brought down, a tanto or a fang lunged,
+/// a labrys or a bisento spun right round, and so on. None for any other shape, as moves_from_parts()
+/// has those.
+fn newer_moves(family: &Family, shape: &str) -> Option<(Heavy, Finish)> {
+    let keep = family.heavy;
+    Some(match (family.style, keep, shape) {
+        // A sword, a greatsword or a katana
+        (Style::Slash, Heavy::Style, "scimitar" | "khopesh") => (Heavy::Draw, Finish::Cross),
+        (Style::Slash, Heavy::Style, "macuahuitl") => (Heavy::Hew, Finish::Slam),
+        (Style::Slash, Heavy::Style, "sawback" | "shard") => (keep, Finish::Cross),
+        (Style::Slash, Heavy::Style, "tanto" | "fang") => (Heavy::Lunge, Finish::Rising),
+        (Style::Slash, Heavy::Spin, "macuahuitl") => (Heavy::Heave, Finish::Slam),
+        (Style::Slash, Heavy::Spin, "sawback" | "shard") => (keep, Finish::Cross),
+        (Style::Slash, Heavy::Spin, "scimitar") => (keep, Finish::Rising),
+        (Style::Slash, Heavy::Draw, "tachi") => (keep, Finish::Cross),
+        (Style::Slash, Heavy::Draw, "chokuto") => (keep, Finish::Lunge),
+        // An axe
+        (Style::Chop, _, "dane") => (keep, Finish::Slam),
+        (Style::Chop, _, "labrys") => (Heavy::Spin, Finish::Cross),
+        (Style::Chop, _, "skeggox") => (keep, Finish::Rising),
+        // A hammer
+        (Style::Smash, _, "sledge") => (Heavy::Heave, Finish::Slam),
+        (Style::Smash, _, "club") => (keep, Finish::Spin),
+        (Style::Smash, _, "lucerne") => (Heavy::Hew, Finish::Rising),
+        // A dagger
+        (Style::Stab, _, "tanto") => (Heavy::Lunge, Finish::Lunge),
+        (Style::Stab, _, "fang" | "khopesh") => (Heavy::Draw, Finish::Cross),
+        (Style::Stab, _, "sawback") => (keep, Finish::Rising),
+        // A spear, or a halberd
+        (Style::Thrust, Heavy::Style, "partisan") => (Heavy::Sweep, Finish::Cross),
+        (Style::Thrust, Heavy::Style, "boar") => (Heavy::Lunge, Finish::Lunge),
+        (Style::Thrust, _, "halberd_lochaber") => (Heavy::Spin, Finish::Slam),
+        (Style::Thrust, _, "halberd_poleaxe") => (Heavy::Heave, Finish::Slam),
+        // A scythe
+        (Style::Reap, _, "scythe_war") => (keep, Finish::Lunge),
+        (Style::Reap, _, "scythe_crescent") => (Heavy::Spin, Finish::Cross),
+        // A war fan, a katar, a naginata
+        (Style::Fan, _, "fan_blades") => (keep, Finish::Spin),
+        (Style::Fan, _, "fan_feather") => (keep, Finish::Rising),
+        (Style::Punch, _, "katar_split") => (keep, Finish::Cross),
+        (Style::Punch, _, "katar_wavy") => (keep, Finish::Rising),
+        (Style::Pole, _, "guandao") => (Heavy::Cleave, Finish::Slam),
+        (Style::Pole, _, "bisento") => (Heavy::Spin, Finish::Spin),
+        _ => return None,
+    })
+}
+
 /// How a staff, scepter or wand made of `components` casts: what comes down on a place is called
 /// down from overhead, big slow spells gathered in both hands first, and otherwise its focus and
-/// its element say, a crook swept round and venom scooped up. Orbs, tomes, totems, bells and
+/// its element say, a crook swept round and venom scooped up. Orbs, tomes, totems, censers and
 /// the rest cast each their own way whatever they're made of, see combat.rs's target_pose().
 fn casting_of(family: &Family, components: &[&Component], stats: &Stats, element: Option<Element>) -> Casting {
     if !matches!(family.style, Style::Cast | Style::Flick) {
+        return Casting::Thrust;
+    }
+    // A talisman's held up and shown, then levelled at the crosshair: raised overhead as a staff
+    // is, a thing so small comes right up into the eye
+    if family.id == "talisman" || family.id == "runestone" {
+        return Casting::Present;
+    }
+    // A prism's levelled at the crosshair and thrust out, so its splinters fan out from it
+    if family.id == "prism" {
         return Casting::Thrust;
     }
     let wand = family.style == Style::Flick;
@@ -1971,7 +3243,7 @@ fn casting_of(family: &Family, components: &[&Component], stats: &Stats, element
 /// with a flourish, a doglock quick; a crossbow with a pistol grip or a skeleton stock spanned
 /// quick, a cheek-stocked one hauled, a lacquered or gilded one with a flourish
 fn knack_of(family: &Family, components: &[&Component]) -> Knack {
-    if family.kind != Kind::Ranged || family.style == Style::Lob {
+    if family.kind != Kind::Ranged || family.style.thrown() {
         return Knack::Plain;
     }
     let part = |slot: &str| components.iter().find(|c| c.slot_type == slot).map(|c| &c.visual_profile);
@@ -1981,6 +3253,11 @@ fn knack_of(family: &Family, components: &[&Component]) -> Knack {
         let limbs = part("limbs");
         let length = limbs.and_then(|v| v.length).unwrap_or(1.25);
         return match (shape(limbs).as_str(), material(limbs).as_str()) {
+            // The second batch's: a compound bow snapped up and held at ease, an antler one hauled,
+            // a deep reflex one canted over with a flourish
+            ("compound", _) => Knack::Quick,
+            ("antler", _) => Knack::Heavy,
+            ("reflex", _) => Knack::Showy,
             ("flat" | "simple" | "branch", _) if length <= 1.2 => Knack::Quick,
             ("horn" | "bone" | "winged" | "long", _) => Knack::Heavy,
             ("recurve" | "serpent" | "crystal", "gold" | "jade" | "ebony" | "copper" | "ice" | "obsidian") => Knack::Showy,
@@ -2034,20 +3311,56 @@ fn weapon_name(library: &Library, family: usize, components: &[&Component], syne
     // Its size goes before what it is, unless that says it already: no Great Greatblade
     let word = fam.size_word(size);
     let core = if word.is_empty() || core.to_lowercase().contains(&word.to_lowercase()) { core } else { format!("{word} {core}") };
-    let suffix = by_rarity.iter().find_map(|c| c.naming.suffix.clone());
-    let signature = synergies
-        .iter()
-        .find_map(|s| library.synergies[s.def].title.clone())
-        .or_else(|| by_rarity.iter().filter(|c| c.tier >= 4).find_map(|c| c.naming.signature.clone()));
-    if let Some(signature) = signature {
-        return match (by_rarity.iter().find_map(|c| c.naming.epithet.clone()), suffix) {
-            (Some(epithet), _) => format!("{signature}, {epithet}"),
-            (None, Some(suffix)) => format!("{signature} {suffix}"),
-            (None, None) => format!("{signature}, the {core}"),
-        };
+    // Each word only once: an affix that says again what's said already, as a Crescent Crescentaxe
+    // or a Moonsabre of the Moon would, is passed over for the next part's
+    let suffixes: Vec<String> = by_rarity.iter().filter_map(|c| c.naming.suffix.clone()).collect();
+    let epithets: Vec<String> = by_rarity.iter().filter_map(|c| c.naming.epithet.clone()).collect();
+    let signatures = synergies.iter().filter_map(|s| library.synergies[s.def].title.clone()).chain(by_rarity.iter().filter(|c| c.tier >= 4).filter_map(|c| c.naming.signature.clone()));
+    for signature in signatures {
+        let fresh = |s: &&String| !name_clash(s, &signature);
+        if let Some(epithet) = epithets.iter().find(fresh) {
+            return format!("{signature}, {epithet}");
+        }
+        if let Some(suffix) = suffixes.iter().find(fresh) {
+            return format!("{signature} {suffix}");
+        }
+        if !name_clash(&signature, &core) {
+            return format!("{signature}, the {core}");
+        }
     }
-    let prefix = by_rarity.iter().find_map(|c| c.naming.prefix.clone());
+    let prefix = by_rarity.iter().filter_map(|c| c.naming.prefix.clone()).find(|p| !name_clash(p, &core));
+    let suffix = suffixes.into_iter().find(|s| !name_clash(s, &core) && prefix.as_ref().is_none_or(|p| !name_clash(s, p)));
     [prefix, Some(core), suffix].into_iter().flatten().collect::<Vec<_>>().join(" ")
+}
+
+/// The words of a weapon's name that say what it is, lower case, without the little ones
+fn name_words(name: &str) -> Vec<String> {
+    name.split(|c: char| !c.is_alphabetic()).map(str::to_lowercase).filter(|w| w.len() >= 3 && !matches!(w.as_str(), "the" | "and" | "who" | "whose")).collect()
+}
+
+/// A word with its endings taken off, as ashen to ash, thorns to thorn and stormy to storm
+fn word_stem(word: &str) -> &str {
+    for ending in ["ing", "en", "ed", "es", "s", "y"] {
+        if let Some(stem) = word.strip_suffix(ending)
+            && stem.len() >= 3
+        {
+            return stem;
+        }
+    }
+    word
+}
+
+/// Whether two parts of a name say the same thing over: a word of one the same as one of the
+/// other, or one starting or, if it's long enough to tell, containing the other, as Crescent and
+/// Crescentaxe do
+fn name_clash(a: &str, b: &str) -> bool {
+    let (a, b) = (name_words(a), name_words(b));
+    a.iter().any(|x| {
+        b.iter().any(|y| {
+            let (sx, sy) = (word_stem(x), word_stem(y));
+            sx == sy || x.starts_with(sy) || y.starts_with(sx) || (sx.len() >= 5 && y.contains(sx)) || (sy.len() >= 5 && x.contains(sy))
+        })
+    })
 }
 
 /// A weapon's model, in frames: one for swords, staves and whips, three for a bow being drawn.
@@ -2132,11 +3445,24 @@ impl WeaponLook {
 fn held_scale(family: &Family, size: usize, longest: f64) -> f64 {
     let s = SIZES[size.min(SIZES.len() - 1)].scale;
     let damped = match family.kind {
-        Kind::Ranged if family.style != Style::Lob => 0.5,
+        Kind::Ranged if !family.style.thrown() => 0.5,
         _ if longest > 1.2 => 0.6,
         _ => 1.0,
     };
     1.0 + (s - 1.0) * damped
+}
+
+/// How much smaller than its parts make it a weapon of `family` is drawn in the hand, whatever
+/// size it was made: a talisman's broad icon held up near the eye looks bigger than the rest of
+/// the one-handed foci, a wand's thin length or a skull, so it's drawn a little smaller
+fn held_size(family: &Family) -> f64 {
+    match family.id.as_str() {
+        "talisman" => 0.8,
+        // A throwing knife's a small thing, and a chakram a broad ring held by its rim
+        "knives" => 0.85,
+        "chakram" => 0.9,
+        _ => 1.0,
+    }
 }
 
 /// A part of a crossbow or gun drawn apart from the rest, as it moves while it's loaded: a lever
@@ -2161,6 +3487,11 @@ const STAFF_RES: f64 = 150.0;
 /// Crossbows are wide, so a little coarser, and guns finer, for their locks
 const CROSSBOW_RES: f64 = 128.0;
 const GUN_RES: f64 = 144.0;
+/// How many times finer than that the weapon in hand is drawn, as it's seen right before the eye:
+/// only the one, made again on a thread of its own each time another's taken in hand, see
+/// Game::fine_held(). Every weapon at this grid would take about eight times the memory and the
+/// time to make, see weapon_models_fit().
+pub const HELD_FINE: f64 = 2.0;
 /// How far a bow's string comes back drawn all the way, in meters
 const DRAW_LENGTH: f64 = 0.24;
 
@@ -2169,6 +3500,40 @@ pub const CROSSBOW_SPANNED: usize = 2;
 // A gun's frames: its hammer cocked, then let down, then its ramrod
 pub const GUN_COCKED: usize = 0;
 pub const GUN_FIRED: usize = 1;
+/// How far past its barrel's length a hand cannon's muzzle is cut off flat, in meters
+const CANNON_LIP: f64 = 0.016;
+
+/// The look of a weapon of `family` made of `parts`, as the code builds it, before it's scaled to
+/// its size: for the model files, see src\weapon_parts.rs
+pub fn look_of(library: &Library, family: usize, parts: &[usize]) -> WeaponLook {
+    let components: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+    build_look(&library.families[family], &components)
+}
+
+/// The look of a weapon of `family` made of `parts`, drawn `scale` times as big as its parts make
+/// it, as Weapon::assemble() makes it but `k` times finer, as the weapon in hand is drawn: the same
+/// shapes, held and tipped where they were, with the finer detail the builders add at a finer
+/// grid, see weapon_parts::fine(). Takes about `k` cubed times as long to make.
+pub fn fine_look(library: &Library, family: usize, parts: &[usize], scale: f64, k: f64) -> WeaponLook {
+    let fam = &library.families[family];
+    let components: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+    let look = crate::weapon_parts::finer(k, || crate::weapon_parts::build(library, family, parts, || build_look(fam, &components)));
+    look.scaled(scale)
+}
+
+impl Library {
+    /// The parts that fit slot `slot` of `family`, in the order they're listed: for the model
+    /// files, see src\weapon_parts.rs
+    pub fn fitting(&self, family: usize, slot: &str) -> Vec<usize> {
+        let id = &self.families[family].id;
+        (0..self.components.len()).filter(|&c| self.components[c].slot_type == slot && self.components[c].compatible_families.contains(id)).collect()
+    }
+
+    /// The parts of `family`'s reference weapon: the first that fits each of its slots
+    pub fn reference_parts(&self, family: usize) -> Vec<usize> {
+        self.families[family].slots.iter().map(|slot| self.fitting(family, slot).first().copied().unwrap_or(0)).collect()
+    }
+}
 
 fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
     let visual = |slot: &str| components.iter().find(|c| c.slot_type == slot).map(|c| &c.visual_profile);
@@ -2181,16 +3546,40 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
             let (parts, grip, root) = whip(v("lash"), v("handle"), v("core"), family);
             let (set, cracker) = lash_models(v("lash"), v("fall"));
             let thickness = v("lash").thickness.unwrap_or(0.011);
-            WeaponLook { lash: Some(LashLook { root, set, cracker, thickness }), ..plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, root) }
+            WeaponLook { lash: Some(LashLook { root, set, cracker, thickness, head: None }), ..plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, root) }
+        }
+        // A flail as a whole, its head out on its chain, to be seen lying about or in the bag; then
+        // just its haft with the cap its chain hangs from, and just its head, for it in hand, the
+        // chain between them simulated as a whip's lash is and the head drawn on its end
+        Kind::Melee if family.style == Style::Whirl => {
+            let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
+            let cap = Visual { shape: Some(FLAIL_CAP.to_owned()), ..v("blade").clone() };
+            let (haft, _, root) = sword(&cap, v("hilt"), v("guard"), v("core"), family);
+            let head = flail_loose(v("blade"), v("core").infuse.as_deref().and_then(material));
+            let frames = vec![voxelize(&parts, SWORD_RES), voxelize(&haft, SWORD_RES), voxelize(&head, SWORD_RES)];
+            let lash = LashLook { root, set: LASH_CHAIN, cracker: CRACKER_WEIGHT, thickness: FLAIL_CHAIN, head: Some(FLAIL_HEAD) };
+            WeaponLook { lash: Some(lash), ..plain(frames, SWORD_RES, grip, tip) }
         }
         Kind::Melee => {
             let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
-            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+            let look = plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip);
+            // A katar's fist closes round the crossbars of its frame, across its blade
+            if family.style == Style::Punch { WeaponLook { hold: Vector3::x(), ..look } } else { look }
         }
         // A bomb on the palm, a fresh one each throw
         Kind::Ranged if family.style == Style::Lob => {
             let (parts, grip, tip) = bomb(v("casing"), v("fuse"), v("filling"), v("core"));
             plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        // A throwing knife in the hand, a fresh one each throw, made as a little dagger is
+        Kind::Ranged if family.style == Style::Knife => {
+            let (parts, grip, tip) = sword(v("blade"), v("hilt"), v("guard"), v("core"), family);
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        // A chakram held by its rim, see foci.rs
+        Kind::Ranged if family.style == Style::Ring => {
+            let (parts, grip, tip) = foci::chakram(v("blade"), v("hilt"), v("core"));
+            WeaponLook { hold: Vector3::x(), ..plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip) }
         }
         Kind::Ranged if family.build.crossbow() => crossbow(family, v("prod"), v("stock"), v("lock"), v("sight"), v("core")),
         Kind::Ranged if family.build != Build::None => gun(family, v("barrel"), v("stock"), v("lock"), v("core")),
@@ -2218,13 +3607,27 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
             let (parts, grip, tip) = totem(v("shaft"), v("focus"), v("crystal"), v("binding"));
             plain(vec![voxelize(&parts, STAFF_RES)], STAFF_RES, grip, tip)
         }
-        Kind::Magic if family.style == Style::Toll => {
-            let (parts, grip, tip) = bell(v("shaft"), v("focus"), v("crystal"), v("binding"));
-            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
-        }
         Kind::Magic if family.style == Style::Arc => {
             let (parts, grip, tip) = rod(v("shaft"), v("focus"), v("crystal"), v("binding"));
             plain(vec![voxelize(&parts, STAFF_RES)], STAFF_RES, grip, tip)
+        }
+        // A necromancer's skull focus and a priest's talisman, see weapons\relics.rs
+        Kind::Magic if family.id == "skullfocus" => {
+            let (parts, grip, tip) = relics::skull(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        Kind::Magic if family.id == "talisman" => {
+            let (parts, grip, tip) = relics::talisman(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        // A prism's great crystal in its cradle, a runestone's carved stone, see foci.rs
+        Kind::Magic if family.id == "prism" => {
+            let (parts, grip, tip) = foci::prism(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
+        }
+        Kind::Magic if family.id == "runestone" => {
+            let (parts, grip, tip) = foci::runestone(v("shaft"), v("focus"), v("crystal"), v("binding"));
+            plain(vec![voxelize(&parts, SWORD_RES)], SWORD_RES, grip, tip)
         }
         Kind::Magic if family.style == Style::Censer => {
             let (parts, grip, tip) = censer(v("shaft"), v("focus"), v("crystal"), v("binding"));
@@ -2254,6 +3657,7 @@ fn build_look(family: &Family, components: &[&Component]) -> WeaponLook {
                     ..Default::default()
                 };
                 let mut blade_parts = Vec::new();
+                slot("focus");
                 tip = sword_blade(&mut blade_parts, &blade, tip.z + 0.06, None);
                 blade_parts.push(limb([0.0, 0.0, tip.z - 0.4], [0.0, 0.0, tip.z - 0.32], 0.02, 0.014, DARK_STEEL));
                 parts.splice(0..0, blade_parts);
@@ -2276,7 +3680,9 @@ fn orb(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (V
     let r = 0.035 + crystal.size.unwrap_or(0.05) * 0.3;
     let c = [0.0, 0.0, 0.13 + r];
     // The orb first, so its setting doesn't hide it
+    slot("crystal");
     p.push(ball(c, r, gem));
+    slot("focus");
     match focus.shape.as_deref().unwrap_or("ring") {
         "prongs" | "crook" | "antlers" => {
             for k in 0..3 {
@@ -2311,10 +3717,13 @@ fn orb(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (V
     }
     // A cup it hovers over, then the cradle, bound
     let bm = mat(&binding.material, LINEN);
+    slot("binding");
     for k in 0..3 {
         p.push(ellipsoid([0.0, 0.0, 0.03 + k as f64 * 0.03], [0.021, 0.021, 0.006], if k % 2 == 0 { bm } else { mat(&binding.accent, bm) }));
     }
+    slot("focus");
     p.push(ellipsoid([0.0, 0.0, 0.12], [0.04, 0.04, 0.014], setting));
+    slot("shaft");
     p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, 0.12], 0.016, 0.02, wood));
     (p, v3(0.0, 0.0, 0.05), Vector3::from(c))
 }
@@ -2334,25 +3743,32 @@ fn tome(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (
     let (w, h) = (0.11, 0.16);
     // Shut: the cover facing out, its corners capped, a clasp across, the crystal in the middle
     let mut closed = Vec::new();
+    slot("crystal");
     closed.push(ball([w * 0.5, -0.004, h * 0.5], crystal.size.unwrap_or(0.05).clamp(0.014, 0.03), gem));
+    slot("focus");
     for (x, z) in [(w - 0.012, 0.012), (w - 0.012, h - 0.012), (0.012, 0.012), (0.012, h - 0.012)] {
         closed.push(cuboid([x - 0.014, -0.003, z - 0.014], [x + 0.014, 0.038, z + 0.014], metal));
     }
     closed.push(cuboid([w - 0.004, -0.003, h * 0.45], [w + 0.01, 0.038, h * 0.55], metal));
+    slot("shaft");
     closed.push(cuboid([0.004, 0.006, 0.006], [w - 0.002, 0.029, h - 0.006], WAX));
     closed.push(cuboid([-0.008, 0.0, 0.0], [w, 0.035, h], cover));
     // Open: the pages to -y either side of the spine, runes on them, the crystal over the spine
     let mut open = Vec::new();
+    slot("crystal");
     open.push(ball([0.0, 0.004, h + 0.012], crystal.size.unwrap_or(0.05).clamp(0.012, 0.025), gem));
     for side in [-1.0, 1.0] {
+        slot("binding");
         for row in 0..4 {
             for k in 0..3 {
                 let x = side * (0.022 + 0.028 * k as f64);
                 open.push(ball([x, -0.0005, h - 0.03 - row as f64 * 0.03], 0.004, ink));
             }
         }
+        slot("focus");
         open.push(cuboid([side * w - 0.008, 0.016, -0.004], [side * w + 0.008, 0.026, h + 0.004], metal));
     }
+    slot("shaft");
     open.push(cuboid([-0.008, -0.002, 0.0], [0.008, 0.012, h], AIR));
     open.push(cuboid([-w + 0.004, 0.004, 0.006], [w - 0.004, 0.018, h - 0.006], WAX));
     open.push(cuboid([-w, 0.018, -0.004], [w, 0.026, h + 0.004], cover));
@@ -2371,20 +3787,25 @@ fn totem(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
     let top = 0.72;
     // The faces, their eyes and mouths first so they show, each a little wider than the pole
     for (k, z) in [0.3, 0.45, 0.6].into_iter().enumerate() {
+        slot("crystal");
         for s in [-1.0, 1.0] {
             p.push(ball([0.045, s * 0.016, z + 0.012], 0.0075, gem));
         }
+        slot("shaft");
         p.push(cuboid([0.035, -0.014, z - 0.024], [0.06, 0.014, z - 0.016], AIR));
         p.push(limb([0.04, 0.0, z + 0.008], [0.062, 0.0, z - 0.004], 0.008, 0.004, wood));
         p.push(ellipsoid([0.0, 0.0, z], [0.05, 0.045, 0.06], if k % 2 == 0 { wood } else { paint }));
     }
     // Feathers hanging off the top face
+    slot("binding");
     for s in [-1.0, 1.0] {
         p.push(limb([0.0, s * 0.045, 0.62], [0.01, s * 0.08, 0.5], 0.01, 0.004, bm));
     }
     // The focus on top: horns, a skull, or the crystal held up on its own
     let c = [0.0, 0.0, top + 0.05];
+    slot("crystal");
     p.push(ball(c, crystal.size.unwrap_or(0.05).clamp(0.025, 0.045), gem));
+    slot("focus");
     match focus.shape.as_deref().unwrap_or("") {
         "antlers" | "crescent" | "horns" => {
             for s in [-1.0, 1.0] {
@@ -2398,41 +3819,9 @@ fn totem(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
             }
         }
     }
+    slot("shaft");
     p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, top], 0.026, 0.034, wood));
     (p, v3(0.0, 0.0, 0.14), Vector3::from(c))
-}
-
-/// A handbell: a handle held upright, the bell hanging under the hand, its mouth down, a glowing
-/// clapper inside it made of its crystal, a band of its binding round its shoulder. Returns its
-/// parts, where it's held, and its mouth.
-fn bell(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
-    let mut p = Vec::new();
-    let wood = mat(&shaft.material, WOOD);
-    let metal = match mat(&focus.material, BRONZE) {
-        WOOD | BIRCH_BARK | BARK_DARK | LEATHER | LINEN | CLOTH => BRONZE,
-        m => m,
-    };
-    let gem = mat(&crystal.gem, CRYSTAL);
-    let band = mat(&binding.material, mat(&binding.accent, GOLD));
-    // Hollow, the clapper hanging inside it, seen from under
-    // A domed crown, a waist widening slowly, then flaring out to a thick lip
-    let mouth = -0.13;
-    let flare = |t: f64| 0.026 + 0.016 * t + 0.032 * t.powi(4);
-    p.push(ball([0.0, 0.0, mouth + 0.018], crystal.size.unwrap_or(0.05).clamp(0.014, 0.022), gem));
-    p.push(limb([0.0, 0.0, mouth - 0.01], [0.0, 0.0, -0.03], flare(1.0) - 0.008, flare(0.2) - 0.008, AIR));
-    p.push(limb([0.0, 0.0, -0.03], [0.0, 0.0, mouth + 0.012], 0.003, 0.003, DARK_STEEL));
-    p.push(limb([0.0, 0.0, -0.04], [0.0, 0.0, -0.028], flare(0.15) + 0.004, flare(0.1) + 0.004, band));
-    let steps = 8;
-    for k in 0..steps {
-        let (t0, t1) = (k as f64 / steps as f64, (k + 1) as f64 / steps as f64);
-        p.push(limb([0.0, 0.0, -0.012 + (mouth + 0.012) * t0], [0.0, 0.0, -0.012 + (mouth + 0.012) * t1], flare(t0), flare(t1), metal));
-    }
-    p.push(ellipsoid([0.0, 0.0, -0.012], [0.027, 0.027, 0.016], metal));
-    p.push(limb([0.0, 0.0, mouth - 0.003], [0.0, 0.0, mouth + 0.006], flare(1.0) + 0.004, flare(1.0), metal));
-    // The handle over it, and a knob on top
-    p.push(ball([0.0, 0.0, 0.17], 0.02, metal));
-    p.push(limb([0.0, 0.0, -0.01], [0.0, 0.0, 0.16], 0.015, 0.018, wood));
-    (p, v3(0.0, 0.0, 0.09), v3(0.0, 0.0, mouth))
 }
 
 /// The metal a part made of `m` is drawn in where it has to be metal: bronze for wood, cloth and
@@ -2456,16 +3845,97 @@ fn sphere_points(n: usize) -> Vec<[f64; 3]> {
         .collect()
 }
 
+/// The shape a flail's blade is given to build just its haft and the cap on its end, see
+/// build_look(), which frame of a flail's look is its head alone, and how thick its chain is drawn
+/// in hand, in meters
+const FLAIL_CAP: &str = "flail_cap";
+pub const FLAIL_HEAD: usize = 2;
+const FLAIL_CHAIN: f64 = 0.02;
+
+/// How far off the middle each of a flail's heads with `shape` is, side by side on their own
+/// chains, and how big each is against a single head
+fn flail_heads(shape: &str) -> (&'static [f64], f64) {
+    match shape {
+        "flail_twin" => (&[-0.06, 0.06], 0.72),
+        "flail_triple" => (&[-0.085, 0.0, 0.085], 0.58),
+        _ => (&[0.0], 1.0),
+    }
+}
+
 /// A flail's head on its chain, rising from a cap on the end of the haft at `z_top`: the chain
 /// flung out straight, as it is while it's whirled, its links turned one way then the other, and
 /// on its end a spiked ball, a star of long spikes, two balls on two chains, a caged brazier
-/// glowing inside, or a lump of stone bound with iron. Returns the middle of the head.
+/// glowing inside, or a lump of stone bound with iron. Returns the middle of the head. Shaped
+/// FLAIL_CAP, just the cap, returning where its chain hangs from.
 fn flail_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, infuse: Option<u8>) -> Vector3<f64> {
     let chain = v.length.unwrap_or(0.3);
     let shape = v.shape.as_deref().unwrap_or("flail");
-    let twin = shape == "flail_twin";
-    let triple = shape == "flail_triple";
-    let r = v.width.unwrap_or(0.14) * 0.5 * if twin { 0.72 } else if triple { 0.58 } else { 1.0 };
+    let links = mat(&v.accent, DARK_STEEL);
+    let base = z_top + 0.015;
+    if shape == FLAIL_CAP {
+        flail_cap(p, z_top, links);
+        return v3(0.0, 0.0, base);
+    }
+    let (offsets, small) = flail_heads(shape);
+    let r = v.width.unwrap_or(0.14) * 0.5 * small;
+    let mut middle = Vector3::zeros();
+    for (k, &off) in offsets.iter().enumerate() {
+        // Three on chains of three lengths, so they don't knock together
+        let chain = if offsets.len() == 3 { chain * (0.85 + 0.15 * k as f64) } else { chain };
+        let c = [off, 0.0, base + chain + r];
+        // The head first, so its spikes and bands show over it
+        flail_ball(p, v, c, r, infuse);
+        // The chain, from the cap out to the head
+        flail_links(p, v3(0.0, 0.0, base), v3(off, 0.0, chain), links);
+        middle += v3(c[0], c[1], c[2]);
+    }
+    flail_cap(p, z_top, links);
+    middle / offsets.len() as f64
+}
+
+/// A cap on the end of a flail's haft at `z_top`, a ring through it the chain hangs from
+fn flail_cap(p: &mut Vec<Part>, z_top: f64, links: u8) {
+    ring(p, [0.0, 0.0, z_top + 0.015], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.012, 0.005, links);
+    p.push(limb([0.0, 0.0, z_top - 0.045], [0.0, 0.0, z_top + 0.008], 0.021, 0.017, links));
+}
+
+/// A flail's chain from `from` along `along`, its links turned one way then the other
+fn flail_links(p: &mut Vec<Part>, from: Vector3<f64>, along: Vector3<f64>, links: u8) {
+    let d = along.normalize();
+    let across = [d.z, 0.0, -d.x];
+    let n = ((along.norm() / 0.026).round() as usize).max(3);
+    for k in 0..n {
+        let at = from + along * ((k as f64 + 0.5) / n as f64);
+        let w = if k % 2 == 0 { across } else { [0.0, 1.0, 0.0] };
+        ring(p, [at.x, at.y, at.z], [d.x, d.y, d.z], w, 0.015, 0.0042, links);
+    }
+}
+
+/// A flail's head alone, for it on the end of its chain in hand, see build_look(): from where the
+/// chain meets it at the origin, on up z, the head on a last link, or for two or three heads a
+/// short chain out to each from a ring
+fn flail_loose(v: &Visual, infuse: Option<u8>) -> Vec<Part> {
+    let mut p = Vec::new();
+    slot("blade");
+    let shape = v.shape.as_deref().unwrap_or("flail");
+    let links = mat(&v.accent, DARK_STEEL);
+    let (offsets, small) = flail_heads(shape);
+    let r = v.width.unwrap_or(0.14) * 0.5 * small;
+    for (k, &off) in offsets.iter().enumerate() {
+        let stub = if offsets.len() > 1 { 0.07 + 0.02 * k as f64 } else { 0.012 };
+        let c = [off * 1.4, 0.0, stub + r];
+        flail_ball(&mut p, v, c, r, infuse);
+        if offsets.len() > 1 {
+            flail_links(&mut p, Vector3::zeros(), v3(off * 1.4, 0.0, stub), links);
+        }
+    }
+    ring(&mut p, [0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.012, 0.005, links);
+    p
+}
+
+/// One of a flail's heads, `r` big round `c`, as its blade's shape and stuff say
+fn flail_ball(p: &mut Vec<Part>, v: &Visual, c: [f64; 3], r: f64, infuse: Option<u8>) {
+    let shape = v.shape.as_deref().unwrap_or("flail");
     let body = mat(&v.material, match shape {
         "flail_stone" => ROCK,
         "flail_skull" => BONE,
@@ -2473,99 +3943,95 @@ fn flail_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, infuse: Option<u8>) -> 
         _ => DARK_STEEL,
     });
     let spikes = mat(&v.edge, STEEL);
-    let links = mat(&v.accent, DARK_STEEL);
-    let base = z_top + 0.015;
-    let offsets: &[f64] = if twin {
-        &[-0.06, 0.06]
-    } else if triple {
-        &[-0.085, 0.0, 0.085]
-    } else {
-        &[0.0]
-    };
-    let mut middle = Vector3::zeros();
-    for (k, &off) in offsets.iter().enumerate() {
-        // Three on chains of three lengths, so they don't knock together
-        let chain = if triple { chain * (0.85 + 0.15 * k as f64) } else { chain };
-        let c = [off, 0.0, base + chain + r];
-        // The head first, so its spikes and bands show over it
-        match shape {
-            // A skull, its eyes glowing, its jaw bound shut with iron
-            "flail_skull" => {
-                let glow = mat(&v.gem, infuse.unwrap_or(GLOW_BLOOD));
-                for s in [-1.0, 1.0] {
-                    p.push(ball([c[0] + s * r * 0.38, c[1] + r * 0.82, c[2] + r * 0.15], r * 0.24, glow));
-                }
-                ring(p, [c[0], c[1], c[2] - r * 0.45], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.82, 0.006, spikes);
-                p.push(ellipsoid([c[0], c[1] + r * 0.25, c[2] - r * 0.6], [r * 0.62, r * 0.6, r * 0.35], body));
-                p.push(ellipsoid(c, [r * 0.95, r * 1.05, r], body));
+    match shape {
+        // A skull, its eyes glowing, its jaw bound shut with iron
+        "flail_skull" => {
+            let glow = mat(&v.gem, infuse.unwrap_or(GLOW_BLOOD));
+            for s in [-1.0, 1.0] {
+                p.push(ball([c[0] + s * r * 0.38, c[1] + r * 0.82, c[2] + r * 0.15], r * 0.24, glow));
             }
-            // A cluster of crystals growing out of an iron core, glowing
-            "flail_crystal" => {
-                for (j, d) in sphere_points(9).into_iter().enumerate() {
-                    let long = if j % 3 == 0 { 1.7 } else { 1.3 };
-                    let at = |s: f64| [c[0] + d[0] * r * s, c[1] + d[1] * r * s, c[2] + d[2] * r * s];
-                    p.push(limb(at(0.3), at(long), r * 0.32, 0.003, body));
-                }
-                p.push(ball(c, r * 0.7, spikes));
-            }
-            "flail_brazier" => {
-                let glow = mat(&v.gem, infuse.unwrap_or(GLOW_FIRE));
-                for k in 0..5 {
-                    let a = k as f64 / 5.0 * TAU;
-                    let points: Vec<[f64; 3]> = (0..=8)
-                        .map(|j| {
-                            let b = -PI * 0.5 + PI * j as f64 / 8.0;
-                            [c[0] + a.cos() * b.cos() * r * 1.06, c[1] + a.sin() * b.cos() * r * 1.06, c[2] + b.sin() * r * 1.06]
-                        })
-                        .collect();
-                    curve(p, &points, 0.006, 0.006, body);
-                }
-                ring(p, [c[0], c[1], c[2] + r * 0.2], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.08, 0.006, spikes);
-                p.push(ball(c, r * 0.84, glow));
-            }
-            "flail_stone" => {
-                for w in [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
-                    ring(p, c, [1.0, 0.0, 0.0], w, r * 1.02, 0.007, spikes);
-                }
-                let mut seed = 0x5707;
-                for k in 0..6 {
-                    let d = sphere_points(6)[k];
-                    let s = 0.45 + 0.15 * random(&mut seed);
-                    p.push(ball([c[0] + d[0] * r * 0.5, c[1] + d[1] * r * 0.5, c[2] + d[2] * r * 0.5], r * s, if k % 2 == 0 { GRAVEL } else { body }));
-                }
-                p.push(ellipsoid(c, [r * 1.05, r * 0.92, r], body));
-            }
-            _ => {
-                let star = shape == "flail_star";
-                for (k, d) in sphere_points(if star { 8 } else { 14 }).into_iter().enumerate() {
-                    let long = if star { 2.1 } else if k % 2 == 0 { 1.55 } else { 1.4 };
-                    let at = |s: f64| [c[0] + d[0] * r * s, c[1] + d[1] * r * s, c[2] + d[2] * r * s];
-                    p.push(limb(at(0.8), at(long), if star { 0.016 } else { 0.012 }, 0.002, spikes));
-                }
-                if star {
-                    for d in sphere_points(12) {
-                        p.push(ball([c[0] + d[0] * r, c[1] + d[1] * r, c[2] + d[2] * r], 0.009, spikes));
-                    }
-                }
-                p.push(ball(c, r, body));
-            }
+            ring(p, [c[0], c[1], c[2] - r * 0.45], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.82, 0.006, spikes);
+            p.push(ellipsoid([c[0], c[1] + r * 0.25, c[2] - r * 0.6], [r * 0.62, r * 0.6, r * 0.35], body));
+            p.push(ellipsoid(c, [r * 0.95, r * 1.05, r], body));
         }
-        // The chain, from the cap out to the head
-        let along = v3(off, 0.0, chain);
-        let d = along.normalize();
-        let across = [d.z, 0.0, -d.x];
-        let n = ((chain / 0.026).round() as usize).max(3);
-        for k in 0..n {
-            let at = v3(0.0, 0.0, base) + along * ((k as f64 + 0.5) / n as f64);
-            let w = if k % 2 == 0 { across } else { [0.0, 1.0, 0.0] };
-            ring(p, [at.x, at.y, at.z], [d.x, d.y, d.z], w, 0.015, 0.0042, links);
+        // A cluster of crystals growing out of an iron core, glowing
+        "flail_crystal" => {
+            for (j, d) in sphere_points(9).into_iter().enumerate() {
+                let long = if j % 3 == 0 { 1.7 } else { 1.3 };
+                let at = |s: f64| [c[0] + d[0] * r * s, c[1] + d[1] * r * s, c[2] + d[2] * r * s];
+                p.push(limb(at(0.3), at(long), r * 0.32, 0.003, body));
+            }
+            p.push(ball(c, r * 0.7, spikes));
         }
-        middle += v3(c[0], c[1], c[2]);
+        "flail_brazier" => {
+            let glow = mat(&v.gem, infuse.unwrap_or(GLOW_FIRE));
+            for k in 0..5 {
+                let a = k as f64 / 5.0 * TAU;
+                let points: Vec<[f64; 3]> = (0..=8)
+                    .map(|j| {
+                        let b = -PI * 0.5 + PI * j as f64 / 8.0;
+                        [c[0] + a.cos() * b.cos() * r * 1.06, c[1] + a.sin() * b.cos() * r * 1.06, c[2] + b.sin() * r * 1.06]
+                    })
+                    .collect();
+                curve(p, &points, 0.006, 0.006, body);
+            }
+            ring(p, [c[0], c[1], c[2] + r * 0.2], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.08, 0.006, spikes);
+            p.push(ball(c, r * 0.84, glow));
+        }
+        // A wheel of iron on edge, spokes in it, spikes standing out all round its rim
+        "flail_wheel" => {
+            for k in 0..10 {
+                let a = k as f64 / 10.0 * TAU;
+                let (x, z) = (a.cos(), a.sin());
+                p.push(limb([c[0] + x * r * 1.0, c[1], c[2] + z * r * 1.0], [c[0] + x * r * 1.5, c[1], c[2] + z * r * 1.5], 0.012, 0.002, spikes));
+            }
+            ring(p, c, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], r * 0.95, 0.013, body);
+            for k in 0..5 {
+                let a = k as f64 / 5.0 * TAU + 0.3;
+                p.push(limb(c, [c[0] + a.cos() * r * 0.9, c[1], c[2] + a.sin() * r * 0.9], 0.006, 0.006, body));
+            }
+            p.push(limb([c[0], c[1] - 0.02, c[2]], [c[0], c[1] + 0.02, c[2]], r * 0.25, r * 0.25, spikes));
+        }
+        // A drill of iron winding round and round to a point, like a shell's spiral
+        "flail_spiral" => {
+            let points: Vec<[f64; 3]> = (0..=36)
+                .map(|k| {
+                    let t = k as f64 / 36.0;
+                    let a = t * 3.0 * TAU;
+                    let w = r * (1.0 - t * 0.92);
+                    [c[0] + a.cos() * w, c[1] + a.sin() * w, c[2] - r * 0.8 + 2.2 * r * t]
+                })
+                .collect();
+            curve(p, &points, 0.013, 0.004, spikes);
+            p.push(limb([c[0], c[1], c[2] - r * 0.85], [c[0], c[1], c[2] + r * 1.35], r * 0.8, 0.004, body));
+        }
+        "flail_stone" => {
+            for w in [[0.0, 1.0, 0.0], [0.0, 0.0, 1.0]] {
+                ring(p, c, [1.0, 0.0, 0.0], w, r * 1.02, 0.007, spikes);
+            }
+            let mut seed = 0x5707;
+            for k in 0..6 {
+                let d = sphere_points(6)[k];
+                let s = 0.45 + 0.15 * random(&mut seed);
+                p.push(ball([c[0] + d[0] * r * 0.5, c[1] + d[1] * r * 0.5, c[2] + d[2] * r * 0.5], r * s, if k % 2 == 0 { GRAVEL } else { body }));
+            }
+            p.push(ellipsoid(c, [r * 1.05, r * 0.92, r], body));
+        }
+        _ => {
+            let star = shape == "flail_star";
+            for (k, d) in sphere_points(if star { 8 } else { 14 }).into_iter().enumerate() {
+                let long = if star { 2.1 } else if k % 2 == 0 { 1.55 } else { 1.4 };
+                let at = |s: f64| [c[0] + d[0] * r * s, c[1] + d[1] * r * s, c[2] + d[2] * r * s];
+                p.push(limb(at(0.8), at(long), if star { 0.016 } else { 0.012 }, 0.002, spikes));
+            }
+            if star {
+                for d in sphere_points(12) {
+                    p.push(ball([c[0] + d[0] * r, c[1] + d[1] * r, c[2] + d[2] * r], 0.009, spikes));
+                }
+            }
+            p.push(ball(c, r, body));
+        }
     }
-    // A cap on the end of the haft, a ring through it the chain hangs from
-    ring(p, [0.0, 0.0, base], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.012, 0.005, links);
-    p.push(limb([0.0, 0.0, z_top - 0.045], [0.0, 0.0, z_top + 0.008], 0.021, 0.017, links));
-    middle / offsets.len() as f64
 }
 
 /// A maul's great head across the end of its haft at `z_top`, its striking faces ±x: a block of
@@ -2640,6 +4106,33 @@ fn maul_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, infuse: Option<u8>) -> V
             }
             p.push(ellipsoid([0.0, 0.0, zc], [w, d * 1.1, length * 0.6], stone));
         }
+        // A great skull, horned, its eyes and its teeth glowing with what's in it, an iron band
+        // round its brow
+        "maul_skull" => {
+            let bone = mat(&v.material, BONE);
+            let glow = rune.unwrap_or(GLOW_BLOOD);
+            for s in [-1.0, 1.0] {
+                p.push(ball([w * 0.55, s * d * 0.42, zc + length * 0.15], d * 0.26, glow));
+                curve(p, &[[-w * 0.1, s * d * 0.8, zc + length * 0.35], [-w * 0.3, s * d * 1.5, zc + length * 0.55], [-w * 0.6, s * d * 1.6, zc + length * 0.9]], d * 0.32, 0.004, mat(&v.accent, bone));
+            }
+            for k in 0..5 {
+                let y = (k as f64 - 2.0) * d * 0.2;
+                p.push(cuboid([w * 0.74, y - 0.005, zc - length * 0.32], [w * 0.86, y + 0.005, zc - length * 0.18], glow));
+            }
+            ring(p, [0.0, 0.0, zc + length * 0.3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], w * 0.72, 0.008, bands);
+            p.push(ellipsoid([w * 0.38, 0.0, zc - length * 0.3], [w * 0.5, d * 0.75, length * 0.28], bone));
+            p.push(ellipsoid([0.0, 0.0, zc + length * 0.08], [w * 0.85, d * 1.05, length * 0.6], bone));
+        }
+        // Stepped down to each face like a stair, banded, its runes in the steps
+        "maul_stepped" => {
+            for (k, (inner, grow)) in [(0.0, 1.0), (0.45, 0.82), (0.75, 0.64)].into_iter().enumerate() {
+                for s in [-1.0, 1.0] {
+                    let (a, b) = (s * w * inner, s * if k == 2 { w + 0.006 } else { w * [0.45, 0.75][k] });
+                    let material = if k == 2 { bands } else if let (1, Some(g)) = (k, rune) { g } else { body };
+                    p.push(cuboid([a.min(b), -d * grow, zc - length * 0.5 * grow], [a.max(b), d * grow, zc + length * 0.5 * grow], material));
+                }
+            }
+        }
         "maul_anvil" => {
             if let Some(g) = rune {
                 for s in [-1.0, 1.0] {
@@ -2690,6 +4183,8 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
         "skull" => BONE,
         "keg" => WOOD,
         "geode" => ROCK,
+        "gourd" => FUR_TAN,
+        "lantern" => BRONZE,
         _ => DARK_STEEL,
     });
     let trim = mat(&casing.accent, BRONZE);
@@ -2698,24 +4193,29 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
     let neck = match shape {
         "pot" | "flask" => c[2] + r * 1.1 + 0.03,
         "bundle" => c[2] + r * 1.3,
+        "gourd" => c[2] + r * 1.45 + 0.01,
         _ => c[2] + r + 0.014,
     };
     // The fuse, its end burning, first so its spark shows
     let fl = fuse.length.unwrap_or(0.07);
     let curl = fuse.width.unwrap_or(0.025);
     let end = [curl, 0.0, neck + fl];
+    slot("fuse");
     p.push(ball(end, 0.01, mat(&fuse.gem, GLOW_FIRE)));
     curve(&mut p, &[[0.0, 0.0, neck - 0.012], [curl * 0.2, 0.0, neck + fl * 0.45], [curl * 0.7, 0.0, neck + fl * 0.8], end], 0.0045, 0.0038, mat(&fuse.material, LINEN));
+    slot("core");
     if let Some(g) = core.gem.as_deref().and_then(material) {
         gem(&mut p, [0.0, -r * 0.96, c[2]], core.size.unwrap_or(0.02).clamp(0.01, 0.016), g, core.shape.as_deref());
     }
     match shape {
         // A skull, what fills it glowing out of its eyes and its cracks, its jaw wired on
         "skull" => {
+            slot("filling");
             for s in [-1.0, 1.0] {
                 p.push(ball([s * r * 0.36, -r * 0.82, c[2] + r * 0.12], r * 0.24, glow));
             }
             curve(&mut p, &[[r * 0.3, -r * 0.5, c[2] + r * 0.85], [r * 0.5, -r * 0.2, c[2] + r * 0.6], [r * 0.75, 0.0, c[2] + r * 0.7]], 0.004, 0.003, glow);
+            slot("casing");
             ring(&mut p, [0.0, -r * 0.2, c[2] - r * 0.55], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.7, 0.005, trim);
             p.push(ellipsoid([0.0, -r * 0.3, c[2] - r * 0.62], [r * 0.6, r * 0.55, r * 0.32], shell));
             p.push(limb([0.0, 0.0, c[2] + r * 0.8], [0.0, 0.0, neck], 0.014, 0.012, trim));
@@ -2723,10 +4223,13 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
         }
         // A little keg, hooped, staves showing, its bung glowing
         "keg" => {
+            slot("casing");
             for z in [c[2] - r * 0.6, c[2] + r * 0.6] {
                 ring(&mut p, [0.0, 0.0, z], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.9, 0.006, trim);
             }
+            slot("filling");
             p.push(ball([r * 0.82, 0.0, c[2]], 0.012, glow));
+            slot("casing");
             for k in 0..10 {
                 let a = k as f64 / 10.0 * TAU;
                 p.push(limb([a.cos() * r * 0.8, a.sin() * r * 0.8, c[2] - r * 0.95], [a.cos() * r * 0.9, a.sin() * r * 0.9, c[2]], 0.004, 0.004, BARK_DARK));
@@ -2737,19 +4240,24 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
         }
         // A geode split open, what fills it glowing in its hollow among crystal points
         "geode" => {
+            slot("casing");
             for d in sphere_points(8) {
                 if d[0] > 0.0 {
                     p.push(limb([d[0] * r * 0.45, d[1] * r * 0.45, c[2] + d[2] * r * 0.45], [d[0] * r * 0.95, d[1] * r * 0.95, c[2] + d[2] * r * 0.95], r * 0.16, 0.003, CRYSTAL));
                 }
             }
+            slot("filling");
             p.push(ball([r * 0.2, 0.0, c[2]], r * 0.5, glow));
+            slot("casing");
             p.push(cuboid([r * 0.35, -r * 1.2, c[2] - r * 1.2], [r * 1.2, r * 1.2, c[2] + r * 1.2], AIR));
             p.push(limb([0.0, 0.0, c[2] + r * 0.8], [0.0, 0.0, neck], 0.014, 0.012, trim));
             p.push(ball(c, r, shell));
         }
         // A fat clay belly, a neck, glowing pitch at its mouth and a cord tied round it
         "pot" => {
+            slot("filling");
             p.push(ball([0.0, 0.0, neck - 0.012], 0.017, glow));
+            slot("casing");
             ring(&mut p, [0.0, 0.0, neck - 0.006], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.022, 0.006, shell);
             ring(&mut p, [0.0, 0.0, c[2] + r * 0.3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.97, 0.006, trim);
             p.push(limb([0.0, 0.0, c[2] + r * 0.6], [0.0, 0.0, neck - 0.006], 0.028, 0.02, shell));
@@ -2757,9 +4265,11 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
         }
         // What fills it glowing through the glass, a cork in its neck, rims round its shoulder
         "flask" => {
+            slot("casing");
             p.push(limb([0.0, 0.0, neck - 0.03], [0.0, 0.0, neck], 0.0135, 0.013, WOOD));
             ring(&mut p, [0.0, 0.0, c[2] + r * 0.45], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.92, 0.006, trim);
             p.push(limb([0.0, 0.0, c[2] + r * 0.7], [0.0, 0.0, neck - 0.028], 0.017, 0.014, shell));
+            slot("filling");
             p.push(ball(c, r, glow));
         }
         // Three charges bound together, their ends glowing
@@ -2768,10 +4278,12 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
                 let a = k as f64 / 3.0 * TAU;
                 (a.cos() * r * 0.5, a.sin() * r * 0.5)
             };
+            slot("filling");
             for k in 0..3 {
                 let (x, y) = at(k);
                 p.push(ball([x, y, c[2] + r * 1.22], r * 0.3, glow));
             }
+            slot("casing");
             for z in [c[2] - r * 0.5, c[2] + r * 0.6] {
                 ring(&mut p, [0.0, 0.0, z], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.98, 0.006, trim);
             }
@@ -2780,8 +4292,32 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
                 p.push(limb([x, y, c[2] - r * 0.98], [x, y, c[2] + r * 1.2], r * 0.46, r * 0.46, shell));
             }
         }
+        // A dried gourd, a little bulb over a fat one, bound with cord, glowing through a crack
+        "gourd" => {
+            slot("filling");
+            curve(&mut p, &[[r * 0.5, -r * 0.82, c[2] - r * 0.5], [r * 0.15, -r * 0.98, c[2] - r * 0.1], [r * 0.35, -r * 0.9, c[2] + r * 0.35]], 0.005, 0.004, glow);
+            slot("casing");
+            ring(&mut p, [0.0, 0.0, c[2] + r * 0.62], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 0.55, 0.005, trim);
+            p.push(ball([0.0, 0.0, c[2] + r * 0.95], r * 0.5, shell));
+            p.push(limb([0.0, 0.0, c[2] + r * 1.3], [0.0, 0.0, neck], 0.011, 0.01, BARK_DARK));
+            p.push(ellipsoid([0.0, 0.0, c[2] - r * 0.1], [r, r, r * 0.88], shell));
+        }
+        // A lantern, what's in it glowing through its glass between four bars, a ring on top
+        "lantern" => {
+            slot("casing");
+            for k in 0..4 {
+                let a = (k as f64 + 0.5) / 4.0 * TAU;
+                p.push(limb([a.cos() * r * 0.82, a.sin() * r * 0.82, c[2] - r * 0.85], [a.cos() * r * 0.82, a.sin() * r * 0.82, c[2] + r * 0.85], 0.005, 0.005, shell));
+            }
+            p.push(limb([0.0, 0.0, c[2] + r * 0.85], [0.0, 0.0, c[2] + r * 1.15], r * 0.95, r * 0.3, shell));
+            p.push(ellipsoid([0.0, 0.0, c[2] - r * 0.9], [r * 0.95, r * 0.95, r * 0.15], shell));
+            ring(&mut p, [0.0, 0.0, neck - 0.004], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.012, 0.004, trim);
+            slot("filling");
+            p.push(limb([0.0, 0.0, c[2] - r * 0.8], [0.0, 0.0, c[2] + r * 0.8], r * 0.72, r * 0.72, glow));
+        }
         // An iron cage, the charge inside glowing out between its bars
         "cage" => {
+            slot("casing");
             for k in 0..4 {
                 let a = k as f64 / 4.0 * TAU;
                 let points: Vec<[f64; 3]> = (0..=8)
@@ -2794,14 +4330,17 @@ fn bomb(casing: &Visual, fuse: &Visual, filling: &Visual, core: &Visual) -> (Vec
             }
             ring(&mut p, c, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.05, 0.006, trim);
             p.push(limb([0.0, 0.0, c[2] + r * 0.9], [0.0, 0.0, neck], 0.014, 0.012, shell));
+            slot("filling");
             p.push(ball(c, r * 0.86, glow));
         }
         // An iron ball, vents round it glowing with what's in it, a band and a neck
         _ => {
+            slot("filling");
             for k in 0..5 {
                 let a = k as f64 / 5.0 * TAU + 0.3;
                 p.push(ball([a.cos() * r * 0.93, a.sin() * r * 0.93, c[2] + r * 0.25], 0.011, glow));
             }
+            slot("casing");
             ring(&mut p, c, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r, 0.006, trim);
             p.push(limb([0.0, 0.0, c[2] + r * 0.8], [0.0, 0.0, neck], 0.016, 0.014, trim));
             p.push(ball(c, r, shell));
@@ -2822,6 +4361,7 @@ fn rod(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (V
     let coil = metal_or_bronze(mat(&binding.accent, BRONZE));
     let wrap = mat(&binding.material, LEATHER);
     let gem = mat(&crystal.gem, CRYSTAL);
+    slot("crystal");
     p.push(ball([0.0, 0.0, top + 0.03], crystal.size.unwrap_or(0.05).clamp(0.02, 0.034), gem));
     let spread = match focus.shape.as_deref().unwrap_or("") {
         "antlers" | "crescent" | "horns" | "crook" => 0.085,
@@ -2829,11 +4369,14 @@ fn rod(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (V
     };
     for s in [-1.0, 1.0] {
         let tip = [s * spread * 0.7, 0.0, top + 0.25];
+        slot("crystal");
         p.push(ball(tip, 0.011, gem));
+        slot("focus");
         curve(&mut p, &[[0.0, 0.0, top - 0.01], [s * spread * 0.85, 0.0, top + 0.07], [s * spread, 0.0, top + 0.16], tip], 0.012, 0.005, metal);
     }
     p.push(limb([0.0, 0.0, top - 0.06], [0.0, 0.0, top + 0.01], 0.021, 0.025, metal));
     // The coil, six turns round the upper half
+    slot("binding");
     let steps = 96;
     for k in 0..=steps {
         let t = k as f64 / steps as f64;
@@ -2844,6 +4387,7 @@ fn rod(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> (V
         p.push(limb([0.0, 0.0, z - 0.008], [0.0, 0.0, z + 0.008], 0.02, 0.02, coil));
     }
     p.push(limb([0.0, 0.0, 0.3], [0.0, 0.0, 0.44], 0.0185, 0.0185, wrap));
+    slot("shaft");
     p.push(limb([0.0, 0.0, -0.01], [0.0, 0.0, 0.06], 0.012, 0.017, DARK_STEEL));
     p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, top], 0.015, 0.017, wood));
     (p, v3(0.0, 0.0, 0.37), v3(0.0, 0.0, top + 0.22))
@@ -2864,13 +4408,16 @@ fn censer(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) ->
     let r = 0.06;
     let c = [0.0, 0.0, -0.4];
     // The holes first, so what burns inside glows out through them
+    slot("crystal");
     for (row, (up, out)) in [(0.38, 0.92), (-0.12, 0.99)].into_iter().enumerate() {
         for k in 0..8 {
             let a = (k as f64 + 0.5 * row as f64) / 8.0 * TAU;
             p.push(ball([a.cos() * r * out, a.sin() * r * out, c[2] + r * up], 0.0105, gem));
         }
     }
+    slot("binding");
     ring(&mut p, [0.0, 0.0, c[2] + r * 0.12], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], r * 1.02, 0.007, band);
+    slot("focus");
     p.push(ball([0.0, 0.0, c[2] + r * 1.05], 0.012, metal));
     p.push(ellipsoid([0.0, 0.0, c[2] + r * 0.35], [r * 0.92, r * 0.92, r * 0.7], metal));
     p.push(ellipsoid(c, [r, r, r * 0.8], metal));
@@ -2887,6 +4434,7 @@ fn censer(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) ->
         }
     }
     ring(&mut p, top, [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], 0.016, 0.005, metal);
+    slot("shaft");
     p.push(ball([0.0, 0.0, 0.175], 0.016, metal));
     p.push(limb([0.0, 0.0, -0.03], [0.0, 0.0, 0.165], 0.012, 0.014, wood));
     (p, v3(0.0, 0.0, 0.07), Vector3::from(c))
@@ -2929,6 +4477,21 @@ fn gem(p: &mut Vec<Part>, at: [f64; 3], r: f64, material: u8, shape: Option<&str
                 p.push(ball([x + a.cos() * r * 0.6, y + a.sin() * r * 0.6, z + (k as f64 - 1.0) * r * 0.3], r * 0.62, material));
             }
         }
+        // A star: points standing out all round a little stone, across the blade
+        "star" => {
+            for k in 0..6 {
+                let a = k as f64 / 6.0 * TAU;
+                p.push(limb([x + a.cos() * r * 0.5, y, z + a.sin() * r * 0.5], [x + a.cos() * r * 1.5, y, z + a.sin() * r * 1.5], r * 0.32, 0.002, material));
+            }
+            p.push(ball(at, r * 0.62, material));
+        }
+        // An eye, its dark pupil looking out from either side
+        "eye" => {
+            for s in [-1.0, 1.0] {
+                p.push(ball([x, y + s * r * 0.62, z], r * 0.42, EYE));
+            }
+            p.push(ellipsoid(at, [r * 1.25, r, r * 0.8], material));
+        }
         _ => p.push(ball(at, r, material)),
     }
 }
@@ -2943,7 +4506,8 @@ fn inlay(p: &mut Vec<Part>, v: &Visual, row: usize, t: f64, x0: f64, x1: f64, y:
     if width <= 0.0 {
         return;
     }
-    let voxel = 1.0 / SWORD_RES;
+    // Its lines a voxel wide, finer made finer
+    let voxel = 1.0 / (SWORD_RES * crate::weapon_parts::fine());
     let faces = |p: &mut Vec<Part>, a: f64, b: f64, material: u8| {
         p.push(cuboid([a, y * 0.55, za], [b, y * 1.05, zb], material));
         p.push(cuboid([a, -y * 1.05, za], [b, -y * 0.55, zb], material));
@@ -2987,6 +4551,26 @@ fn inlay(p: &mut Vec<Part>, v: &Visual, row: usize, t: f64, x0: f64, x1: f64, y:
                 _ => {}
             }
         }
+        // Glowing cracks wandering up it, as through cooling lava, a fork off them now and then
+        Some("veins") => {
+            let glow = glow.unwrap_or(GLOW_FIRE);
+            for (k, phase) in [0.0, 2.6].into_iter().enumerate() {
+                let wander = 0.5 + 0.38 * (t * TAU * (1.7 + 0.9 * k as f64) + phase).sin() * (t * TAU * 0.6 + phase).cos();
+                let at = x0 + width * wander;
+                faces(p, at - voxel * 0.6, at + voxel * 0.6, glow);
+                if (row + 7 * k) % 23 == 0 {
+                    faces(p, at.min(at + width * 0.2), at.max(at + width * 0.2), glow);
+                }
+            }
+        }
+        // Folded steel, its layers showing as wavy lines running up it in its accent
+        Some("damascus") => {
+            let layer = mat(&v.accent, DARK_STEEL);
+            for j in 0..4 {
+                let at = x0 + width * ((j as f64 + 0.5) / 4.0 + 0.07 * (t * TAU * 7.0 + j as f64 * 1.9).sin());
+                faces(p, at - voxel * 0.55, at + voxel * 0.55, layer);
+            }
+        }
         _ => {}
     }
 }
@@ -3000,13 +4584,113 @@ fn curve(p: &mut Vec<Part>, points: &[[f64; 3]], ra: f64, rb: f64, material: u8)
     }
 }
 
+// The detail only the weapon in hand has, made finer, see HELD_FINE: too fine for the usual grid,
+// where it would only be voxels here and there. Each goes before what it's on, so it takes its
+// place on its surface.
+
+/// Whether the weapon being made is made finer, with room for detail that only shows then
+fn finer_now() -> bool {
+    crate::weapon_parts::fine() > 1.0 + 1e-9
+}
+
+/// A unit vector across `axis`, and another across both
+fn across(axis: [f64; 3]) -> ([f64; 3], [f64; 3]) {
+    let a = Vector3::from(axis).try_normalize(1e-9).unwrap_or_else(Vector3::z);
+    let u = if a.z.abs() < 0.9 { a.cross(&Vector3::z()) } else { a.cross(&Vector3::x()) }.normalize();
+    let w = a.cross(&u);
+    ([u.x, u.y, u.z], [w.x, w.y, w.z])
+}
+
+/// The grain of wood along a haft, limb or stock from `a` to `b`, `ra` round at a and `rb` at b:
+/// streaks of `dark` running along it here and there round it, a few long and the rest short, just
+/// under its surface, as `seed` lays them
+fn grain(p: &mut Vec<Part>, a: [f64; 3], b: [f64; 3], ra: f64, rb: f64, dark: u8, seed: u32) {
+    grain_squashed(p, a, b, ra, rb, [1.0, 1.0], dark, seed);
+}
+
+/// The same along what's squashed or stretched across it, `squash` times as wide each way across,
+/// see across(): along z, the first's about y and the second about x
+#[allow(clippy::too_many_arguments)]
+fn grain_squashed(p: &mut Vec<Part>, a: [f64; 3], b: [f64; 3], ra: f64, rb: f64, squash: [f64; 2], dark: u8, seed: u32) {
+    if !finer_now() {
+        return;
+    }
+    let (u, w) = across([b[0] - a[0], b[1] - a[1], b[2] - a[2]]);
+    let (u, w) = (u.map(|v| v * squash[0]), w.map(|v| v * squash[1]));
+    let length = (0..3).map(|i| (b[i] - a[i]).powi(2)).sum::<f64>().sqrt();
+    let streaks = ((length / 0.05) as usize).clamp(4, 40);
+    for k in 0..streaks {
+        let h = hash(seed.wrapping_mul(31).wrapping_add(k as u32 * 7919 + 1));
+        let turn = (h & 0xFFFF) as f64 / 65536.0 * TAU;
+        let from = ((h >> 16) & 0xFF) as f64 / 255.0 * 0.9;
+        let to = (from + 0.08 + ((h >> 24) & 0xFF) as f64 / 255.0 * 0.35).min(1.0);
+        let (c, s) = (turn.cos(), turn.sin());
+        let at = |t: f64| {
+            let r = (ra + (rb - ra) * t) * 0.84;
+            [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t + (u[i] * c + w[i] * s) * r)
+        };
+        let thick = (ra.min(rb) * 0.16 * squash[0].min(squash[1])).max(0.0012);
+        p.push(limb(at(from), at(to), thick, thick, dark));
+    }
+}
+
+/// A grip from `z` up `length`, `r` round, bound in cord of `material` wound both ways round it,
+/// crossing in diamonds and standing a little proud of it
+fn cross_wrap(p: &mut Vec<Part>, at: [f64; 2], z: f64, length: f64, r: f64, material: u8) {
+    let turns = (length / 0.028).max(2.0);
+    let steps = (turns * 16.0) as usize;
+    for way in [1.0, -1.0] {
+        let points: Vec<[f64; 3]> = (0..=steps)
+            .map(|k| {
+                let t = k as f64 / steps as f64;
+                let a = way * t * turns * TAU;
+                [at[0] + a.cos() * r * 1.02, at[1] + a.sin() * r * 1.02, z + length * t]
+            })
+            .collect();
+        curve(p, &points, r * 0.2, r * 0.2, material);
+    }
+}
+
+/// The darker wood a wood's grain shows in, if it's wood
+fn grain_of(m: u8) -> Option<u8> {
+    match m {
+        WOOD => Some(FUR_BROWN),
+        DEAD_WOOD => Some(PLANK_DARK),
+        PALM_WOOD | PLANK_PINE => Some(WOOD),
+        PLANK_BIRCH => Some(PALM_WOOD),
+        BIRCH_BARK => Some(BARK_DARK),
+        BARK_DARK | PLANK_DARK => Some(FUR_DARK),
+        _ => None,
+    }
+}
+
+/// grain() on what's made of `m`, if it's wood
+fn wood_grain(p: &mut Vec<Part>, a: [f64; 3], b: [f64; 3], ra: f64, rb: f64, m: u8, seed: u32) {
+    if let Some(dark) = grain_of(m) {
+        grain(p, a, b, ra, rb, dark, seed);
+    }
+}
+
+/// A rivet's head standing out of a face at `at`, `r` round
+fn rivet(p: &mut Vec<Part>, at: [f64; 3], r: f64, material: u8) {
+    if finer_now() {
+        p.push(ball(at, r, material));
+    }
+}
+
 /// A sword, or an axe, hammer, dagger or spear, standing on its pommel, the flats of its blade
 /// facing ±y and an axe's edge facing +x. Its family can give it a long haft, and leave off the
 /// crossguard.
 fn sword(blade: &Visual, hilt: &Visual, guard: &Visual, core: &Visual, family: &Family) -> (Vec<Part>, Vector3<f64>, Vector3<f64>) {
     let mut p = Vec::new();
-    let pommel = hilt.pommel_size.unwrap_or(0.028);
-    let grip_length = hilt.length.unwrap_or(0.2);
+    // A throwing knife's grip is short, its guard and pommel small, the rest of it as the blade's
+    // made, so a shared hilt or guard fits it
+    let knife = family.style == Style::Knife;
+    let small = if knife { 0.5 } else { 1.0 };
+    let small_guard = Visual { width: Some(guard.width.unwrap_or(0.22) * 0.42), ..guard.clone() };
+    let guard = if knife { &small_guard } else { guard };
+    let pommel = hilt.pommel_size.unwrap_or(0.028) * if knife { 0.7 } else { 1.0 };
+    let grip_length = hilt.length.unwrap_or(0.2) * small;
     let handle = grip_length.max(family.haft);
     let z_grip = pommel * 1.7;
     let z_top = z_grip + handle;
@@ -3015,22 +4699,34 @@ fn sword(blade: &Visual, hilt: &Visual, guard: &Visual, core: &Visual, family: &
 
     // The core's gem goes first, set into the middle of the guard so it shows on both sides, or
     // just under the head
+    slot("core");
     if let Some(stone) = core.gem.as_deref().and_then(material) {
         let z = if family.guard { z_top + guard_height * 0.5 } else { z_top - 0.05 };
         gem(&mut p, [0.0, 0.0, z], core.size.unwrap_or(0.02).max(0.016), stone, core.shape.as_deref());
     }
+    slot("guard");
     if family.guard {
         sword_guard(&mut p, guard, z_top, guard_height);
     }
     let infuse = core.infuse.as_deref().and_then(material);
+    slot("blade");
     let tip = match blade.shape.as_deref().unwrap_or("straight") {
-        shape @ ("axe" | "bearded" | "spike_axe" | "moon_axe") => axe_head(&mut p, blade, z_top, false, shape),
+        shape @ ("axe" | "bearded" | "spike_axe" | "moon_axe" | "dane" | "skeggox") => axe_head(&mut p, blade, z_top, false, shape),
         "double_axe" => axe_head(&mut p, blade, z_top, true, "axe"),
-        shape @ ("hammer" | "mace" | "spiked" | "flanged" | "beaked" | "morning") => hammer_head(&mut p, blade, z_top, shape),
+        "labrys" => axe_head(&mut p, blade, z_top, true, "labrys"),
+        shape @ ("hammer" | "mace" | "spiked" | "flanged" | "beaked" | "morning" | "sledge" | "club" | "lucerne") => hammer_head(&mut p, blade, z_top, shape),
+        // A war fan's leaf, and a katar's blade over its fist
+        shape @ ("fan" | "fan_blades" | "fan_feather") => fan_head(&mut p, blade, z_top, shape),
+        shape @ ("katar" | "katar_split" | "katar_wavy") => katar_blade(&mut p, blade, z_top, infuse, shape),
+        // A war pick's beak, see foci.rs
+        shape if shape.starts_with("warpick") => foci::warpick_head(&mut p, blade, z_top, infuse, shape),
         shape if shape.starts_with("scythe") => scythe_head(&mut p, blade, z_top),
         shape if shape.starts_with("halberd") => halberd_head(&mut p, blade, z_top, infuse),
         shape if shape.starts_with("flail") => flail_head(&mut p, blade, z_top, infuse),
         shape if shape.starts_with("maul") => maul_head(&mut p, blade, z_top, infuse),
+        // The tools', see src\tools.rs
+        "pick" => pick_head(&mut p, blade, z_top),
+        "spade" => spade_head(&mut p, blade, z_top),
         // Three prongs, or two, on a crossbar in a socket
         shape @ ("trident" | "fork") => {
             let length = blade.length.unwrap_or(0.4);
@@ -3061,19 +4757,139 @@ fn sword(blade: &Visual, hilt: &Visual, guard: &Visual, core: &Visual, family: &
             // A spearhead sits in a socket on the end of its haft, a winged one with lugs
             // sticking out either side under it to stop it going in too far
             if !family.guard {
+                let lug = mat(&blade.accent, mat(&blade.material, STEEL));
                 if shape == "winged" {
-                    let lug = mat(&blade.accent, mat(&blade.material, STEEL));
                     for s in [-1.0, 1.0] {
                         p.push(limb([s * 0.012, 0.0, z_top - 0.02], [s * 0.075, 0.0, z_top + 0.035], 0.012, 0.004, lug));
                     }
                 }
+                // A partisan's ears curling up off its foot, a boar spear's bar across under it
+                if shape == "partisan" {
+                    for s in [-1.0, 1.0] {
+                        curve(&mut p, &[[s * 0.016, 0.0, z_top + 0.03], [s * 0.065, 0.0, z_top + 0.055], [s * 0.085, 0.0, z_top + 0.1], [s * 0.07, 0.0, z_top + 0.13]], 0.011, 0.003, mat(&blade.edge, lug));
+                    }
+                }
+                if shape == "boar" {
+                    p.push(limb([-0.07, 0.0, z_top + 0.005], [0.07, 0.0, z_top + 0.005], 0.009, 0.009, lug));
+                    for s in [-1.0, 1.0] {
+                        p.push(ball([s * 0.072, 0.0, z_top + 0.005], 0.013, lug));
+                    }
+                }
+                // Made finer, the socket's pinned to the haft through either side
+                for s in [-1.0, 1.0] {
+                    rivet(&mut p, [0.0, s * 0.0205, z_top - 0.042], 0.0035, STEEL);
+                }
                 p.push(limb([0.0, 0.0, z_top - 0.06], [0.0, 0.0, z_top + 0.02], 0.022, 0.014, DARK_STEEL));
+            }
+            // A guandao's spike out of its back, a ring hung from it
+            if shape == "guandao" {
+                let spike = mat(&blade.accent, mat(&blade.material, STEEL));
+                p.push(limb([-0.01, 0.0, z_blade + 0.14], [-0.075, 0.0, z_blade + 0.2], 0.012, 0.003, spike));
+                ring(&mut p, [-0.05, 0.0, z_blade + 0.14], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.022, 0.004, spike);
             }
             sword_blade(&mut p, blade, z_blade, infuse)
         }
     };
-    sword_hilt(&mut p, hilt, z_grip, grip_length, pommel, handle);
+    slot("hilt");
+    if family.style == Style::Punch {
+        katar_frame(&mut p, hilt, z_grip, handle);
+    } else {
+        sword_hilt(&mut p, hilt, z_grip, grip_length, pommel, handle);
+    }
     (p, v3(0.0, 0.0, z_grip + handle * family.grip), tip)
+}
+
+/// A war fan's leaf, opened in a half circle over its pivot at the top of the grip at `z_top`, its
+/// flats facing ±y: ribs fanning out from the pivot, the leaf between them pleated in its material
+/// and accent, as `shape` has it, of paper or silk edged with its edge's metal, of steel blades
+/// standing out past it, or of feathers. Returns the top of the leaf.
+fn fan_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, shape: &str) -> Vector3<f64> {
+    let reach = v.length.unwrap_or(0.32);
+    let leaf = mat(&v.material, LINEN);
+    let pleat = mat(&v.accent, leaf);
+    let edge = mat(&v.edge, STEEL);
+    let ribs = mat(&v.fuller, DARK_STEEL);
+    let spread = v.width.unwrap_or(2.5);
+    let pivot = [0.0, 0.0, z_top + 0.01];
+    let n = 9;
+    let way = |k: usize| {
+        let a = (k as f64 / (n - 1) as f64 - 0.5) * spread;
+        [a.sin(), 0.0, a.cos()]
+    };
+    let out = |d: [f64; 3], r: f64| [pivot[0] + d[0] * r, 0.0, pivot[2] + d[2] * r];
+    // The ribs first, standing proud of the leaf, and a rivet through the pivot
+    p.push(limb([0.0, -0.014, pivot[2]], [0.0, 0.014, pivot[2]], 0.012, 0.012, edge));
+    for k in 0..n {
+        let d = way(k);
+        let thick = if k == 0 || k == n - 1 { 0.0065 } else { 0.004 };
+        p.push(limb(out(d, 0.02), out(d, reach * 0.97), thick, thick * 0.8, ribs).stretched([1.0, 1.5, 1.0]));
+        match shape {
+            // A steel blade standing out past the leaf off every rib
+            "fan_blades" => p.push(limb(out(d, reach * 0.9), out(d, reach * 1.22), 0.014, 0.002, edge).stretched([1.0, 0.3, 1.0])),
+            // A feather's tip past the leaf
+            "fan_feather" => p.push(ellipsoid(out(d, reach * 1.04), [0.022, 0.004, 0.022], pleat)),
+            // Its edge bound in metal, a spike off the outer ribs
+            _ => {
+                if k == 0 || k == n - 1 {
+                    p.push(limb(out(d, reach * 0.95), out(d, reach * 1.12), 0.008, 0.002, edge));
+                }
+            }
+        }
+    }
+    // The leaf: a wedge between each pair of ribs, pleated, its rim edged
+    for k in 0..n - 1 {
+        let (a, b) = (way(k), way(k + 1));
+        let d = [(a[0] + b[0]) * 0.5, 0.0, (a[2] + b[2]) * 0.5];
+        let material = if k % 2 == 0 { leaf } else { pleat };
+        if shape != "fan_feather" {
+            p.push(limb(out(d, reach * 0.93), out(d, reach * 0.99), 0.026, 0.026, edge).stretched([1.0, 0.2, 1.0]));
+        }
+        p.push(limb(out(d, reach * 0.16), out(d, reach * 0.94), 0.01, 0.026 + 0.03 * spread / 2.5, material).stretched([1.0, 0.22, 1.0]));
+    }
+    v3(0.0, 0.0, pivot[2] + reach)
+}
+
+/// A katar's blade, broad over the fist and narrowing to its point from the top of its frame at
+/// `z_top`, as `shape` has it: plain, waving, or split into two prongs. Returns its point.
+fn katar_blade(p: &mut Vec<Part>, v: &Visual, z_top: f64, infuse: Option<u8>, shape: &str) -> Vector3<f64> {
+    let width = v.width.unwrap_or(0.085);
+    let body = mat(&v.material, STEEL);
+    // A plate across the foot of the blade, over the frame
+    p.push(cuboid([-width * 0.55, -0.011, z_top - 0.004], [width * 0.55, 0.011, z_top + 0.012], mat(&v.accent, body)));
+    if shape == "katar_split" {
+        let prong = Visual { shape: Some("katar_prong".into()), width: Some(width * 0.5), ..v.clone() };
+        let mut tip = Vector3::zeros();
+        for s in [-1.0, 1.0] {
+            let mut blade = Vec::new();
+            tip = sword_blade(&mut blade, &prong, z_top + 0.012, infuse) + v3(s * width * 0.28, 0.0, 0.0);
+            p.extend(blade.iter().map(|q| q.moved([s * width * 0.28, 0.0, 0.0])));
+        }
+        return v3(0.0, 0.0, tip.z);
+    }
+    sword_blade(p, v, z_top + 0.012, infuse)
+}
+
+/// A katar's frame, in place of a grip: two bars running back along the forearm either side of
+/// the fist, from the foot at the pommel's end up to the blade at `z_grip` + `handle`, and two
+/// crossbars between them that the fist closes round, wrapped as a grip is
+fn katar_frame(p: &mut Vec<Part>, v: &Visual, z_grip: f64, handle: f64) {
+    let grip = mat(&v.material, LEATHER);
+    let frame = mat(&v.pommel_material, STEEL);
+    let top = z_grip + handle;
+    let x = 0.046;
+    for z in [z_grip + handle * 0.42, z_grip + handle * 0.6] {
+        if let Some(wrap) = v.wrap.as_deref().and_then(material) {
+            for k in 0..4 {
+                let a = -x * 0.7 + k as f64 * x * 0.47;
+                p.push(limb([a, 0.0, z], [a + 0.006, 0.0, z], 0.0125, 0.0125, wrap));
+            }
+        }
+        p.push(limb([-x, 0.0, z], [x, 0.0, z], 0.011, 0.011, grip));
+    }
+    for s in [-1.0, 1.0] {
+        p.push(ball([s * x, 0.0, 0.01], 0.011, mat(&v.accent, frame)));
+        p.push(cuboid([s * x - 0.006, -0.009, 0.01], [s * x + 0.006, 0.009, top + 0.004], frame));
+    }
 }
 
 /// An axe head on top of a haft ending at `z_top`, its edge facing +x, or both ways for a
@@ -3087,8 +4903,10 @@ fn axe_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, double: bool, shape: &str
     let edge = mat(&v.edge, body);
     let voxel = 1.0 / SWORD_RES;
     let half_thick = 0.012;
-    // A bearded head reaches down from the eye
-    let z0 = z_top - length * if shape == "bearded" { 0.95 } else { 0.7 };
+    // A bearded head reaches down from the eye, a skeggox's too, and a Dane axe's long edge both
+    // ways
+    let bearded = matches!(shape, "bearded" | "skeggox");
+    let z0 = z_top - length * if bearded { 0.95 } else if shape == "dane" { 0.78 } else { 0.7 };
     let rows = (length * SWORD_RES).ceil() as usize;
     let sides: &[f64] = if double { &[1.0, -1.0] } else { &[1.0] };
     let (mut inlays, mut edges, mut bodies) = (Vec::new(), Vec::new(), Vec::new());
@@ -3098,8 +4916,12 @@ fn axe_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, double: bool, shape: &str
         // Flaring out to a curved edge, reaching furthest in the middle, a bearded one's lowest
         // down and hooked back under, a moon axe's at both horns
         let reach = match shape {
-            "bearded" => width * (0.3 + 0.7 * (PI * t.powf(0.6)).sin().powf(0.5)) * if t < 0.18 { 0.6 + 2.2 * t } else { 1.0 },
+            "bearded" | "skeggox" => width * (0.3 + 0.7 * (PI * t.powf(0.6)).sin().powf(0.5)) * if t < 0.18 { 0.6 + 2.2 * t } else { 1.0 },
             "moon_axe" => width * (0.72 + 0.28 * (2.0 * t - 1.0).powi(2)),
+            // Thin and flaring wide all along its edge, its horns swept out top and bottom
+            "dane" => width * (0.3 + 0.62 * (PI * t).sin().powf(0.3) + 0.16 * (2.0 * t - 1.0).powi(4)),
+            // Two crescent wings, narrow at the eye and sweeping out to horns top and bottom
+            "labrys" => width * (0.38 + 0.62 * (2.0 * t - 1.0).powi(2)),
             _ => width * (0.4 + 0.6 * (PI * t).sin().powf(0.6)),
         };
         for &s in sides {
@@ -3117,8 +4939,17 @@ fn axe_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, double: bool, shape: &str
     p.extend(inlays);
     p.extend(edges);
     p.extend(bodies);
+    // A skeggox's horn hooking up off the top of its edge, and a labrys's eye bound round
+    if shape == "skeggox" {
+        curve(p, &[[width * 0.62, 0.0, z0 + length * 0.97], [width * 0.8, 0.0, z0 + length + 0.035], [width * 0.66, 0.0, z0 + length + 0.075]], 0.011, 0.003, edge);
+    }
+    if shape == "labrys" {
+        for z in [z0 + length * 0.3, z0 + length * 0.7] {
+            p.push(cuboid([-0.03, -0.024, z - 0.006], [0.03, 0.024, z + 0.006], mat(&v.accent, body)));
+        }
+    }
     // The eye round the haft, and a knob behind it on a single-bit head, or a long spike
-    let eye = if shape == "bearded" { (z_top - length * 0.3, z_top + length * 0.12) } else { (z0 + length * 0.15, z0 + length * 0.85) };
+    let eye = if bearded { (z_top - length * 0.3, z_top + length * 0.12) } else { (z0 + length * 0.15, z0 + length * 0.85) };
     p.push(cuboid([-0.024, -0.02, eye.0], [0.024, 0.02, eye.1], body));
     if shape == "spike_axe" {
         let z = (eye.0 + eye.1) * 0.5;
@@ -3127,7 +4958,59 @@ fn axe_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, double: bool, shape: &str
         let (a, b) = (eye.0 + (eye.1 - eye.0) * 0.28, eye.0 + (eye.1 - eye.0) * 0.72);
         p.push(cuboid([-0.05, -half_thick * 1.6, a], [-0.02, half_thick * 1.6, b], body));
     }
-    v3(width, 0.0, z0 + length * if shape == "bearded" { 0.4 } else { 0.5 })
+    v3(width, 0.0, z0 + length * if bearded { 0.4 } else { 0.5 })
+}
+
+/// A pickaxe's head across the top of a haft ending at `z_top`: a point either way, along +x and
+/// -x, each arching up out of the eye and curving down to its tip, the one along +x of the edge's
+/// make, and a band of the accent round the eye. Returns the tip along +x.
+fn pick_head(p: &mut Vec<Part>, v: &Visual, z_top: f64) -> Vector3<f64> {
+    let length = v.length.unwrap_or(0.24);
+    let body = mat(&v.material, DARK_STEEL);
+    let edge = mat(&v.edge, body);
+    let z = z_top - 0.03;
+    for s in [1.0, -1.0] {
+        let points = [[s * 0.02, 0.0, z], [s * length * 0.45, 0.0, z + 0.018], [s * length * 0.8, 0.0, z - 0.012], [s * length, 0.0, z - 0.06]];
+        curve(p, &points, 0.021, 0.004, if s > 0.0 { edge } else { body });
+    }
+    if let Some(band) = v.accent.as_deref().and_then(material) {
+        p.push(cuboid([-0.031, -0.026, z - 0.012], [0.031, 0.026, z + 0.004], band));
+    }
+    p.push(cuboid([-0.027, -0.023, z - 0.045], [0.027, 0.023, z + 0.028], body));
+    v3(length, 0.0, z - 0.06)
+}
+
+/// A spade's blade on the top of a haft ending at `z_top`: flat across x, thin along y, straight
+/// sided and rounding to a blunt point, with treads at its shoulders to stand on, a socket round
+/// the haft under it, and a lip of the edge's make along its end. Returns the middle of its end.
+fn spade_head(p: &mut Vec<Part>, v: &Visual, z_top: f64) -> Vector3<f64> {
+    let length = v.length.unwrap_or(0.28);
+    let width = v.width.unwrap_or(0.2);
+    let body = mat(&v.material, DARK_STEEL);
+    let edge = mat(&v.edge, body);
+    let half = 0.008;
+    let base = z_top + 0.02;
+    let rows = (length * SWORD_RES).ceil() as usize;
+    let (mut edges, mut bodies) = (Vec::new(), Vec::new());
+    for r in 0..rows {
+        let t = (r as f64 + 0.5) / rows as f64;
+        let (za, zb) = (base + r as f64 * length / rows as f64, base + (r + 1) as f64 * length / rows as f64);
+        let w = width * 0.5 * if t < 0.62 { 1.0 } else { (1.0 - ((t - 0.62) / 0.38).powi(2)).max(0.0).sqrt().max(0.18) };
+        if t > 0.86 {
+            edges.push(cuboid([-w, -half * 0.6, za], [w, half * 0.6, zb], edge));
+        } else {
+            bodies.push(cuboid([-w, -half, za], [w, half, zb], body));
+        }
+    }
+    p.extend(edges);
+    p.extend(bodies);
+    if let Some(band) = v.accent.as_deref().and_then(material) {
+        p.push(cuboid([-width * 0.5, -half * 1.3, base + length * 0.3], [width * 0.5, half * 1.3, base + length * 0.34], band));
+    }
+    // Treads either side at its shoulders, and the socket
+    p.push(cuboid([-width * 0.5 - 0.006, -0.018, base - 0.004], [width * 0.5 + 0.006, 0.018, base + 0.016], body));
+    p.push(limb([0.0, 0.0, z_top - 0.09], [0.0, 0.0, base + 0.01], 0.02, 0.017, body));
+    v3(0.0, 0.0, base + length)
 }
 
 /// A scythe's blade out from the top of a haft ending at `z_top`: long, narrowing and curving down
@@ -3140,8 +5023,28 @@ fn scythe_head(p: &mut Vec<Part>, v: &Visual, z_top: f64) -> Vector3<f64> {
     let voxel = 1.0 / SWORD_RES;
     let half_thick = 0.007;
     let columns = (length * SWORD_RES).ceil() as usize;
-    let droop = |t: f64| 0.3 * length * t * t;
     let shape = v.shape.as_deref().unwrap_or("scythe");
+    // A war scythe's blade set straight up the haft, curving a little forward, its edge in front
+    if shape == "scythe_war" {
+        let points: Vec<[f64; 3]> = (0..=12)
+            .map(|k| {
+                let t = k as f64 / 12.0;
+                [0.02 + 0.12 * length * t * t, 0.0, z_top - 0.02 + length * t]
+            })
+            .collect();
+        for pair in points.windows(2) {
+            let t = (pair[0][2] - z_top) / length;
+            let r = (depth * 0.5 * (1.0 - t).powf(0.6)).max(0.004);
+            p.push(limb([pair[0][0] + r * 0.6, 0.0, pair[0][2]], [pair[1][0] + r * 0.6, 0.0, pair[1][2]], r * 0.5, r * 0.5, edge).stretched([1.0, 0.45, 1.0]));
+            p.push(limb(pair[0], pair[1], r, r, body).stretched([1.0, 0.35, 1.0]));
+        }
+        p.push(cuboid([-0.03, -0.022, z_top - 0.07], [0.03, 0.022, z_top + 0.01], body));
+        return v3(points[12][0], 0.0, points[12][2]);
+    }
+    // A crescent one's deep half moon, the rest curving down to the point
+    let crescent = shape == "scythe_crescent";
+    let droop = |t: f64| if crescent { 0.55 * length * t.powf(1.6) } else { 0.3 * length * t * t };
+    let depth = if crescent { depth * 1.3 } else { depth };
     let (mut bodies, mut edges) = (Vec::new(), Vec::new());
     for c in 0..columns {
         let t = (c as f64 + 0.5) / columns as f64;
@@ -3178,19 +5081,34 @@ fn scythe_head(p: &mut Vec<Part>, v: &Visual, z_top: f64) -> Vector3<f64> {
 fn halberd_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, infuse: Option<u8>) -> Vector3<f64> {
     let body = mat(&v.material, STEEL);
     let shape = v.shape.as_deref().unwrap_or("halberd");
-    // A hook out the back, a bill's curving forward over the blade
+    // A hook out the back, a bill's curving forward over the blade, a poleaxe's hammer
     if shape == "halberd_bill" {
         curve(p, &[[-0.03, 0.0, z_top - 0.02], [-0.11, 0.0, z_top + 0.04], [-0.12, 0.0, z_top + 0.12], [-0.07, 0.0, z_top + 0.16]], 0.014, 0.003, body);
+    } else if shape == "halberd_poleaxe" {
+        let face = mat(&v.edge, body);
+        for (dy, dz) in [(-0.012, -0.012), (0.012, -0.012), (-0.012, 0.012), (0.012, 0.012)] {
+            p.push(limb([-0.1, dy, z_top + dz], [-0.118, dy, z_top + dz], 0.008, 0.002, face));
+        }
+        p.push(cuboid([-0.104, -0.027, z_top - 0.027], [-0.02, 0.027, z_top + 0.027], body));
     } else {
         p.push(limb([-0.03, 0.0, z_top - 0.03], [-0.16, 0.0, z_top + 0.03], 0.014, 0.003, body));
     }
-    let axe = Visual { length: Some(0.24), width: v.width.or(Some(0.17)), material: v.material.clone(), edge: v.edge.clone(), pattern: v.pattern.clone(), accent: v.accent.clone(), ..Default::default() };
+    // A Lochaber axe's long cleaving blade, a hook curling over at its top
+    let lochaber = shape == "halberd_lochaber";
+    let poleaxe = shape == "halberd_poleaxe";
+    let (axe_length, axe_width) = if lochaber { (0.42, 0.15) } else if poleaxe { (0.17, 0.12) } else { (0.24, 0.17) };
+    let axe = Visual { length: Some(axe_length), width: v.width.map(|w| if poleaxe { w * 0.7 } else { w }).or(Some(axe_width)), material: v.material.clone(), edge: v.edge.clone(), pattern: v.pattern.clone(), accent: v.accent.clone(), ..Default::default() };
     let blade = match shape {
         "halberd_moon" => "moon_axe",
         "halberd_bill" => "bearded",
+        "halberd_lochaber" => "dane",
         _ => "axe",
     };
     axe_head(p, &axe, z_top, false, blade);
+    if lochaber {
+        let w = axe.width.unwrap_or(0.15);
+        curve(p, &[[w * 0.8, 0.0, z_top + axe_length * 0.2], [w * 1.0, 0.0, z_top + axe_length * 0.3], [w * 0.75, 0.0, z_top + axe_length * 0.36]], 0.011, 0.003, mat(&v.edge, body));
+    }
     let point = Visual {
         shape: Some("spear".into()),
         length: v.length.or(Some(0.36)),
@@ -3245,6 +5163,40 @@ fn hammer_head(p: &mut Vec<Part>, v: &Visual, z_top: f64, shape: &str) -> Vector
             }
             p.push(ball([0.0, 0.0, zc], r, body));
             v3(r * 1.7, 0.0, zc)
+        }
+        // A long round drum of iron across the haft, banded near its faces
+        "sledge" => {
+            let r = d * 1.1;
+            for s in [-1.0, 1.0] {
+                p.push(limb([s * (w - 0.004), 0.0, zc], [s * (w + 0.008), 0.0, zc], r * 1.04, r * 1.04, face));
+                p.push(limb([s * (w - 0.06), 0.0, zc], [s * (w - 0.045), 0.0, zc], r * 1.12, r * 1.12, mat(&v.accent, face)));
+            }
+            p.push(limb([-w, 0.0, zc], [w, 0.0, zc], r, r, body));
+            v3(w, 0.0, zc)
+        }
+        // A club of wood swelling up out of the haft, studded all over
+        "club" => {
+            let (r, h) = (w * 0.78, length * 1.3);
+            let mid = zc + length * 0.25;
+            for (k, s) in sphere_points(18).into_iter().enumerate() {
+                if s[2] > -0.6 {
+                    let at = [s[0] * r * 0.98, s[1] * r * 0.98, mid + s[2] * h * 0.98];
+                    p.push(ball(at, if k % 3 == 0 { 0.014 } else { 0.011 }, face));
+                }
+            }
+            p.push(ellipsoid([0.0, 0.0, mid], [r, r, h], body));
+            p.push(limb([0.0, 0.0, z0 - 0.04], [0.0, 0.0, mid - h * 0.6], 0.02, r * 0.7, body));
+            v3(r, 0.0, mid)
+        }
+        // A lucerne hammer: three prongs on its face, a curved spike out the back, a spike on top
+        "lucerne" => {
+            for (dy, dz) in [(0.0, length * 0.25), (-d * 0.6, -length * 0.2), (d * 0.6, -length * 0.2)] {
+                p.push(limb([w * 0.6, dy, zc + dz], [w + 0.04, dy, zc + dz], 0.013, 0.003, face));
+            }
+            curve(p, &[[-w * 0.4, 0.0, zc], [-w * 1.2, 0.0, zc + length * 0.05], [-w * 1.75, 0.0, zc - length * 0.35]], 0.018, 0.003, face);
+            p.push(limb([0.0, 0.0, z0 + length], [0.0, 0.0, z0 + length + 0.15], 0.016, 0.003, face));
+            p.push(cuboid([-w * 0.45, -d * 0.8, z0], [w * 0.62, d * 0.8, z0 + length], body));
+            v3(w + 0.04, 0.0, zc)
         }
         // A hammer's face on one side, a long beak curving down on the other
         "beaked" => {
@@ -3316,6 +5268,52 @@ fn blade_profile(shape: &str, t: f64, width: f64) -> (f64, f64) {
                 half * (1.0 - 0.1 * t) * point(0.88)
             },
         ),
+        // Curving back and broadening towards its tip, then cut off to a point
+        "scimitar" => (width * 1.1 * t.powf(1.6), half * (0.8 + 0.6 * t * t) * point(0.86)),
+        // A narrow neck, then a great crescent curving forward and swelling out, a sickle sword
+        "khopesh" => {
+            let u = ((t - 0.42) / 0.58).max(0.0);
+            let swell = if t < 0.42 { 0.7 } else { 0.75 + 0.9 * (PI * u).sin() };
+            (width * 3.0 * u.powf(1.5), half * swell * point(0.95))
+        }
+        // Straight and even, then cut off at a slant to a chisel point, its back running on
+        "tanto" | "chokuto" => {
+            if t < 0.88 {
+                (0.0, half * 0.95)
+            } else {
+                let u = (t - 0.88) / 0.12;
+                let (back, edge) = (-half * 0.95 * (1.0 - u * u * u), half * 0.95 * (1.0 - u));
+                ((back + edge) * 0.5, (edge - back) * 0.5)
+            }
+        }
+        // Broad at its root and narrowing as it curves, like a beast's fang
+        "fang" => (width * 0.9 * t * t, (half * (1.4 - 1.25 * t.powf(0.85))).max(half * 0.05)),
+        // Faceted, broken out of a crystal: wider and narrower by turns, to a jagged point
+        "shard" => {
+            let f = (hash((t * 9.0) as u32 * 97 + 5) % 100) as f64 / 100.0;
+            (width * 0.15 * (f - 0.5), half * (0.75 + 0.5 * f) * point(0.7))
+        }
+        // A katana's curve, deeper and lower down, near the hilt
+        "tachi" => (width * 1.25 * t.powf(1.5), half * (1.0 - 0.15 * t) * point(0.93)),
+        // A spearhead with a broad foot, its ears put on in sword()
+        "partisan" => (0.0, half * (if t < 0.2 { 0.5 + 2.5 * t } else { ((1.0 - t) / 0.8).powf(0.7) })),
+        // A broad leaf, a bar across its foot put on in sword()
+        "boar" => (0.0, half * (0.6 + 0.6 * (PI * t * 0.9).sin().powi(2)) * point(0.7)),
+        // A naginata's long blade, curving more towards its tip
+        "naginata" => (width * 1.1 * t.powf(2.2), half * (0.75 + 0.45 * t) * point(0.82)),
+        // A guandao's great curved blade, broad near the top
+        "guandao" => (width * 0.8 * t * t, half * (0.8 + 0.7 * t) * point(0.8)),
+        // A bisento's, broad as a cleaver
+        "bisento" => (width * 0.5 * t * t + half * 0.3 * t, half * (0.9 + 0.8 * t) * point(0.88)),
+        // A club of wood, its end rounded, edged with teeth of stone in sword_blade()
+        "macuahuitl" => (0.0, half * (0.95 - 0.1 * t) * (if t > 0.93 { ((1.0 - t) / 0.07).sqrt() } else { 1.0 })),
+        // Straight, the teeth along its back put on in sword_blade()
+        "sawback" => (0.0, half * (1.0 - 0.12 * t) * point(0.85)),
+        // A katar's: broad over the fist, narrowing all the way to its point, or waving as it
+        // does, or one of two narrow prongs
+        "katar" => (0.0, (half * 1.3 * (1.0 - t).powf(0.75)).max(half * 0.05)),
+        "katar_wavy" => (width * 0.25 * (t * TAU * 2.0).sin() * (1.0 - t), (half * 1.3 * (1.0 - t).powf(0.75)).max(half * 0.05)),
+        "katar_prong" => (0.0, (half * 0.9 * (1.0 - t).powf(0.6)).max(half * 0.05)),
         _ => (0.0, half * (1.0 - 0.15 * t) * point(0.82)),
     }
 }
@@ -3330,32 +5328,56 @@ fn sword_blade(p: &mut Vec<Part>, v: &Visual, z0: f64, infuse: Option<u8>) -> Ve
     let voxel = 1.0 / SWORD_RES;
     let half_thick = 0.008;
     let bevel = 2.5 * voxel;
-    let rows = (length * SWORD_RES).ceil() as usize;
+    // Made finer, a row for each of its finer voxels up it, so its outline's as fine as the rest;
+    // what's every so many rows still every so many of the usual ones
+    let fine = crate::weapon_parts::fine();
+    let finer = finer_now();
+    let rows = (length * SWORD_RES * fine).ceil() as usize;
+    // A club edged with teeth of stone, or a crystal broken out, has no groove down it
+    let macuahuitl = shape == "macuahuitl";
+    let plain = macuahuitl || shape == "shard";
     let (mut grooves, mut bodies, mut edges) = (Vec::new(), Vec::new(), Vec::new());
-    for r in 0..rows {
-        let t = (r as f64 + 0.5) / rows as f64;
-        let (center, mut half) = blade_profile(shape, t, width);
+    for fine_row in 0..rows {
+        let r = (fine_row as f64 / fine) as usize;
+        let t = (fine_row as f64 + 0.5) / rows as f64;
+        let (mut center, mut half) = blade_profile(shape, t, width);
         half = half.max(0.6 * voxel);
         // Teeth along the edges, or barbs at the foot of a spearhead
         if shape == "jagged" && r % 12 < 4 && t < 0.85 || shape == "barbed" && r % 10 < 3 && t < 0.4 {
             half += 3.0 * voxel;
+        }
+        // Teeth along its back alone, a saw's
+        if shape == "sawback" && r % 8 < 3 && t > 0.2 && t < 0.82 {
+            center -= 1.5 * voxel;
+            half += 1.5 * voxel;
+        }
+        // Teeth of stone set along both edges of a wooden club, the wood between them blunt
+        let tooth = macuahuitl && r % 11 < 6 && t > 0.06 && t < 0.95;
+        if tooth {
+            half += 5.0 * voxel;
         }
         // Nicks hacked out of the edge here and there
         let nicked = shape == "notched" && hash(r as u32 / 3 * 31 + 7) % 5 == 0 && t < 0.9;
         if nicked {
             half -= 2.5 * voxel;
         }
-        let (za, zb) = (z0 + r as f64 * length / rows as f64, z0 + (r + 1) as f64 * length / rows as f64);
+        let (za, zb) = (z0 + fine_row as f64 * length / rows as f64, z0 + (fine_row + 1) as f64 * length / rows as f64);
         // A forked one's tip split down the middle
         if shape == "forked" && t > 0.8 {
             let w = half * 0.55 * ((t - 0.8) / 0.2).sqrt();
             grooves.push(cuboid([center - w, -half_thick * 2.0, za], [center + w, half_thick * 2.0, zb], AIR));
         }
-        // A groove down the middle of each side, glowing at the bottom if it's infused
-        if t < 0.78 && half > 5.0 * voxel {
+        // A groove down the middle of each side, glowing at the bottom if it's infused. Made
+        // finer, its sides slope down to it, a narrower groove deeper in a broader shallow one.
+        if t < 0.78 && half > 5.0 * voxel && !plain {
             let w = half * 0.22;
+            let wide = if finer { w * 1.45 } else { w };
             grooves.push(cuboid([center - w, half_thick * 0.45, za], [center + w, half_thick * 1.5, zb], AIR));
             grooves.push(cuboid([center - w, -half_thick * 1.5, za], [center + w, -half_thick * 0.45, zb], AIR));
+            if finer {
+                grooves.push(cuboid([center - wide, half_thick * 0.78, za], [center + wide, half_thick * 1.5, zb], AIR));
+                grooves.push(cuboid([center - wide, -half_thick * 1.5, za], [center + wide, -half_thick * 0.78, zb], AIR));
+            }
             if let Some(f) = fuller {
                 grooves.push(cuboid([center - w, -half_thick * 0.45, za], [center + w, half_thick * 0.45, zb], f));
             }
@@ -3366,8 +5388,13 @@ fn sword_blade(p: &mut Vec<Part>, v: &Visual, z0: f64, infuse: Option<u8>) -> Ve
         if half > bevel {
             bodies.push(cuboid([center - half + bevel, -half_thick, za], [center + half - bevel, half_thick, zb], body));
         }
+        // Made finer, ground down to its edge in steps rather than at once: a shoulder between
+        // the full thickness and the thin edge
+        if finer && half > bevel * 0.5 {
+            bodies.push(cuboid([center - half + bevel * 0.45, -half_thick * 0.75, za], [center + half - bevel * 0.45, half_thick * 0.75, zb], body));
+        }
         // The edges are ground thinner. A blade only a voxel or so wide is all blade.
-        let edge = if half > 1.5 * voxel { edge } else { body };
+        let edge = if half > 1.5 * voxel && (tooth || !macuahuitl) { edge } else { body };
         edges.push(cuboid([center - half, -half_thick * 0.5, za], [center + half, half_thick * 0.5, zb], edge));
     }
     p.extend(grooves);
@@ -3453,6 +5480,41 @@ fn sword_guard(p: &mut Vec<Part>, v: &Visual, z: f64, h: f64) {
             }
             p.push(cuboid([-w / 2.0, -0.016, z], [w / 2.0, 0.016, z + h], m));
         }
+        // A cage of bars curving down round the hand from a plate under the blade
+        "basket" => {
+            for k in 0..7 {
+                let a = (k as f64 / 7.0 - 0.5) * PI * 1.6;
+                let (x, y) = (a.sin(), -a.cos());
+                let r = w * 0.32;
+                curve(p, &[[x * 0.02, y * 0.02, z], [x * r, y * r, z - 0.04], [x * r * 1.05, y * r * 1.05, z - 0.1], [x * r * 0.55, y * r * 0.55, z - 0.17]], 0.0055, 0.0055, if k % 2 == 0 { m } else { accent });
+            }
+            ring(p, [0.0, -w * 0.12, z - 0.08], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], w * 0.3, 0.0055, accent);
+            p.push(ellipsoid([0.0, 0.0, mid], [w * 0.32, w * 0.24, h * 0.5], m));
+        }
+        // A crossguard, its forward quillon bowed right down round the knuckles to the pommel
+        "knuckle" => {
+            curve(p, &[[w * 0.45, 0.0, mid], [w * 0.62, 0.0, mid - 0.06], [w * 0.5, 0.0, mid - 0.15], [0.06, 0.0, mid - 0.21], [0.022, 0.0, mid - 0.225]], 0.008, 0.007, m);
+            p.push(ball([-w / 2.0, 0.0, mid], 0.016, accent));
+            p.push(cuboid([-w / 2.0, -0.013, z], [w / 2.0, 0.013, z + h], m));
+        }
+        // A sun: a disc with rays standing out all round it, across the blade
+        "sun" => {
+            for k in 0..12 {
+                let a = k as f64 / 12.0 * TAU;
+                let long = if k % 2 == 0 { 0.5 } else { 0.36 };
+                p.push(limb([a.cos() * w * 0.16, a.sin() * w * 0.16, mid], [a.cos() * w * long, a.sin() * w * long, mid], 0.008, 0.002, if k % 2 == 0 { accent } else { m }));
+            }
+            p.push(ellipsoid([0.0, 0.0, mid], [w * 0.2, w * 0.2, h * 0.55], m));
+        }
+        // Antlers branching up either side, their tines reaching up along the blade
+        "antler" => {
+            for s in [-1.0, 1.0] {
+                curve(p, &[[s * 0.02, 0.0, mid], [s * w * 0.3, 0.0, mid + 0.02], [s * w * 0.48, 0.0, mid + 0.08], [s * w * 0.46, 0.0, mid + 0.14]], 0.011, 0.004, m);
+                p.push(limb([s * w * 0.26, 0.0, mid + 0.02], [s * w * 0.22, 0.0, mid + 0.08], 0.007, 0.003, accent));
+                p.push(limb([s * w * 0.42, 0.0, mid + 0.06], [s * w * 0.58, 0.0, mid + 0.1], 0.006, 0.002, accent));
+            }
+            p.push(block);
+        }
         "wings" => {
             for i in 0..4 {
                 let f = i as f64;
@@ -3466,7 +5528,29 @@ fn sword_guard(p: &mut Vec<Part>, v: &Visual, z: f64, h: f64) {
         _ => {
             p.push(ball([w / 2.0, 0.0, mid], 0.017, accent));
             p.push(ball([-w / 2.0, 0.0, mid], 0.017, accent));
+            // Made finer, a raised boss in the middle of each face and the bar's edges
+            // chamfered, studded either side
+            if finer_now() {
+                for y in [-1.0, 1.0] {
+                    p.push(ellipsoid([0.0, y * 0.014, mid], [0.012, 0.0035, h * 0.42], accent));
+                    for x in [-1.0, 1.0] {
+                        rivet(p, [x * w * 0.3, y * 0.014, mid], 0.0032, accent);
+                    }
+                }
+                let c = 0.0024;
+                for y in [-0.014, 0.014] {
+                    for zz in [z, z + h] {
+                        p.push(cuboid([-w / 2.0, y - c, zz - c], [w / 2.0, y + c, zz + c], AIR));
+                    }
+                }
+            }
             p.push(cuboid([-w / 2.0, -0.014, z], [w / 2.0, 0.014, z + h], m));
+        }
+    }
+    // The block under the blade made finer: a rivet through either face
+    if finer_now() && matches!(v.shape.as_deref(), Some("swept" | "horns" | "ring" | "serpent" | "crescent" | "antler" | "wings")) {
+        for y in [-1.0, 1.0] {
+            rivet(p, [0.0, y * 0.016, mid], 0.0035, accent);
         }
     }
 }
@@ -3476,18 +5560,69 @@ fn sword_hilt(p: &mut Vec<Part>, v: &Visual, z_grip: f64, length: f64, pommel: f
     let m = mat(&v.material, LEATHER);
     let pm = mat(&v.pommel_material, STEEL);
     let r = 0.016;
-    if let Some(wrap) = v.wrap.as_deref().and_then(material) {
-        // Bands of it every other row of voxels
-        let row = (1.0 / SWORD_RES).max(0.012);
-        for k in (0..(length / row) as usize).step_by(2) {
-            let z = z_grip + k as f64 * row;
-            p.push(limb([0.0, 0.0, z + row * 0.1], [0.0, 0.0, z + row * 0.9], r * 1.2, r * 1.2, wrap));
+    let accent = mat(&v.accent, pm);
+    match v.shape.as_deref() {
+        // Knuckled like a bone, a swelling every few rows
+        Some("bone") => {
+            for k in 0..(length / 0.035) as usize {
+                p.push(ellipsoid([0.0, 0.0, z_grip + 0.018 + k as f64 * 0.035], [r * 1.3, r * 1.2, 0.01], m));
+            }
         }
+        // A cord of its accent wound round and round it
+        Some("spiral") => {
+            let turns = (length / 0.03).max(3.0);
+            let points: Vec<[f64; 3]> = (0..=(turns * 12.0) as usize)
+                .map(|k| {
+                    let a = k as f64 / 12.0 * TAU;
+                    [a.cos() * r * 1.05, a.sin() * r * 1.05, z_grip + 0.006 + (length - 0.012) * k as f64 / (turns * 12.0)]
+                })
+                .collect();
+            curve(p, &points, 0.0045, 0.0045, accent);
+        }
+        // Ridged, thin rings of its accent standing out all down it
+        Some("ribbed") => {
+            for k in 0..(length / 0.022) as usize {
+                p.push(ellipsoid([0.0, 0.0, z_grip + 0.011 + k as f64 * 0.022], [r * 1.25, r * 1.25, 0.0045], accent));
+            }
+        }
+        _ => {}
+    }
+    let finer = finer_now();
+    if let Some(wrap) = v.wrap.as_deref().and_then(material) {
+        if finer {
+            // Made finer, cord wound both ways round it, crossing in diamonds, a band at either end
+            cross_wrap(p, [0.0, 0.0], z_grip + 0.004, length - 0.008, r, wrap);
+            for z in [z_grip + 0.003, z_grip + length - 0.003] {
+                p.push(ellipsoid([0.0, 0.0, z], [r * 1.28, r * 1.28, 0.0035], wrap));
+            }
+        } else {
+            // Bands of it every other row of voxels
+            let row = (1.0 / SWORD_RES).max(0.012);
+            for k in (0..(length / row) as usize).step_by(2) {
+                let z = z_grip + k as f64 * row;
+                p.push(limb([0.0, 0.0, z + row * 0.1], [0.0, 0.0, z + row * 0.9], r * 1.2, r * 1.2, wrap));
+            }
+        }
+    } else if finer && v.shape.is_none() && m == LEATHER {
+        // A leather grip made finer: its strap wound round in a spiral, its edges showing
+        let turns = (length / 0.022).max(2.0);
+        let points: Vec<[f64; 3]> = (0..=(turns * 16.0) as usize).map(|k| {
+            let a = k as f64 / 16.0 * TAU;
+            [a.cos() * r * 1.0, a.sin() * r * 1.0, z_grip + 0.003 + (length - 0.006) * k as f64 / (turns * 16.0)]
+        }).collect();
+        curve(p, &points, r * 0.09, r * 0.09, FUR_BROWN);
     }
     p.push(limb([0.0, 0.0, z_grip], [0.0, 0.0, z_grip + length], r, r * 1.05, m));
     if handle > length + 0.01 {
-        p.push(ellipsoid([0.0, 0.0, z_grip + length], [r * 1.25, r * 1.25, 0.008], DARK_STEEL));
-        p.push(limb([0.0, 0.0, z_grip + length], [0.0, 0.0, z_grip + handle], r * 0.95, r * 0.85, WOOD));
+        // Made finer, a collar riveted on where the grip ends, and the haft's grain
+        let collar = z_grip + length;
+        for k in 0..4 {
+            let a = k as f64 / 4.0 * TAU + 0.4;
+            rivet(p, [a.cos() * r * 1.25, a.sin() * r * 1.25, collar], 0.0026, STEEL);
+        }
+        p.push(ellipsoid([0.0, 0.0, collar], [r * 1.25, r * 1.25, if finer { 0.011 } else { 0.008 }], DARK_STEEL));
+        wood_grain(p, [0.0, 0.0, collar], [0.0, 0.0, z_grip + handle], r * 0.95, r * 0.85, WOOD, (handle * 1000.0) as u32);
+        p.push(limb([0.0, 0.0, collar], [0.0, 0.0, z_grip + handle], r * 0.95, r * 0.85, WOOD));
     }
     let c = pommel * 0.85;
     match v.pommel.as_deref().unwrap_or("ball") {
@@ -3527,12 +5662,33 @@ fn sword_hilt(p: &mut Vec<Part>, v: &Visual, z_grip: f64, length: f64, pommel: f
         "fang" => {
             curve(p, &[[0.0, 0.0, z_grip], [pommel * 0.3, 0.0, c], [pommel * 0.9, 0.0, -pommel * 0.6]], pommel * 0.55, 0.003, pm);
         }
+        // Three lobes, one down and one to either side
+        "lobed" => {
+            for (x, z) in [(0.0, c - pommel * 0.55), (-pommel * 0.62, c + pommel * 0.15), (pommel * 0.62, c + pommel * 0.15)] {
+                p.push(ball([x, 0.0, z], pommel * 0.5, pm));
+            }
+            p.push(limb([0.0, 0.0, c], [0.0, 0.0, z_grip], r * 0.8, r, pm));
+        }
+        // A claw clutching a stone of its accent
+        "claw" => {
+            for k in 0..4 {
+                let a = k as f64 / 4.0 * TAU + 0.4;
+                let (x, y) = (a.cos(), a.sin());
+                curve(p, &[[x * r * 0.6, y * r * 0.6, z_grip], [x * pommel * 0.95, y * pommel * 0.95, c + pommel * 0.3], [x * pommel * 0.8, y * pommel * 0.8, c - pommel * 0.5], [x * pommel * 0.3, y * pommel * 0.3, c - pommel * 0.85]], 0.005, 0.0025, pm);
+            }
+            p.push(ball([0.0, 0.0, c], pommel * 0.72, accent));
+        }
         // A cut stone, faceted
         "faceted" => {
             p.push(limb([0.0, 0.0, -pommel * 0.2], [0.0, 0.0, c], 0.003, pommel * 0.85, pm));
             p.push(limb([0.0, 0.0, c], [0.0, 0.0, z_grip], pommel * 0.85, r, pm));
         }
         _ => {
+            // Made finer, a band of its accent round it and the tang peened over its end
+            if finer_now() {
+                ring(p, [0.0, 0.0, c], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], pommel * 0.84, 0.0022, accent);
+                p.push(ball([0.0, 0.0, c - pommel * 0.84], pommel * 0.22, accent));
+            }
             p.push(ball([0.0, 0.0, c], pommel * 0.85, pm));
             p.push(limb([0.0, 0.0, c], [0.0, 0.0, z_grip], r * 0.8, r, pm));
         }
@@ -3551,6 +5707,9 @@ pub struct LashLook {
     pub cracker: usize,
     /// How thick it is where it leaves the handle, in meters
     pub thickness: f64,
+    /// Which of the weapon's frames is drawn on its tip in place of a cracker, if one is: a
+    /// flail's head, its chain lashed out as a whip's lash is
+    pub head: Option<usize>,
 }
 
 // The sets of lash segment models among effect_models(), by what a lash is made of: braided
@@ -3777,13 +5936,16 @@ fn whip(lash: &Visual, handle: &Visual, core: &Visual, family: &Family) -> (Vec<
     // The gem of its core, set into the top of the handle, then the thong binding the lash on, and
     // the lash's first couple of centimeters coming out of it, which the simulated lash carries on
     let mut z_thong = z_top;
+    slot("core");
     if let Some(stone) = core.gem.as_deref().and_then(material) {
         let r = core.size.unwrap_or(0.02).max(0.017);
         gem(&mut p, [0.0, 0.0, z_top], r, stone, core.shape.as_deref());
         z_thong = z_top + r * 0.6;
     }
+    slot("lash");
     p.push(limb([0.0, 0.0, z_thong - 0.01], root, 0.018, thick * 1.3, braid));
     p.push(limb(root, [0.0, 0.0, root[2] + 0.015], thick * 1.3, thick * 1.2, cord));
+    slot("handle");
     sword_hilt(&mut p, handle, z_grip, grip_length, pommel, grip_length);
     (p, v3(0.0, 0.0, z_grip + grip_length * family.grip), v3(root[0], root[1], root[2]))
 }
@@ -3807,6 +5969,11 @@ fn bow(limbs: &Visual, string: &Visual, mechanism: &Visual, core: &Visual, draw:
             "serpent" => -0.1 * s * s + 0.025 * (s * 7.0).sin(),
             "bone" | "winged" => -0.12 * s * s + 0.08 * tip * tip,
             "flat" => -0.09 * s * s,
+            // Short stiff limbs, wheels at their tips doing the work
+            "compound" => -0.045 * s * s,
+            "antler" => -0.1 * s * s + 0.05 * tip * tip,
+            // Bent right back the other way at the tips, deeper than a recurve's
+            "reflex" => -0.14 * s * s + 0.14 * tip * tip,
             _ => -0.11 * s * s,
         };
         x * (1.0 + 0.6 * draw)
@@ -3817,14 +5984,17 @@ fn bow(limbs: &Visual, string: &Visual, mechanism: &Visual, core: &Visual, draw:
     let rest = [0.0, 0.028, mid + 0.03];
     let nock = [bend(1.0) - draw * DRAW_LENGTH, 0.0, mid + 0.03];
     let cord = mat(&string.material, BOWSTRING);
+    slot("string");
     p.push(limb(at(1.0), nock, 0.0065, 0.0065, cord));
     p.push(limb(at(-1.0), nock, 0.0065, 0.0065, cord));
 
+    slot("core");
     if let Some(stone) = core.gem.as_deref().and_then(material) {
         gem(&mut p, [0.018, 0.0, mid + 0.09], core.size.unwrap_or(0.022).max(0.014), stone, core.shape.as_deref());
     }
     let mm = mat(&mechanism.material, WOOD);
     let accent = mat(&mechanism.accent, mm);
+    slot("mechanism");
     match mechanism.shape.as_deref().unwrap_or("rest") {
         "twin" => {
             for dz in [0.0, 0.05] {
@@ -3852,13 +6022,19 @@ fn bow(limbs: &Visual, string: &Visual, mechanism: &Visual, core: &Visual, draw:
         _ => p.push(cuboid([-0.012, 0.016, rest[2] - 0.016], [0.026, 0.042, rest[2] - 0.006], mm)),
     }
 
+    slot("limbs");
     if let Some(tips) = limbs.tips.as_deref().and_then(material) {
         for s in [-1.0, 1.0] {
             p.push(ball(at(s), 0.015, tips));
         }
     }
-    // The grip, wrapped in leather, and the riser
+    // The grip, wrapped in leather, and the riser. Made finer, the leather's bound on with cord
+    // wound both ways round it, and the limbs show their wood's grain.
+    if finer_now() {
+        cross_wrap(&mut p, [-0.003, 0.0], mid - 0.068, 0.126, 0.024, FUR_BROWN);
+    }
     p.push(limb([-0.003, 0.0, mid - 0.07], [-0.003, 0.0, mid + 0.06], 0.024, 0.024, LEATHER));
+    wood_grain(&mut p, at(-0.2), at(0.2), 0.02, 0.02, wood, 3);
     p.push(limb(at(-0.2), at(0.2), 0.02, 0.02, wood));
     let steps = 14;
     for half in [-1.0, 1.0] {
@@ -3880,6 +6056,20 @@ fn bow(limbs: &Visual, string: &Visual, mechanism: &Visual, core: &Visual, draw:
                 p.push(ellipsoid(points[k], [0.016, 0.022, 0.012], mat(&limbs.accent, BONE)));
             }
         }
+        // A compound bow's wheels at its tips, the string run round them and a cable back
+        if shape == "compound" {
+            let q = points[steps];
+            ring(&mut p, [q[0] - 0.012, 0.0, q[2]], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.026, 0.006, mat(&limbs.accent, DARK_STEEL));
+            p.push(ball([q[0] - 0.012, 0.0, q[2]], 0.009, mat(&limbs.tips, STEEL)));
+            p.push(limb([q[0] - 0.03, 0.0, q[2] - half * 0.02], [bend(0.0) - 0.03, 0.0, mid], 0.0035, 0.0035, cord));
+        }
+        // Tines branching off an antler's limbs, reaching back
+        if shape == "antler" {
+            for (k, long) in [(5, 0.1), (9, 0.13), (12, 0.08)] {
+                let q = points[k];
+                p.push(limb(q, [q[0] - long * 0.5, q[1], q[2] + half * long], 0.012, 0.003, mat(&limbs.accent, wood)));
+            }
+        }
         // Blades swept back off the tips, like wings
         if shape == "winged" {
             for (k, long) in [(steps, 0.16), (steps - 3, 0.12), (steps - 6, 0.08)] {
@@ -3888,9 +6078,13 @@ fn bow(limbs: &Visual, string: &Visual, mechanism: &Visual, core: &Visual, draw:
             }
         }
         let flat = if shape == "flat" { 1.9 } else { 1.35 };
-        for pair in points.windows(2) {
+        for (j, pair) in points.windows(2).enumerate() {
             let k = (pair[0][2] - mid).abs() / mid;
-            p.push(limb(pair[0], pair[1], 0.017 - 0.008 * k, 0.017 - 0.008 * k, wood).stretched([0.7, flat, 1.0]));
+            let r = 0.017 - 0.008 * k;
+            if let Some(dark) = grain_of(wood) {
+                grain_squashed(&mut p, pair[0], pair[1], r, r, [flat, 0.7], dark, j as u32 * 2 + (half > 0.0) as u32);
+            }
+            p.push(limb(pair[0], pair[1], r, r, wood).stretched([0.7, flat, 1.0]));
         }
     }
     (p, v3(0.0, 0.0, mid), v3(nock[0], 0.0, nock[2]))
@@ -4055,6 +6249,8 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
             "compound" => -0.05 * s * s,
             "horned" => -0.13 * s * s + 0.17 * tip * tip,
             "ribbed" => -0.09 * s * s,
+            "bone" => -0.11 * s * s + 0.05 * tip * tip,
+            "winged" => -0.1 * s * s + 0.06 * tip * tip,
             _ => -0.1 * s * s,
         };
         x * stiff * (half / 0.31) * (1.0 + 0.8 * draw)
@@ -4085,6 +6281,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
         let mut p = Vec::new();
         let nock = nock_at(draw);
         // The strings, a bolt-thrower's to the ends of the yoke that drives its bolts
+        slot("prod");
         for &z in &decks {
             if build == Build::Fan {
                 for s in [-1.0, 1.0] {
@@ -4096,6 +6293,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
                 }
             }
         }
+        slot("lock");
         if build == Build::Fan {
             p.push(limb([nock, -0.08, 0.006], [nock, 0.08, 0.006], 0.0065, 0.0065, metal));
         }
@@ -4135,10 +6333,12 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
             }
             _ => {}
         }
+        slot("core");
         if let Some(stone) = core.gem.as_deref().and_then(material) {
             gem(&mut p, [length * 0.6, seen * 0.02 * if build == Build::Fan { 1.6 } else { 1.0 }, -0.02], core.size.unwrap_or(0.02).max(0.013) * 0.8, stone, core.shape.as_deref());
         }
         // The grooves the bolts lie in, cut out of the tiller's top, fanned out on a bolt-thrower
+        slot("stock");
         if build == Build::Fan {
             for &(offset, yaw) in &rails {
                 let reach = length + 0.04 - x_latch;
@@ -4150,6 +6350,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
             }
         }
         // The nut that catches the string, a bar across the yoke's for a bolt-thrower
+        slot("lock");
         if build == Build::Fan {
             p.push(limb([x_latch, -0.07, 0.002], [x_latch, 0.07, 0.002], 0.008, 0.008, metal));
         } else {
@@ -4174,9 +6375,11 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
         }
         let rear = [x_latch - 0.05, 0.0, deck];
         let front = [x_prod - 0.01, 0.0, if build == Build::Twin { deck } else { 0.012 }];
+        slot("sight");
         crossbow_sight(&mut p, sight, rear, front, seen);
         // The prod, bound on at the front, its tips capped, a compound one's with wheels the
         // string runs round
+        slot("prod");
         if let Some(tips) = tips {
             for &z in &decks {
                 for s in [-1.0, 1.0] {
@@ -4195,7 +6398,9 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
         }
         let top = decks[decks.len() - 1];
         let width = if build == Build::Fan { fan_half(x_prod) + 0.01 } else { 0.03 * thick.sqrt() };
+        slot("stock");
         p.push(cuboid([x_prod - 0.028 * thick.sqrt(), -width, -0.038 * thick.sqrt()], [x_prod + 0.028 * thick.sqrt(), width, top + 0.006], trim));
+        slot("prod");
         let steps = 12;
         for &z in &decks {
             for side in [-1.0, 1.0] {
@@ -4217,11 +6422,21 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
                         let q = pair[1];
                         curve(&mut p, &[q, [q[0] + 0.025, q[1] + side * 0.01, q[2]], [q[0] + 0.03, q[1] - side * 0.015, q[2]]], r * 0.8, 0.003, band);
                     }
+                    // Knuckled all along like a bone, or blades swept back off its tips
+                    if shape == "bone" && k % 3 == 2 {
+                        p.push(ellipsoid(pair[0], [r * 1.35, r * 1.35, r * 1.6], band));
+                    }
+                    if shape == "winged" && k >= steps - 3 {
+                        let q = pair[0];
+                        let long = 0.04 + 0.025 * (k + 3 - steps) as f64;
+                        p.push(limb(q, [q[0] - long, q[1] - side * long * 0.5, q[2]], r * 0.7, 0.002, band).stretched([1.0, 1.0, 0.4]));
+                    }
                     let material = if shape == "laminate" && k % 2 == 1 { band } else { bow };
                     p.push(limb(pair[0], pair[1], r, r, material).stretched([1.0, 1.0, 1.7]));
                 }
             }
         }
+        slot("lock");
         match build {
             // The windlass on its brackets at the butt
             Build::Crank => {
@@ -4241,6 +6456,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
             // lever turns on
             Build::Repeater => {
                 let (back, front) = (x_latch - 0.02, x_latch + 0.24);
+                slot("stock");
                 for k in 0..2 {
                     let z = 0.085 + k as f64 * 0.012;
                     p.push(limb([front - 0.035, 0.0, z], [front - 0.005, 0.0, z], 0.005, 0.0015, metal));
@@ -4252,26 +6468,32 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
                     p.push(cuboid([x - 0.006, -0.021, 0.0], [x + 0.006, 0.021, 0.115], trim));
                 }
                 p.push(cuboid([back, -0.018, 0.0], [front, 0.018, 0.11], wood));
+                slot("lock");
                 p.push(limb([length - 0.005, -0.03, -0.03], [length - 0.005, 0.03, -0.03], 0.007, 0.007, metal));
             }
             // The rail the upper prod's groove runs along, and the gearbox at the side with its
             // pinion, and the rack's guide over the butt
             Build::Twin => {
+                slot("stock");
                 p.push(cuboid([x_latch - 0.03, -0.016, 0.0], [x_prod + 0.02, 0.016, TWIN_RISE - 0.003], wood));
                 for x in [x_latch + 0.08, x_prod - 0.08] {
                     p.push(cuboid([x - 0.006, -0.02, -0.04], [x + 0.006, 0.02, TWIN_RISE], trim));
                 }
+                slot("lock");
                 p.push(ball(pinion, 0.012, flourish));
                 p.push(cuboid([pinion[0] - 0.05, seen * 0.02, -0.05], [pinion[0] + 0.05, seen * 0.042, 0.004], metal));
                 p.push(cuboid([pinion[0] - 0.04, -0.01, TWIN_RISE + 0.015], [pinion[0] + 0.02, 0.01, TWIN_RISE + 0.045], metal));
+                slot("stock");
                 p.push(cuboid([pinion[0] - 0.02, -0.012, -0.01], [pinion[0] + 0.0, 0.012, TWIN_RISE + 0.03], trim));
             }
             // The jack's nut at the butt, iron straps round the tiller, the hinge of the leg
             Build::Siege => {
+                slot("stock");
                 p.push(cuboid([-0.02, -0.036, -0.055], [0.03, 0.036, 0.04], trim));
                 for x in [0.2, x_latch + 0.2, x_prod - 0.12] {
                     p.push(cuboid([x - 0.008, -0.034, -0.058], [x + 0.008, 0.034, 0.004], trim));
                 }
+                slot("lock");
                 p.push(limb([length - 0.1, -0.03, -0.06], [length - 0.1, 0.03, -0.06], 0.009, 0.009, metal));
             }
             // The reel under the tiller, its line wound round it, on its hanger
@@ -4294,10 +6516,12 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
             _ => {}
         }
         // A stirrup out front to stand in while spanning it
+        slot("lock");
         if matches!(build, Build::Lever | Build::Crank | Build::Twin) {
             ring(&mut p, [length + 0.045, 0.0, -0.016], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0], 0.04, 0.0065, metal);
         }
         // Then the tiller, and its stock
+        slot("stock");
         match build {
             // Short, on a pistol grip under the latch, capped
             Build::Hand => {
@@ -4376,6 +6600,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
 
     // What spans it, at rest
     let mut m = Vec::new();
+    slot("lock");
     let mover = match build {
         // A windlass's two cranks, hanging down either side of the butt
         Build::Crank => {
@@ -4465,6 +6690,7 @@ fn crossbow(family: &Family, prod: &Visual, stock: &Visual, lock: &Visual, sight
     let leg = (build == Build::Siege).then(|| {
         let pivot = [length - 0.1, 0.0, -0.06];
         let foot = [length - 0.52, 0.0, -0.075];
+        slot("lock");
         let mut l = vec![limb(pivot, foot, 0.014, 0.012, metal)];
         for s in [-1.0, 1.0] {
             l.push(limb(foot, [foot[0] - 0.05, s * 0.035, foot[2] - 0.004], 0.009, 0.006, flourish));
@@ -4549,13 +6775,26 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
         _ => 0.019,
     };
     let w = if shape == "twin" { w.max(outer * 1.95) } else { w };
-    let plate = if build == Build::Pistol { x_b - 0.064 } else { x_b - 0.08 };
+    // Where the lock sits along it: at the breech, or on a cannon a little ahead of it, so its
+    // plate lies all along the side of the barrel rather than out beside the knob on its breech
+    let x_l = if build == Build::Cannon { x_b + 0.07 } else { x_b };
+    let plate = if build == Build::Pistol { x_b - 0.064 } else { x_l - 0.08 };
+    // How far under the bore a cannon's short stock is, the top of its grip in the bed under the
+    // barrel
+    let under = outer - 0.004;
 
     let body = |cocked: bool| {
         let mut p = Vec::new();
         // The bore, hollowing out the muzzle
+        slot("barrel");
         for &y in bores {
             p.push(limb([x_m - 0.03, side(y), 0.0], [x_m + 0.02, side(y), 0.0], mouth, mouth, AIR));
+        }
+        // A cannon's wide barrel cut off flat at its mouth, not rounded off on past it, but for a
+        // dragon's head round it
+        if build == Build::Cannon && shape != "dragon" {
+            let r = outer * 3.0;
+            p.push(cuboid([x_m + CANNON_LIP, -r, -r], [x_m + r, r, r], AIR));
         }
         // A sight on top at the muzzle, and bands round the barrel
         p.push(cuboid([x_m - 0.014, -0.0015, radius(0.97) - 0.002], [x_m - 0.004, 0.0015, radius(0.97) + 0.006], bands));
@@ -4591,11 +6830,46 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
                     p.push(ball([x_b + (x_m - x_b) * t, a.cos() * r, a.sin() * r], wall.max(0.004) * 0.7, bands));
                 }
             }
-            // Flaring out at the mouth like a horn's bell, its lip rolled
+            // Flaring out at the mouth like a horn's bell, its lip rolled; on a cannon hollow, open
+            // at its mouth, rather than a ball
+            "bell" if build == Build::Cannon => {
+                let r = radius(1.0);
+                ring(&mut p, [x_m + 0.004, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], r * 1.85, wall.max(0.005) * 0.8, bands);
+                p.push(cuboid([x_m + 0.008, -r * 3.0, -r * 3.0], [x_m + r * 3.0, r * 3.0, r * 3.0], AIR));
+                p.push(limb([x_m - 0.06, 0.0, 0.0], [x_m + 0.004, 0.0, 0.0], mouth, r * 1.72, AIR));
+                p.push(limb([x_m - 0.07, 0.0, 0.0], [x_m + 0.004, 0.0, 0.0], r * 1.02, r * 1.9, tube));
+            }
             "bell" => {
                 let r = radius(1.0);
                 p.push(limb([x_m + 0.005, 0.0, 0.0], [x_m + 0.012, 0.0, 0.0], r * 2.0, r * 2.0, bands));
                 p.push(limb([x_m - 0.07, 0.0, 0.0], [x_m + 0.008, 0.0, 0.0], r * 1.02, r * 1.9, tube));
+            }
+            // A pepperbox: a ring of six barrels bundled round the bore, their mouths hollow,
+            // bound at the muzzle
+            "pepperbox" => {
+                let around = outer * 1.55;
+                for k in 0..6 {
+                    let a = k as f64 / 6.0 * TAU + 0.5;
+                    let (y, z) = (a.cos() * around, a.sin() * around);
+                    p.push(limb([x_m - 0.02, y, z], [x_m + 0.01, y, z], caliber * 0.55, caliber * 0.55, AIR));
+                    p.push(limb([x_b + 0.01, y, z], [x_m, y, z], outer * 0.62, outer * 0.62, tube));
+                }
+                p.push(limb([x_m - 0.012, 0.0, 0.0], [x_m - 0.004, 0.0, 0.0], around + outer * 0.75, around + outer * 0.75, bands));
+            }
+            // Runes glowing in a line along its top and down either side
+            "runed" => {
+                let glow = mat(&barrel.gem, GLOW_ARCANE);
+                let steps = ((x_m - x_b) / 0.03) as usize;
+                for k in 1..steps {
+                    let t = k as f64 / steps as f64;
+                    let x = x_b + (x_m - x_b) * t;
+                    let r = radius(t) * 1.01;
+                    for a in [PI * 0.5, PI * 0.5 + 2.1, PI * 0.5 - 2.1] {
+                        if (k + (a * 3.0) as usize) % 3 != 0 {
+                            p.push(ball([x, a.cos() * r, a.sin() * r], wall.max(0.004) * 0.65, glow));
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -4632,14 +6906,15 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
 
         // The lock on its plate, its hammer cocked back or let down onto the pan
         let y = w + 0.005;
-        let pivot = [x_b - 0.055, y, -0.006];
+        let pivot = [x_l - 0.055, y, -0.006];
         let lock_shape = lock.shape.as_deref().unwrap_or("flint");
-        let (jaw, frizzen_top) = if cocked { ([x_b - 0.047, y, 0.033], [x_b - 0.009, y, 0.03]) } else { ([x_b - 0.017, y, 0.018], [x_b + 0.016, y, 0.02]) };
-        let elbow = if cocked { [x_b - 0.072, y, 0.016] } else { [x_b - 0.042, y, 0.022] };
+        let (jaw, frizzen_top) = if cocked { ([x_l - 0.047, y, 0.033], [x_l - 0.009, y, 0.03]) } else { ([x_l - 0.017, y, 0.018], [x_l + 0.016, y, 0.02]) };
+        let elbow = if cocked { [x_l - 0.072, y, 0.016] } else { [x_l - 0.042, y, 0.022] };
+        slot("lock");
         match lock_shape {
             // A serpentine holding a smouldering match, swung down into the pan to fire
             "match" => {
-                let ember = if cocked { [jaw[0] + 0.006, y, jaw[2] + 0.006] } else { [x_b - 0.011, y, 0.012] };
+                let ember = if cocked { [jaw[0] + 0.006, y, jaw[2] + 0.006] } else { [x_l - 0.011, y, 0.012] };
                 p.push(ball(ember, 0.0055, flourish));
                 p.push(limb(jaw, ember, 0.004, 0.004, LINEN));
                 p.push(limb(jaw, [jaw[0] - 0.05, y + 0.006, jaw[2] - 0.04], 0.0025, 0.0025, LINEN));
@@ -4647,7 +6922,7 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
             }
             // A wheel turning against the stone, and the dog holding it
             "wheel" => {
-                p.push(ellipsoid([x_b - 0.03, y + 0.002, -0.004], [0.015, 0.004, 0.015], flourish));
+                p.push(ellipsoid([x_l - 0.03, y + 0.002, -0.004], [0.015, 0.004, 0.015], flourish));
                 p.push(ball(jaw, 0.006, OBSIDIAN));
                 curve(&mut p, &[pivot, elbow, jaw], 0.004, 0.004, metal);
             }
@@ -4656,13 +6931,17 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
             shape => {
                 let (stone, plate) = if shape == "rune" { (flourish, flourish) } else { (OBSIDIAN, metal) };
                 p.push(cuboid([jaw[0] - 0.002, y - 0.004, jaw[2] - 0.006], [jaw[0] + 0.008, y + 0.004, jaw[2] + 0.002], stone));
-                p.push(limb([x_b - 0.011, y, 0.004], frizzen_top, 0.004, 0.003, plate));
+                p.push(limb([x_l - 0.011, y, 0.004], frizzen_top, 0.004, 0.003, plate));
                 curve(&mut p, &[pivot, elbow, jaw], 0.0045, 0.0035, metal);
             }
         }
-        // The pan, and the plate
-        p.push(cuboid([x_b - 0.02, w, -0.001], [x_b - 0.004, w + 0.011, 0.005], metal));
-        p.push(cuboid([plate, w, -0.02], [x_b + 0.015, w + 0.004, 0.009], metal));
+        // The pan, and the plate, made finer screwed on at either end
+        p.push(cuboid([x_l - 0.02, w, -0.001], [x_l - 0.004, w + 0.011, 0.005], metal));
+        for x in [plate + 0.009, x_l + 0.008] {
+            rivet(&mut p, [x, w + 0.004, -0.011], 0.0024, flourish);
+        }
+        p.push(cuboid([plate, w, -0.02], [x_l + 0.015, w + 0.004, 0.009], metal));
+        slot("core");
         if let Some(stone) = core.gem.as_deref().and_then(material) {
             let r = core.size.unwrap_or(0.02).max(0.013) * 0.75;
             let at = match build {
@@ -4674,10 +6953,12 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
         }
 
         // The trigger in its guard, then the stock
-        p.push(limb([x_b - 0.035, 0.0, -0.02], [x_b - 0.043, 0.0, -0.042], 0.0035, 0.003, metal));
-        if build != Build::Cannon {
-            ring(&mut p, [x_b - 0.04, 0.0, -0.036], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.02, 0.0035, trim);
-        }
+        // A cannon's under its bed, ahead of its grip
+        slot("lock");
+        let (x_t, z_t) = if build == Build::Cannon { (x_b + 0.05, -under) } else { (x_b, 0.0) };
+        p.push(limb([x_t - 0.035, 0.0, z_t - 0.02], [x_t - 0.043, 0.0, z_t - 0.042], 0.0035, 0.003, metal));
+        slot("stock");
+        ring(&mut p, [x_t - 0.04, 0.0, z_t - 0.036], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.02, 0.0035, trim);
         let fore = family.length;
         // Inlay winding along the stock's side, in its trim, first so it shows over the wood
         if stock.shape.as_deref() == Some("inlaid") && build != Build::Cannon {
@@ -4699,20 +6980,46 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
                 p.push(limb([x_b + 0.005, 0.0, -0.012], [x_b - 0.11, 0.0, -0.098], 0.017, 0.022, wood).stretched([1.0, 0.75, 1.0]));
                 p.push(limb([x_b - 0.01, 0.0, -0.01], [fore, 0.0, -0.009], 0.013, 0.011, wood));
             }
-            // A wooden tiller under the breech, strapped to the barrel, to hold it by
+            // A short wooden bed under the back of the barrel, strapped to it, and a grip curving
+            // down from under the breech to hold it by, as a pistol's does, only stouter: no long
+            // tiller out behind, so it's held in close
             Build::Cannon => {
-                p.push(cuboid([x_b + 0.03, -outer * 0.8, -outer - 0.03], [x_b + 0.05, outer * 0.8, 0.0], bands));
-                p.push(cuboid([x_b + 0.12, -0.012, -outer - 0.04], [x_b + 0.15, 0.012, -outer + 0.01], tube));
-                p.push(limb([x_b - fore, 0.0, -outer - 0.012], [x_b + 0.12, 0.0, -outer - 0.012], 0.022, 0.026, wood));
-                p.push(ball([x_b - fore, 0.0, -outer - 0.012], 0.024, trim));
+                let front = x_b - 0.03 + fore;
+                slot("barrel");
+                for x in [x_b + 0.03, front - 0.035] {
+                    p.push(cuboid([x, -outer * 0.8, -under - 0.03], [x + 0.02, outer * 0.8, 0.0], bands));
+                }
+                p.push(cuboid([x_b + 0.075, -0.012, -under - 0.036], [x_b + 0.1, 0.012, -outer + 0.01], tube));
+                slot("stock");
+                p.push(ball([x_b - 0.098, 0.0, -under - 0.106], 0.026, trim));
+                p.push(ball([front, 0.0, -under], 0.02, trim));
+                let pieces = [
+                    ([x_b - 0.03, 0.0, -under], [front, 0.0, -under], 0.024, 0.02, [1.3, 1.0]),
+                    ([x_b + 0.02, 0.0, -under - 0.012], [x_b - 0.09, 0.0, -under - 0.098], 0.019, 0.024, [0.85, 1.0]),
+                ];
+                for (k, &(a, b, ra, rb, squash)) in pieces.iter().enumerate() {
+                    if let Some(dark) = grain_of(wood) {
+                        grain_squashed(&mut p, a, b, ra, rb, squash, dark, 30 + k as u32);
+                    }
+                    p.push(limb(a, b, ra, rb, wood).stretched([1.0, squash[0], squash[1]]));
+                }
             }
             // A full stock, from a butt to set against the shoulder to a fore-end under the barrel
             _ => {
                 p.push(cuboid([0.0, -0.022, -0.128], [0.012, 0.022, -0.026], trim));
                 p.push(limb([fore - 0.006, 0.0, -outer * 0.85], [fore + 0.006, 0.0, -outer * 0.85], 0.016, 0.016, trim));
-                p.push(limb([x_b - 0.02, 0.0, -outer * 0.85], [fore, 0.0, -outer * 0.8], 0.017, 0.015, wood).stretched([1.0, 1.15, 0.9]));
-                p.push(limb([x_b, 0.0, -0.012], [x_b - 0.12, 0.0, -0.03], 0.019, 0.018, wood).stretched([1.0, 0.85, 1.0]));
-                p.push(limb([x_b - 0.11, 0.0, -0.032], [0.03, 0.0, -0.077], 0.021, 0.052, wood).stretched([1.0, 0.45, 1.0]));
+                // Made finer, each piece of the stock shows its wood's grain
+                let pieces = [
+                    ([x_b - 0.02, 0.0, -outer * 0.85], [fore, 0.0, -outer * 0.8], 0.017, 0.015, [1.15, 0.9]),
+                    ([x_b, 0.0, -0.012], [x_b - 0.12, 0.0, -0.03], 0.019, 0.018, [0.85, 1.0]),
+                    ([x_b - 0.11, 0.0, -0.032], [0.03, 0.0, -0.077], 0.021, 0.052, [0.45, 1.0]),
+                ];
+                for (k, &(a, b, ra, rb, squash)) in pieces.iter().enumerate() {
+                    if let Some(dark) = grain_of(wood) {
+                        grain_squashed(&mut p, a, b, ra, rb, squash, dark, 20 + k as u32);
+                    }
+                    p.push(limb(a, b, ra, rb, wood).stretched([1.0, squash[0], squash[1]]));
+                }
             }
         }
         p
@@ -4722,21 +7029,25 @@ fn gun(family: &Family, barrel: &Visual, stock: &Visual, lock: &Visual, core: &V
     // The ramrod, as far down the barrel as it goes
     let bore = v3(x_m, side(bores[0]), 0.0);
     let rod = if build == Build::Cannon { 0.011 } else { 0.0042 };
+    slot("barrel");
     let rammer = [
         ball([bore.x, bore.y, 0.0], rod * 1.6, bands),
         limb([bore.x - (x_m - x_b) + 0.01, bore.y, 0.0], [bore.x, bore.y, 0.0], rod * 1.3, rod, if build == Build::Cannon { WOOD } else { STEEL }),
     ];
     frames.push(voxelize(&rammer, GUN_RES));
     let mover = Mover { frame: 2, pivot: bore, axis: Vector3::x(), handle: bore, handle_axis: Vector3::x() };
-    // Held at the grip of a pistol, the tiller of a cannon or the wrist of a stock, steadied
-    // under the fore-end of a long gun
+    // Held at the grip of a pistol or a cannon or the wrist of a stock, steadied under the
+    // fore-end of a long gun
     let (grip, hold) = match build {
         Build::Pistol => (v3(x_b - 0.055, 0.0, -0.055), v3(0.8, 0.0, 0.6)),
-        Build::Cannon => (v3(x_b - family.length * 0.45, 0.0, -outer - 0.012), Vector3::x()),
+        Build::Cannon => (v3(x_b - 0.035, 0.0, -under - 0.055), v3(0.8, 0.0, 0.6)),
         _ => (v3(x_b - 0.075, 0.0, -0.022), v3(0.96, 0.0, 0.28)),
     };
     let support = matches!(build, Build::Musket | Build::Blunderbuss).then(|| (v3(x_b + (family.length - x_b) * 0.55, 0.0, -outer - 0.012), Vector3::x()));
-    WeaponLook { frames, res: GUN_RES, grip, hold: hold.normalize(), tip: v3(x_m, 0.0, 0.0), nocks: Vec::new(), lash: None, mover: Some(mover), support, rails: Vec::new(), leg: None, scale: 1.0 }
+    // Shots and the flash leave from the mouth of its bore, a cannon's cut off flat just past its
+    // length
+    let muzzle = if build == Build::Cannon { x_m + CANNON_LIP - 0.006 } else { x_m };
+    WeaponLook { frames, res: GUN_RES, grip, hold: hold.normalize(), tip: v3(muzzle, 0.0, 0.0), nocks: Vec::new(), lash: None, mover: Some(mover), support, rails: Vec::new(), leg: None, scale: 1.0 }
 }
 
 /// A staff standing on its foot, the crystal at its top. Returns how long its shaft is, and where
@@ -4762,6 +7073,7 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
     };
 
     // The crystal first, so whatever holds it doesn't hide it
+    slot("crystal");
     match crystal.shape.as_deref().unwrap_or("orb") {
         "shard" => {
             p.push(limb([c[0], c[1], c[2] - size * 1.3], c, 0.004, size * 0.7, gem));
@@ -4797,10 +7109,66 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
             p.push(ball(c, size * 0.8, gem));
             p.push(ellipsoid([c[0], c[1], c[2] - size * 0.35], [size * 1.0, size * 1.0, size * 0.6], ROCK));
         }
+        // A star: points standing out all round a little heart of it
+        "star" => {
+            for d in sphere_points(10) {
+                p.push(limb([c[0] + d[0] * size * 0.3, c[1] + d[1] * size * 0.3, c[2] + d[2] * size * 0.3], [c[0] + d[0] * size * 1.5, c[1] + d[1] * size * 1.5, c[2] + d[2] * size * 1.5], size * 0.28, 0.003, gem));
+            }
+            p.push(ball(c, size * 0.5, gem));
+        }
+        // A shard with a ribbon of itself twisting up round it
+        "spiral" => {
+            let points: Vec<[f64; 3]> = (0..=30)
+                .map(|k| {
+                    let t = k as f64 / 30.0;
+                    let a = t * 2.5 * TAU;
+                    [c[0] + a.cos() * size * 0.75 * (1.0 - 0.5 * t), c[1] + a.sin() * size * 0.75 * (1.0 - 0.5 * t), c[2] - size * 1.1 + size * 2.6 * t]
+                })
+                .collect();
+            curve(&mut p, &points, size * 0.2, size * 0.08, gem);
+            p.push(limb([c[0], c[1], c[2] - size * 1.1], [c[0], c[1], c[2] + size * 1.7], size * 0.42, 0.003, gem));
+        }
         _ => p.push(ball(c, size, gem)),
     }
 
+    slot("focus");
     match focus_shape {
+        // A lantern of its accent, the crystal glowing in it between four bars, a cap and a ring
+        // over it and a dish under it
+        "lantern" => {
+            for k in 0..4 {
+                let a = (k as f64 + 0.5) / 4.0 * TAU;
+                let (x, y) = (a.cos() * 0.058, a.sin() * 0.058);
+                p.push(limb([x, y, c[2] - 0.075], [x, y, c[2] + 0.075], 0.006, 0.006, focus_accent));
+            }
+            p.push(limb([0.0, 0.0, c[2] + 0.075], [0.0, 0.0, c[2] + 0.115], 0.066, 0.012, fm));
+            ring(&mut p, [0.0, 0.0, c[2] + 0.135], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.02, 0.005, focus_accent);
+            p.push(ellipsoid([0.0, 0.0, c[2] - 0.08], [0.07, 0.07, 0.014], fm));
+            p.push(limb([0.0, 0.0, top - 0.02], [0.0, 0.0, c[2] - 0.08], thick, thick * 0.8, fm));
+        }
+        // Wings spreading out either side under the crystal, feather over feather
+        "wings" => {
+            for s in [-1.0, 1.0] {
+                for k in 0..4 {
+                    let f = k as f64;
+                    let material = if k % 2 == 0 { fm } else { focus_accent };
+                    p.push(limb([s * 0.02, 0.0, top + 0.04 + 0.01 * f], [s * (0.1 + 0.035 * f), 0.0, top + 0.1 + 0.06 * f - 0.02 * f * f], 0.016, 0.006, material).stretched([1.0, 0.4, 1.0]));
+                }
+            }
+            p.push(limb([0.0, 0.0, top - 0.03], [0.0, 0.0, c[2] - 0.04], thick * 1.3, thick, fm));
+        }
+        // An open hand cupping the crystal from below, its fingers curled up round it
+        "hand" => {
+            for k in 0..4 {
+                let a = (k as f64 - 1.5) * 0.45;
+                let (x, y) = (a.sin() * 0.045, -a.cos() * 0.045 + 0.02);
+                curve(&mut p, &[[x * 0.5, y * 0.5, c[2] - 0.065], [x, y, c[2] - 0.04], [x * 1.15, y * 1.15, c[2] + 0.005], [x * 0.85, y * 0.85, c[2] + 0.045]], 0.0085, 0.006, fm);
+            }
+            curve(&mut p, &[[0.0, 0.03, c[2] - 0.06], [0.0, 0.065, c[2] - 0.03], [0.0, 0.06, c[2] + 0.01]], 0.01, 0.007, fm);
+            p.push(ellipsoid([0.0, 0.0, c[2] - 0.07], [0.05, 0.05, 0.025], fm));
+            p.push(ellipsoid([0.0, 0.0, top + 0.01], [thick * 1.5, thick * 1.5, 0.008], focus_accent));
+            p.push(limb([0.0, 0.0, top - 0.02], [0.0, 0.0, c[2] - 0.08], thick, thick * 1.2, fm));
+        }
         "ring" => {
             ring(&mut p, c, [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.085, 0.012, fm);
             p.push(limb([0.0, 0.0, top - 0.02], [0.0, 0.0, c[2] - 0.08], thick, thick * 0.8, fm));
@@ -4929,6 +7297,7 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
     let bm = mat(&binding.material, LINEN);
     let ba = mat(&binding.accent, bm);
     let (low, high) = (top - 0.36, top - 0.05);
+    slot("binding");
     match binding.shape.as_deref().unwrap_or("wraps") {
         "bands" => {
             for z in [low + 0.04, (low + high) * 0.5, high - 0.02] {
@@ -4977,6 +7346,7 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
     }
 
     // A metal foot, then the shaft
+    slot("shaft");
     p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, 0.06], thick * 0.65, thick * 1.1, DARK_STEEL));
     match shaft.shape.as_deref().unwrap_or("straight") {
         "twisted" => {
@@ -5024,6 +7394,7 @@ fn staff(shaft: &Visual, focus: &Visual, crystal: &Visual, binding: &Visual) -> 
                     p.push(ellipsoid([0.0, 0.0, k as f64 * every], [thick * 1.3, thick * 1.3, 0.011], accent));
                 }
             }
+            wood_grain(&mut p, [0.0, 0.0, 0.0], [0.0, 0.0, top], thick * 0.85, thick, wood, 11);
             p.push(limb([0.0, 0.0, 0.0], [0.0, 0.0, top], thick * 0.85, thick, wood));
         }
     }
@@ -5093,11 +7464,17 @@ pub const SLOT_BOMB: usize = SLOT_SMOKE + 1;
 /// Great billows of cloud, well over a meter across, each element's color: what a censer leaves
 /// hanging, a storm's thunderheads, a mire's haze
 pub const SLOT_CLOUD: usize = SLOT_BOMB + 1;
-/// Puddles a meter round lying flat on the ground round 0, of what each element leaves: mud
-/// without one, embers, ice, venom and the rest. Pools are drawn with these, never painted on.
+/// Pools a meter round lying flat on the ground round 0, of what each element leaves, see pool():
+/// churned earth without one, smouldering embers, a sheet of ice, bubbling venom, ground scorched
+/// by lightning, a sigil of light, a swirl of darkness, blood, runes. Pools are drawn with these,
+/// never painted on.
 pub const SLOT_PUDDLE: usize = SLOT_CLOUD + 1;
+/// The same pools dying down: embers burnt out to ash, ice melting apart, venom drying, the
+/// lightning's forks gone dark, the sigil and runes dim, the swirl drawn in, blood crusting over,
+/// the earth settling
+pub const SLOT_POOL_SPENT: usize = SLOT_PUDDLE + 1;
 /// After the sets: the right arm, the left arm, a boulder, then spikes of ice bursting up
-pub const ARMS: usize = (SLOT_PUDDLE + 1) * ELEMENT_LOOKS;
+pub const ARMS: usize = (SLOT_POOL_SPENT + 1) * ELEMENT_LOOKS;
 pub const BOULDER: usize = ARMS + 2;
 pub const ICE_BURST: usize = BOULDER + 1;
 /// A pillar of light, standing on 0
@@ -5340,38 +7717,252 @@ fn flying_bomb(element: Option<Element>) -> Vec<Part> {
     p
 }
 
-/// A puddle a meter round lying flat round 0, lumpy at its edge, of what `element` leaves on the
-/// ground: glowing spots of it on what it lies on, charred ground with embers for fire, ice with
-/// frost round it, venom on moss, mud without an element
-fn puddle(element: Option<Element>, seed: u32) -> Vec<Part> {
-    use Element::*;
-    let (bed, spots) = match element {
-        None => (BARK_DARK, DIRT),
-        Some(Fire) => (BARK_DARK, GLOW_FIRE),
-        Some(Frost) => (ICE, FOAM),
-        Some(Storm) => (BARK_DARK, GLOW_STORM),
-        Some(Poison) => (MOSS, GLOW_POISON),
-        Some(Arcane) => (CRYSTAL, GLOW_ARCANE),
-        Some(Void) => (OBSIDIAN, GLOW_VOID),
-        Some(Blood) => (CLOTH, GLOW_BLOOD),
-        Some(Holy) => (GOLD, GLOW_HOLY),
-    };
-    let mut seed = seed;
-    let mut p = Vec::new();
-    // Spots of it a little proud of the bed, first so they show
-    for _ in 0..9 {
-        let a = random(&mut seed) * TAU;
-        let r = random(&mut seed).sqrt() * 0.75;
-        let s = 0.08 + 0.1 * random(&mut seed);
-        p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.02], [s, s * (0.6 + 0.4 * random(&mut seed)), 0.035], spots));
-    }
+/// A lumpy disc about `radius` round lying flat round 0, `thick` either side of it, of
+/// `material`: lobes round a middle, so its edge is ragged
+fn bed(p: &mut Vec<Part>, radius: f64, thick: f64, material: u8, seed: &mut u32) {
     for k in 0..7 {
-        let a = k as f64 / 7.0 * TAU + random(&mut seed) * 0.5;
-        let r = 0.45 + 0.15 * random(&mut seed);
-        let s = 0.35 + 0.15 * random(&mut seed);
-        p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.0], [s, s, 0.03], bed));
+        let a = k as f64 / 7.0 * TAU + random(seed) * 0.5;
+        let r = radius * (0.5 + 0.15 * random(seed));
+        let s = radius * (0.36 + 0.15 * random(seed));
+        p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.0], [s, s, thick], material));
     }
-    p.push(ellipsoid([0.0, 0.0, 0.0], [0.6, 0.6, 0.035], bed));
+    p.push(ellipsoid([0.0, 0.0, 0.0], [radius * 0.63, radius * 0.63, thick], material));
+}
+
+/// A jagged line over the ground from `from` to `to`, `z` up, wandering up to `wander` either side
+/// as it goes, `r` thick and thinning: a crack, or a fork of lightning burnt in. Gives back the
+/// points it bends at.
+#[allow(clippy::too_many_arguments)]
+fn jagged(p: &mut Vec<Part>, from: [f64; 2], to: [f64; 2], z: f64, wander: f64, r: f64, material: u8, seed: &mut u32) -> Vec<[f64; 3]> {
+    let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+    let length = (dx * dx + dy * dy).sqrt().max(1e-6);
+    let (nx, ny) = (-dy / length, dx / length);
+    let steps = 5;
+    let points: Vec<[f64; 3]> = (0..=steps)
+        .map(|k| {
+            let t = k as f64 / steps as f64;
+            let off = if k == 0 || k == steps { 0.0 } else { (random(seed) * 2.0 - 1.0) * wander };
+            [from[0] + dx * t + nx * off, from[1] + dy * t + ny * off, z]
+        })
+        .collect();
+    curve(p, &points, r, r * 0.6, material);
+    points
+}
+
+/// A pool a meter round lying flat round 0, of what `element` leaves on the ground, fresh or with
+/// `spent` dying down, laid out the same either way so one gives way to the other. Without an
+/// element, churned earth, cracked, clods and stones thrown up over it, settling flatter as it's
+/// spent. Fire leaves smouldering embers, coals and cracks of fire through charred ground, burning
+/// out to grey ash; frost a sheet of ice, spikes of it standing up and frost feathering over it,
+/// melting into plates in slush; venom bubbling ooze, drying to a crust; lightning its forks burnt
+/// into scorched ground, going dark; holy light a sigil, a star in two rings, dimming; the void a
+/// swirl of darkness winding in to a black heart; blood a dark pool, gleaming, crusting over; and
+/// arcane magic a ring of runes round a crystal.
+fn pool(element: Option<Element>, spent: bool, key: u32) -> Vec<Part> {
+    use Element::*;
+    let mut seed = key;
+    let s = &mut seed;
+    let mut p = Vec::new();
+    let flat = ([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]);
+    let round = |s: &mut u32, most: f64| {
+        let a = random(s) * TAU;
+        let r = random(s).sqrt() * most;
+        (a.cos() * r, a.sin() * r)
+    };
+    match element {
+        None => {
+            // Clods of earth and stones thrown up over it, fewer and smaller once it's settled
+            for k in 0..12 {
+                let (x, y) = round(s, 0.85);
+                let r = (0.04 + 0.06 * random(s)) * if spent { 0.6 } else { 1.0 };
+                if !spent || k % 2 == 0 {
+                    p.push(ball([x, y, 0.02], r, [DIRT, GRAVEL, ROCK, BARK_DARK][k % 4]));
+                }
+            }
+            for k in 0..6 {
+                let a = k as f64 / 6.0 * TAU + random(s) * 0.7;
+                let (r0, r1) = (0.1 + 0.1 * random(s), 0.7 + 0.25 * random(s));
+                jagged(&mut p, [a.cos() * r0, a.sin() * r0], [a.cos() * r1, a.sin() * r1], 0.012, 0.08, 0.02, BARK_DARK, s);
+            }
+            // Turned over, darker in patches
+            for _ in 0..5 {
+                let (x, y) = round(s, 0.6);
+                p.push(ellipsoid([x, y, 0.005], [0.2, 0.14, 0.032], FUR_BROWN));
+            }
+            bed(&mut p, 0.95, 0.03, DIRT, s);
+        }
+        Some(Fire) => {
+            let (coal, crack) = if spent { (BARK_DARK, MORTAR) } else { (GLOW_FIRE, GLOW_FIRE) };
+            for k in 0..16 {
+                let (x, y) = round(s, 0.8);
+                let r = 0.035 + 0.04 * random(s);
+                // A few still glowing as it burns out
+                let m = if spent && k % 4 == 0 { GLOW_FIRE } else if k % 3 == 0 && !spent { FLAME } else { coal };
+                p.push(ball([x, y, 0.025], if spent { r * 0.7 } else { r }, m));
+            }
+            for k in 0..6 {
+                let a = k as f64 / 6.0 * TAU + random(s) * 0.6;
+                let (r0, r1) = (0.08, 0.6 + 0.3 * random(s));
+                jagged(&mut p, [a.cos() * r0, a.sin() * r0], [a.cos() * r1, a.sin() * r1], 0.012, 0.07, 0.018, crack, s);
+            }
+            // Ash lying flat at its edge, all over it once it's burnt out
+            for k in 0..9 {
+                let a = k as f64 / 9.0 * TAU + random(s) * 0.5;
+                let r = if spent { 0.2 + 0.6 * random(s) } else { 0.72 + 0.2 * random(s) };
+                p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.0], [0.2, 0.13, 0.031], if spent && k % 2 == 0 { FUR_GRAY } else { MORTAR }));
+            }
+            bed(&mut p, 0.95, 0.03, BARK_DARK, s);
+        }
+        Some(Frost) => {
+            if !spent {
+                // Spikes of ice standing up out of it, leaning out
+                for k in 0..7 {
+                    let a = k as f64 / 7.0 * TAU + random(s) * 0.7;
+                    let r = 0.25 + 0.55 * random(s);
+                    let (h, lean) = (0.12 + 0.18 * random(s), 0.04 + 0.06 * random(s));
+                    let base = [a.cos() * r, a.sin() * r, 0.0];
+                    p.push(ball(base, 0.02, GLOW_FROST));
+                    p.push(limb(base, [base[0] + a.cos() * lean, base[1] + a.sin() * lean, h], 0.045 + 0.02 * random(s), 0.004, ICE));
+                }
+                // Frost feathering out over it
+                for k in 0..10 {
+                    let a = k as f64 / 10.0 * TAU + random(s) * 0.5;
+                    let (r0, r1) = (0.2 + 0.2 * random(s), 0.75 + 0.15 * random(s));
+                    jagged(&mut p, [a.cos() * r0, a.sin() * r0], [a.cos() * r1, a.sin() * r1], 0.03, 0.04, 0.012, FOAM, s);
+                }
+                ring(&mut p, [0.0, 0.0, 0.0], flat.0, flat.1, 0.9, 0.05, SNOW);
+                bed(&mut p, 0.95, 0.03, ICE, s);
+            } else {
+                // Plates of it drifting apart in slush as it melts
+                for k in 0..8 {
+                    let a = k as f64 / 8.0 * TAU + random(s) * 0.4;
+                    let r = 0.35 + 0.3 * random(s);
+                    p.push(ellipsoid([a.cos() * r, a.sin() * r, 0.006], [0.2, 0.14, 0.026], ICE));
+                }
+                p.push(ellipsoid([0.0, 0.0, 0.006], [0.2, 0.2, 0.026], ICE));
+                bed(&mut p, 0.8, 0.018, FOAM, s);
+            }
+        }
+        Some(Poison) => {
+            let (ooze, rim) = if spent { (DRY_GRASS, MOSS) } else { (GLOW_POISON, MOSS) };
+            // Bubbles swelling up out of it, gone once it's dried
+            for k in 0..9 {
+                let (x, y) = round(s, 0.7);
+                let r = 0.05 + 0.07 * random(s);
+                if !spent {
+                    p.push(ball([x, y, 0.01], r, if k % 3 == 0 { LEAVES_LIME } else { GLOW_POISON }));
+                } else if k % 3 == 0 {
+                    p.push(ball([x, y, 0.0], r * 0.4, GLOW_POISON));
+                }
+            }
+            for _ in 0..4 {
+                let (x, y) = round(s, 0.5);
+                p.push(ellipsoid([x, y, 0.006], [0.22, 0.16, 0.032], if spent { CLAY } else { LEAVES_LIME }));
+            }
+            p.push(ellipsoid([0.0, 0.0, 0.004], [0.66, 0.62, 0.034], ooze));
+            bed(&mut p, 0.95, 0.03, rim, s);
+        }
+        Some(Storm) => {
+            let fork = if spent { OBSIDIAN } else { GLOW_STORM };
+            // Forks burnt out over it from where it struck, each branching
+            for k in 0..5 {
+                let a = k as f64 / 5.0 * TAU + random(s) * 0.5;
+                let points = jagged(&mut p, [0.0, 0.0], [a.cos() * 0.9, a.sin() * 0.9], 0.015, 0.1, 0.02, fork, s);
+                let mid = points[2 + (random(s) * 2.0) as usize];
+                let b = a + (random(s) - 0.5) * 1.6;
+                jagged(&mut p, [mid[0], mid[1]], [mid[0] + b.cos() * 0.35, mid[1] + b.sin() * 0.35], 0.015, 0.05, 0.013, fork, s);
+            }
+            p.push(ellipsoid([0.0, 0.0, 0.01], [0.1, 0.1, 0.035], if spent { GRAVEL } else { GLOW_STORM }));
+            for _ in 0..5 {
+                let (x, y) = round(s, 0.8);
+                p.push(ball([x, y, 0.01], 0.04, GRAVEL));
+            }
+            bed(&mut p, 0.9, 0.03, BARK_DARK, s);
+        }
+        Some(Holy) => {
+            let (light, gold) = if spent { (GOLD, BRONZE) } else { (GLOW_HOLY, GOLD) };
+            ring(&mut p, [0.0, 0.0, 0.02], flat.0, flat.1, 0.92, 0.03, gold);
+            ring(&mut p, [0.0, 0.0, 0.02], flat.0, flat.1, 0.66, 0.024, light);
+            // A star of two triangles within the rings
+            for tri in 0..2 {
+                for k in 0..3 {
+                    let a0 = tri as f64 * PI / 3.0 + k as f64 * TAU / 3.0 + PI / 2.0;
+                    let a1 = a0 + TAU / 3.0;
+                    p.push(limb([a0.cos() * 0.62, a0.sin() * 0.62, 0.02], [a1.cos() * 0.62, a1.sin() * 0.62, 0.02], 0.018, 0.018, light));
+                }
+            }
+            // Marks round between the rings, as on a dial
+            for k in 0..12 {
+                let a = k as f64 / 12.0 * TAU;
+                if k % 3 == 0 {
+                    p.push(limb([a.cos() * 0.73, a.sin() * 0.73, 0.02], [a.cos() * 0.85, a.sin() * 0.85, 0.02], 0.02, 0.02, gold));
+                } else {
+                    p.push(ball([a.cos() * 0.79, a.sin() * 0.79, 0.02], 0.025, light));
+                }
+            }
+            p.push(ellipsoid([0.0, 0.0, 0.01], [0.1, 0.1, 0.03], light));
+            // Burnt into the ground, so the light shows against it
+            bed(&mut p, 0.95, 0.016, BRONZE, s);
+        }
+        Some(Void) => {
+            // Arms of it winding in to the middle, drawn in tighter once it's spent
+            let reach = if spent { 0.55 } else { 0.95 };
+            for arm in 0..3 {
+                let a0 = arm as f64 / 3.0 * TAU + random(s) * 0.3;
+                let points: Vec<[f64; 3]> = (0..=14)
+                    .map(|j| {
+                        let t = j as f64 / 14.0;
+                        let (r, a) = (reach * (1.0 - t) + 0.06, a0 + t * 1.3 * TAU);
+                        [a.cos() * r, a.sin() * r, 0.02]
+                    })
+                    .collect();
+                curve(&mut p, &points, 0.05 * reach, 0.012, if spent { FUR_DARK } else { GLOW_VOID });
+            }
+            let heart = 0.16 * reach.sqrt();
+            p.push(ellipsoid([0.0, 0.0, 0.0], [heart, heart, 0.034], EYE));
+            bed(&mut p, reach, 0.03, OBSIDIAN, s);
+        }
+        Some(Blood) => {
+            if !spent {
+                // Gleaming
+                for _ in 0..5 {
+                    let (x, y) = round(s, 0.6);
+                    p.push(ellipsoid([x, y, 0.03], [0.08, 0.04, 0.02], GLOW_BLOOD));
+                }
+            }
+            // Splashed round it
+            for _ in 0..9 {
+                let a = random(s) * TAU;
+                let r = 0.95 + 0.2 * random(s);
+                p.push(ball([a.cos() * r, a.sin() * r, 0.0], 0.03 + 0.03 * random(s), CLOTH));
+            }
+            // Darkest where it's deepest
+            p.push(ellipsoid([0.05, 0.03, 0.005], [0.55, 0.5, 0.033], if spent { FUR_DARK } else { LEAVES_CRIMSON }));
+            bed(&mut p, 0.95, 0.03, CLOTH, s);
+        }
+        Some(Arcane) => {
+            let (glow, crystal) = if spent { (FLOWER_PURPLE, STEEL) } else { (GLOW_ARCANE, CRYSTAL) };
+            ring(&mut p, [0.0, 0.0, 0.02], flat.0, flat.1, 0.9, 0.025, crystal);
+            ring(&mut p, [0.0, 0.0, 0.02], flat.0, flat.1, 0.58, 0.02, glow);
+            // Runes between the rings, each its own: a bar out from the middle, strokes off it
+            for k in 0..8 {
+                let a = k as f64 / 8.0 * TAU + 0.2;
+                let (out, across) = ([a.cos(), a.sin()], [-a.sin(), a.cos()]);
+                let at = |r: f64, side: f64| [out[0] * r + across[0] * side, out[1] * r + across[1] * side, 0.02];
+                p.push(limb(at(0.66, 0.0), at(0.82, 0.0), 0.016, 0.016, glow));
+                let strokes = hash(k as u32 * 7919 + key);
+                for j in 0..3 {
+                    if strokes >> j & 1 == 1 {
+                        let r = 0.68 + 0.06 * j as f64;
+                        let side = if strokes >> (j + 4) & 1 == 1 { 0.06 } else { -0.06 };
+                        p.push(limb(at(r, 0.0), at(r + 0.04, side), 0.014, 0.014, glow));
+                    }
+                }
+            }
+            p.push(ellipsoid([0.0, 0.0, 0.02], [0.07, 0.07, 0.045], crystal));
+            bed(&mut p, 0.95, 0.02, DARK_STEEL, s);
+        }
+    }
     p
 }
 
@@ -5462,8 +8053,11 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
         let p: Vec<Part> = smoke(element, 0xc10d + k as u32).iter().map(|p| p.scaled(7.5)).collect();
         models.push(voxelize(&p, CLOUD_RES));
     }
-    for (k, &element) in looks.iter().enumerate() {
-        models.push(voxelize(&puddle(element, 0x9dd1 + k as u32), PUDDLE_RES));
+    // Pools, fresh then dying down, each laid out alike, see pool()
+    for spent in [false, true] {
+        for (k, &element) in looks.iter().enumerate() {
+            models.push(voxelize(&pool(element, spent, 0x9dd1 + k as u32), PUDDLE_RES));
+        }
     }
     models.push(voxelize(&arm(false), ARM_RES));
     models.push(voxelize(&arm(true), ARM_RES));
@@ -5639,8 +8233,14 @@ pub fn effect_models() -> Vec<(Model, Vector3<f64>)> {
     // Explosions in stages, their rings, ice, pillars of light, the blood moon and sparks as
     // streaks, see effects::BLASTS and the rest
     models.extend(crate::effects::models());
+    // Every kind of special ammo in flight, see AMMO_MODELS
+    models.extend(ammo::models());
     models
 }
+
+/// Where the models of every kind of special ammo in flight start among effect_models(), in the
+/// order of AMMO_STYLES
+pub const AMMO_MODELS: usize = crate::effects::EFFECT_MODELS;
 
 /// Where the coil a coil bind winds round what it holds is among effect_models(), and a serpent
 /// lash's serpent's head
@@ -5656,7 +8256,9 @@ pub const HELD_ARROW_RES: f64 = 160.0;
 /// Finer, so the ring stays thin however big it's drawn
 pub const RING_RES: f64 = 48.0;
 pub const FINE_SPARK_RES: f64 = 128.0;
-pub const ARM_RES: f64 = 128.0;
+/// The arms are always right before the eye, the nearest thing to it, so as fine as the weapon in
+/// hand is made, see HELD_FINE
+pub const ARM_RES: f64 = 256.0;
 /// Finer for balls and shells, which are small, smoke for being lumpy, and a muzzle flash, which
 /// is right in front of the eye
 pub const SHOT_RES: f64 = 64.0;
@@ -5677,13 +8279,20 @@ fn arm(left: bool) -> Vec<Part> {
     for z in [-0.03, -0.01, 0.01, 0.03] {
         p.push(ellipsoid([0.0, 0.007, z], [0.027, 0.031, 0.0095], LEATHER));
     }
-    // The back of the hand and the wrist
+    // The back of the hand and the wrist, a seam stitched down the glove's back
+    p.push(limb([-side * 0.004, -0.0555, -0.026], [-side * 0.004, -0.0555, 0.032], 0.0017, 0.0017, FUR_BROWN));
     p.push(ellipsoid([-side * 0.004, -0.026, 0.004], [0.028, 0.031, 0.042], LEATHER));
     p.push(limb([0.0, -0.042, 0.0], [0.0, -0.09, -0.01], 0.023, 0.025, LEATHER));
-    // A bracer with metal bands, then the sleeve
+    // A bracer with metal bands riveted round, then the sleeve, stitched on at its cuff
     for y in [-0.1, -0.18] {
-        p.push(ellipsoid([0.0, y, -0.016 + (y + 0.1) * 0.2], [0.033, 0.007, 0.033], BRONZE));
+        let z = -0.016 + (y + 0.1) * 0.2;
+        for k in 0..6 {
+            let a = k as f64 / 6.0 * TAU + 0.3;
+            p.push(ball([a.cos() * 0.033, y, z + a.sin() * 0.033], 0.0032, STEEL));
+        }
+        p.push(ellipsoid([0.0, y, z], [0.033, 0.007, 0.033], BRONZE));
     }
+    ring(&mut p, [0.0, -0.188, -0.029], [1.0, 0.0, 0.0], [0.0, 0.0, 1.0], 0.0305, 0.0017, FUR_BROWN);
     p.push(limb([0.0, -0.09, -0.01], [0.0, -0.19, -0.03], 0.029, 0.031, LEATHER));
     p.push(limb([0.0, -0.19, -0.03], [0.0, -0.34, -0.06], 0.035, 0.039, CLOTH));
     p
@@ -5692,6 +8301,41 @@ fn arm(left: bool) -> Vec<Part> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No weapon's name says a word twice, as Crescent Crescentaxe did: rolled for every family,
+    /// with every luck, named as Weapon::assemble() names it
+    #[test]
+    fn names_never_say_a_word_twice() {
+        let library = Library::load();
+        assert!(name_clash("Crescent", "Crescentaxe") && name_clash("Ashen", "Ashblade") && name_clash("of Thorns", "Thornblade"));
+        assert!(!name_clash("Ashen", "Moonsabre") && !name_clash("of the Deep", "Long Glaive"));
+        let mut repeats = Vec::new();
+        let mut named = 0;
+        for family in 0..library.families.len() {
+            for luck in [0.0, 1.0, 3.0, 8.0, 30.0] {
+                for k in 0..800u32 {
+                    let seed = hash(k ^ (family as u32) << 16 ^ (luck as u32) << 24);
+                    let (family, parts) = library.roll(seed, Some(family), luck);
+                    let components: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+                    let size = roll_size(seed);
+                    let (profile, _, _) = Weapon::work_out(&library, family, &components, size, seed);
+                    let name = weapon_name(&library, family, &components, &profile.synergies, seed, size);
+                    named += 1;
+                    let words = name_words(&name);
+                    let twice = (0..words.len()).any(|i| (i + 1..words.len()).any(|j| name_clash(&words[i], &words[j])));
+                    if twice && !repeats.contains(&name) {
+                        repeats.push(name);
+                    }
+                }
+            }
+        }
+        println!("{named} names, {} saying a word twice", repeats.len());
+        assert!(repeats.is_empty(), "{} names say a word twice:\n{}", repeats.len(), repeats.iter().take(40).cloned().collect::<Vec<_>>().join("\n"));
+    }
+
+    /// Luck so great the rarest parts roll more often than common ones, see Library::odds(): for
+    /// seeing what can turn up at all, not how often
+    const LUCKIEST: f64 = 100.0;
 
     #[test]
     fn same_seed_same_weapon() {
@@ -5703,6 +8347,177 @@ mod tests {
             assert_eq!(a.name, b.name);
             assert_eq!(a.grade, b.grade);
         }
+    }
+
+    /// What weapons' models take, packed as they're sent to the graphics card, and how long they take
+    /// to make: a few hundred of every family, as a pack, stalls and loot might hold. `cargo test
+    /// --release weapon_models_fit -- --nocapture`
+    #[test]
+    fn weapon_models_fit() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let start = std::time::Instant::now();
+        let weapons: Vec<Weapon> = (0..300u32).map(|seed| library.generate(hash(seed ^ 0x51ce), None, 2.0)).collect();
+        let took = start.elapsed().as_secs_f64() * 1000.0 / weapons.len() as f64;
+        let models: Vec<&Model> = weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).collect();
+        let start = std::time::Instant::now();
+        let bytes = crate::animals::pack_models(&models).len() * 4;
+        let packing = start.elapsed().as_secs_f64() * 1000.0;
+        let side = models.iter().flat_map(|m| m.size).max().unwrap_or(0);
+        let mut by_family: BTreeMap<String, (usize, usize)> = BTreeMap::new();
+        for w in &weapons {
+            let e = by_family.entry(library.families[w.family].id.clone()).or_default();
+            e.0 += 1;
+            e.1 += crate::animals::pack_models(&w.look.frames.iter().map(|(m, _)| m).collect::<Vec<_>>()).len() * 4;
+        }
+        let heaviest: Vec<String> = {
+            let mut v: Vec<(&String, f64)> = by_family.iter().map(|(f, (n, b))| (f, *b as f64 / *n as f64)).collect();
+            v.sort_by(|a, b| b.1.total_cmp(&a.1));
+            v.iter().take(6).map(|(f, b)| format!("{f} {:.0} KB", b / 1e3)).collect()
+        };
+        println!(
+            "{} weapons, {:.1} MB packed, {:.0} KB each, made in {took:.1} ms each, packed in {packing:.0} ms, longest side {side}; heaviest: {}",
+            weapons.len(),
+            bytes as f64 / 1e6,
+            bytes as f64 / weapons.len() as f64 / 1e3,
+            heaviest.join(", ")
+        );
+        assert!(side <= 1023, "a side of {side} voxels is more than the shader can hold");
+    }
+
+    /// The weapon in hand made finer, see HELD_FINE: of every family, the same frames, held, tipped
+    /// and scaled where its look is, each model about HELD_FINE times as big a side and none past
+    /// what the shader holds; and what one takes to make and send. `cargo test --release
+    /// held_weapons_are_finer -- --nocapture`
+    #[test]
+    fn held_weapons_are_finer() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let (mut most, mut slowest, mut all) = ((0usize, String::new()), (0.0f64, String::new()), 0usize);
+        for family in 0..library.families.len() {
+            let w = library.generate(hash(family as u32 ^ 0xf1e), Some(family), 3.0);
+            let start = std::time::Instant::now();
+            let fine = fine_look(&library, w.family, &w.parts, w.look.scale, HELD_FINE);
+            let took = start.elapsed().as_secs_f64() * 1000.0;
+            let id = &library.families[family].id;
+            assert_eq!(fine.frames.len(), w.look.frames.len(), "{id}");
+            assert!((fine.res / w.look.res - HELD_FINE).abs() < 1e-9, "{id}");
+            assert!((fine.grip - w.look.grip).norm() < 1e-9 && (fine.tip - w.look.tip).norm() < 1e-9 && (fine.scale - w.look.scale).abs() < 1e-9, "{id}");
+            for ((m, a), (c, b)) in fine.frames.iter().zip(&w.look.frames) {
+                for k in 0..3 {
+                    let want = c.size[k] as f64 * HELD_FINE;
+                    assert!((m.size[k] as f64 - want).abs() <= HELD_FINE + 2.0, "{id}: {:?} from {:?}", m.size, c.size);
+                    assert!(m.size[k] <= 1023, "{id}");
+                }
+                // The same place for its voxels, near enough
+                assert!((a - b).norm() < 2.0 / w.look.res * w.look.scale.max(1.0), "{id}: anchored at {a:?}, not {b:?}");
+            }
+            let bytes = crate::animals::pack_models(&fine.frames.iter().map(|(m, _)| m).collect::<Vec<_>>()).len() * 4;
+            all += bytes;
+            if bytes > most.0 {
+                most = (bytes, id.clone());
+            }
+            if took > slowest.0 {
+                slowest = (took, id.clone());
+            }
+        }
+        println!(
+            "held weapons at {HELD_FINE}x: {:.1} MB each on average, the most {:.1} MB ({}), the slowest made in {:.0} ms ({})",
+            all as f64 / library.families.len() as f64 / 1e6,
+            most.0 as f64 / 1e6,
+            most.1,
+            slowest.0,
+            slowest.1
+        );
+        assert!(most.0 < 40_000_000, "a weapon in hand takes {} bytes", most.0);
+    }
+
+    /// Weapons as they're usually made beside the same made finer for the hand, see HELD_FINE,
+    /// drawn on the processor from the side, whole and up close round where they're held:
+    /// `FINE_SHEET=dir cargo test --release fine_sheet -- --ignored`
+    #[test]
+    #[ignore]
+    fn fine_sheet() {
+        let Ok(dir) = std::env::var("FINE_SHEET") else {
+            return;
+        };
+        let library = Library::parse(BUILT_IN).unwrap();
+        let palette = crate::assets::palette();
+        let px = 300usize;
+        // The look `look`'s first frame from -y, `span` meters across round `centre`
+        let draw = |look: &WeaponLook, frame: usize, centre: Vector3<f64>, span: f64, top: bool| -> Vec<[u8; 3]> {
+            let (m, anchor) = &look.frames[frame];
+            let [sx, sy, sz] = m.size.map(|s| s as i64);
+            let res = look.res;
+            let corner = anchor * res - Vector3::new(sx as f64 * 0.5, sy as f64 * 0.5, 0.0);
+            let mut depth = vec![i64::MAX; px * px];
+            let mut out = vec![[24u8, 26, 32]; px * px];
+            for j in 0..px {
+                for i in 0..px {
+                    let u = centre.x + (i as f64 / px as f64 - 0.5) * span;
+                    let v = (0.5 - j as f64 / px as f64) * span;
+                    let cu = (u * res - corner.x).floor() as i64;
+                    let cv = if top { ((centre.y + v) * res - corner.y).floor() as i64 } else { ((centre.z + v) * res - corner.z).floor() as i64 };
+                    let range = if top { sz } else { sy };
+                    for d in 0..range {
+                        let (x, y, z) = if top { (cu, cv, sz - 1 - d) } else { (cu, d, cv) };
+                        if x < 0 || y < 0 || z < 0 || x >= sx || y >= sy || z >= sz {
+                            continue;
+                        }
+                        let k = m.voxels[(x + (y + z * sy) * sx) as usize];
+                        if k != AIR {
+                            let c = palette[k as usize];
+                            let shade = 1.0 - 0.6 * d as f64 / range.max(1) as f64;
+                            out[i + j * px] = [0, 1, 2].map(|q| (c[q] as f64 * shade).min(255.0) as u8);
+                            depth[i + j * px] = d;
+                            break;
+                        }
+                    }
+                }
+            }
+            // Edges where the depth steps, lit from the top left
+            for j in 1..px {
+                for i in 1..px {
+                    let (d, l, t) = (depth[i + j * px], depth[i - 1 + j * px], depth[i + (j - 1) * px]);
+                    if d != i64::MAX && (l != d || t != d) {
+                        let f = if l > d || t > d { 1.25 } else { 0.7 };
+                        out[i + j * px] = out[i + j * px].map(|c| (c as f64 * f).min(255.0) as u8);
+                    }
+                }
+            }
+            out
+        };
+        let families = ["sword", "greatsword", "axe", "spear", "mace", "katana", "bow", "staff", "musket", "crossbow"];
+        let mut rows = Vec::new();
+        for id in families {
+            let Some(f) = library.family(id) else { continue };
+            let w = library.generate(hash(f as u32 ^ 0xf1e), Some(f), 6.0);
+            let fine = fine_look(&library, w.family, &w.parts, w.look.scale, HELD_FINE);
+            let fam = &library.families[f];
+            let top = fam.build.crossbow();
+            let frame = if fam.kind == Kind::Ranged && fam.build == Build::None { 2 } else { 0 };
+            // The middle of its box, and up close round its grip, or its guard for what has one
+            let (m, anchor) = &w.look.frames[frame];
+            let whole = anchor + Vector3::new(0.0, 0.0, m.size[2] as f64 * 0.5 / w.look.res);
+            let close = if fam.guard { w.look.grip + Vector3::new(0.0, 0.0, 0.07 * w.look.scale) } else { w.look.grip };
+            let mut row = Vec::new();
+            for look in [&w.look, &fine] {
+                row.push(draw(look, frame.min(look.frames.len() - 1), whole, w.look.longest() * 1.05, top));
+            }
+            for look in [&w.look, &fine] {
+                row.push(draw(look, frame.min(look.frames.len() - 1), close, 0.16 * w.look.scale, top));
+            }
+            println!("{id}: {}", w.name);
+            rows.push(row);
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut image = image::RgbImage::new((4 * px) as u32, (rows.len() * px) as u32);
+        for (r, row) in rows.iter().enumerate() {
+            for (c, tile) in row.iter().enumerate() {
+                for (q, pixel) in tile.iter().enumerate() {
+                    image.put_pixel((c * px + q % px) as u32, (r * px + q / px) as u32, image::Rgb(*pixel));
+                }
+            }
+        }
+        image.save(std::path::Path::new(&dir).join("fine_sheet.png")).unwrap();
     }
 
     #[test]
@@ -5727,8 +8542,9 @@ mod tests {
         let mut counts = vec![0usize; library.rarities.len()];
         let mut rng = 1;
         let rolls = 200_000;
+        let odds = library.odds(1.0);
         for _ in 0..rolls {
-            counts[library.roll_rarity(1.0, &mut rng)] += 1;
+            counts[Library::roll_rarity(&odds, &mut rng)] += 1;
         }
         for (rarity, count) in library.rarities.iter().zip(counts) {
             let seen = count as f64 / rolls as f64;
@@ -5760,7 +8576,7 @@ mod tests {
 
     #[test]
     fn lash_models_are_where_combat_looks_for_them() {
-        assert_eq!(effect_models().len(), crate::effects::EFFECT_MODELS);
+        assert_eq!(effect_models().len(), crate::effects::EFFECT_MODELS + AMMO_STYLES.len());
         // Elemental lashes glow, the rest are made of what they're made of
         let library = Library::parse(BUILT_IN).unwrap();
         for c in library.components.iter().filter(|c| c.slot_type == "lash") {
@@ -5825,11 +8641,118 @@ mod tests {
         assert!(library.ammo.iter().filter(|a| a.burst.is_some()).count() == 2, "only bursting ammo bursts");
     }
 
+    /// Bells are no more, and any made of what a bell could be comes back a sceptre as rare, made
+    /// of parts as rare, those a sceptre can't take swapped
+    #[test]
+    fn bells_are_gone_and_come_back_as_sceptres() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        assert!(library.family("bell").is_none());
+        assert!(library.components.iter().all(|c| !c.fits("bell")));
+        // A censer takes every part a bell did, and its tags bring the same synergies a bell's
+        // did, so what the same parts make a censer is what they made a bell
+        assert!(library.synergies.iter().all(|s| !s.requires.iter().any(|t| t == "cloud" || t == "knockback")));
+        let censer = library.family("censer").unwrap();
+        let scepter = library.family("scepter").unwrap();
+        assert_eq!(library.retired("sword", &[0], 1), None);
+        let mut swapped = 0;
+        for seed in 0..600u32 {
+            let parts: Vec<usize> = library.families[censer]
+                .slots
+                .iter()
+                .enumerate()
+                .map(|(k, slot)| {
+                    let could: Vec<usize> = (0..library.components.len()).filter(|&c| library.components[c].fits("censer") && library.components[c].slot_type == *slot).collect();
+                    could[hash(seed * 7 + k as u32) as usize % could.len()]
+                })
+                .collect();
+            let was = Weapon::assemble(&library, censer, parts.clone(), seed).grade;
+            let (family, now) = library.retired("bell", &parts, seed).expect("a bell comes back");
+            assert_eq!(family, scepter);
+            for (k, (&a, &b)) in parts.iter().zip(&now).enumerate() {
+                assert!(library.components[b].fits("scepter") && library.components[b].slot_type == library.families[scepter].slots[k]);
+                assert!(library.components[a].fits("scepter") || a != b);
+                assert_eq!(library.components[a].tier, library.components[b].tier, "a part as rare");
+                swapped += (a != b) as usize;
+            }
+            assert_eq!(Weapon::assemble(&library, scepter, now, seed).grade, was, "seed {seed}");
+        }
+        assert!(swapped > 0, "some bells had parts a sceptre can't take");
+    }
+
+    /// A hand cannon has no long wooden stick out behind any more: made of whatever parts, as it
+    /// drops or made finer in hand, it's held by a short grip just under its breech, nothing of it
+    /// reaches more than a hand's breadth back behind where it's held, and it's no longer than its
+    /// barrel and that. Its muzzle, where its shots and the flash leave it, is at the very front of
+    /// its barrel, its bore hollow there and its barrel round it.
+    #[test]
+    fn hand_cannons_have_no_stick_and_shoot_from_their_muzzle() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let family = library.family("handcannon").unwrap();
+        let slots = library.families[family].slots.clone();
+        // As they drop, and every part each slot can take on one of them
+        let mut cannons: Vec<Vec<usize>> = (0..80).map(|seed| library.generate(seed, Some(family), 1.0 + seed as f64 % 8.0).parts).collect();
+        let first = cannons[0].clone();
+        for (k, slot) in slots.iter().enumerate() {
+            for c in library.fitting(family, slot) {
+                let mut parts = first.clone();
+                parts[k] = c;
+                cannons.push(parts);
+            }
+        }
+        let barrel = slots.iter().position(|s| s == "barrel").unwrap();
+        let caliber = library.families[family].caliber;
+        let mut longest: f64 = 0.0;
+        for (n, parts) in cannons.iter().enumerate() {
+            let mut looks = vec![look_of(&library, family, parts)];
+            if n % 20 == 0 {
+                looks.push(fine_look(&library, family, parts, 1.0, HELD_FINE));
+            }
+            let length = library.components[parts[barrel]].visual_profile.length.unwrap_or(1.0) * library.families[family].barrel;
+            for look in &looks {
+                let (model, anchor) = &look.frames[GUN_COCKED];
+                let res = look.res;
+                let lo = Vector3::new(anchor.x - model.size[0] as f64 * 0.5 / res, anchor.y - model.size[1] as f64 * 0.5 / res, anchor.z);
+                // How far back and forward something solid reaches, not the box round it
+                let [sx, sy, sz] = model.size;
+                let solid: Vec<u32> = (0..sx).filter(|&x| (0..sy * sz).any(|yz| model.voxels[(x + yz * sx) as usize] != AIR)).collect();
+                let back_x = lo.x + solid[0] as f64 / res;
+                let hi_x = lo.x + (solid[solid.len() - 1] + 1) as f64 / res;
+                let name = parts.iter().map(|&p| library.components[p].id.as_str()).collect::<Vec<_>>().join(", ");
+                assert!(back_x > look.grip.x - 0.11, "{name}: something reaches {:.2} m back behind where it's held", look.grip.x - back_x);
+                assert!(look.tip.x - back_x < length + 0.2, "{name}: {:.2} m long for a barrel of {length:.2}", look.tip.x - back_x);
+                assert!(look.tip.x - look.grip.x < length + 0.1, "{name}: held {:.2} m back from the muzzle", look.tip.x - look.grip.x);
+                longest = longest.max(hi_x - back_x);
+                // The muzzle at the front, nothing more than a lip or a dragon's jaw past it
+                assert!(hi_x > look.tip.x - 1.5 / res && hi_x < look.tip.x + 0.06,"{name}: the muzzle's at {:.3}, its front at {hi_x:.3}", look.tip.x);
+                assert!(look.tip.y.abs() < 1e-9 && look.tip.z.abs() < 1e-9, "{name}: the muzzle's on its bore");
+                let at = |p: Vector3<f64>| {
+                    let v = ((p - lo) * res).map(|c| c.floor() as i64);
+                    let inside = (0..3).all(|i| v[i] >= 0 && v[i] < model.size[i] as i64);
+                    if !inside {
+                        return AIR;
+                    }
+                    model.voxels[(v.x + (v.y + v.z * model.size[1] as i64) * model.size[0] as i64) as usize]
+                };
+                let twin = library.components[parts[barrel]].visual_profile.shape.as_deref() == Some("twin");
+                if !twin {
+                    assert_eq!(at(look.tip - Vector3::new(0.01, 0.0, 0.0)), AIR, "{name}: its bore's hollow at the muzzle");
+                }
+                // Over the bore, or a double-barrelled one's either bore
+                let side = if twin { caliber * 1.6 * 0.95 } else { 0.0 };
+                let wall = Vector3::new(look.tip.x - 0.06, side, caliber * 1.55);
+                assert_ne!(at(wall), AIR, "{name}: its barrel's round the muzzle");                // Held by its grip, solid there, under the barrel
+                assert_ne!(at(look.grip), AIR, "{name}: there's a grip where it's held");
+                assert!(look.grip.z < -caliber && look.support.is_none(), "{name}: held under its barrel, in the one hand");
+            }
+        }
+        println!("the longest hand cannon is {longest:.2} m");
+    }
+
     #[test]
     fn new_magic_weapons_and_specials_turn_up() {
         let library = Library::parse(BUILT_IN).unwrap();
         // Each kind of magic weapon has its own way of casting, and a model to hold
-        for (id, style, frames) in [("orb", Style::Channel, 1), ("tome", Style::Summon, 2), ("totem", Style::Hex, 1), ("bell", Style::Toll, 1), ("battlestaff", Style::Glaive, 1)] {
+        for (id, style, frames) in [("orb", Style::Channel, 1), ("tome", Style::Summon, 2), ("totem", Style::Hex, 1), ("battlestaff", Style::Glaive, 1)] {
             let family = library.family(id).expect("there's such a family");
             for seed in 0..30 {
                 let weapon = library.generate(seed, Some(family), 4.0);
@@ -5905,6 +8828,25 @@ mod tests {
         }
     }
 
+    /// How much a flail's models take, whole as it's seen lying about and with its haft and head
+    /// on their own for it in hand, over many of them. To look at:
+    /// cargo test --release flail_model_memory -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn flail_model_memory() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let flail = library.family("flail");
+        let (mut whole, mut all) = (0usize, 0usize);
+        let n = 200;
+        for seed in 0..n {
+            let weapon = library.generate(seed, flail, 3.0);
+            let bytes = |m: &Model| m.voxels.len();
+            whole += bytes(&weapon.look.frames[0].0);
+            all += weapon.look.frames.iter().map(|f| bytes(&f.0)).sum::<usize>();
+        }
+        println!("a flail's models, unpacked: {:.1} KB whole, {:.1} KB with its haft and head too", whole as f64 / n as f64 / 1e3, all as f64 / n as f64 / 1e3);
+    }
+
     #[test]
     fn area_weapons_are_each_built_and_used_their_own_way() {
         let library = Library::parse(BUILT_IN).unwrap();
@@ -5916,8 +8858,19 @@ mod tests {
                 let profile = &weapon.profile;
                 assert_eq!((profile.kind, profile.style), (kind, style), "{id}");
                 let look = &weapon.look;
-                assert_eq!(look.frames.len(), 1, "{id}");
-                assert!(look.frames[0].0.voxels.iter().any(|&v| v != AIR), "{id} has something to see");
+                // A flail's whole, then its haft, then its head on its own for the end of its chain
+                let frames = if style == Style::Whirl { 3 } else { 1 };
+                assert_eq!(look.frames.len(), frames, "{id}");
+                assert!(look.frames.iter().all(|f| f.0.voxels.iter().any(|&v| v != AIR)), "{id} has something to see");
+                if style == Style::Whirl {
+                    let lash = look.lash.as_ref().expect("a flail's chain is lashed out as a whip's is");
+                    assert_eq!(lash.head, Some(FLAIL_HEAD));
+                    // Its haft's shorter than the whole, the head smaller, and the chain hangs from
+                    // over the hand
+                    let long = |k: usize| look.frames[k].0.size[2];
+                    assert!(long(1) < long(0) && long(2) < long(0), "{id}");
+                    assert!(lash.root.z > look.grip.z, "{id}");
+                }
                 // Where what it does comes from, next to where it's held, as big as its parts make it
                 let (grip, tip) = (look.grip / look.scale, look.tip / look.scale);
                 match style {
@@ -5940,14 +8893,19 @@ mod tests {
             assert!(count >= most, "only {count} {family} {slot}s");
         }
         // The new effects have code, and come on parts of the old weapons too, and on ammo
-        for id in ["cleave", "shockwave", "splash", "pool", "miasma", "vortex", "cluster"] {
+        for id in ["cleave", "shockwave", "splash", "miasma", "vortex", "cluster"] {
             let def = library.effects.iter().position(|e| e.id == id && e.effect.is_some()).unwrap_or_else(|| panic!("there's no {id}"));
             let old = library.components.iter().filter(|c| c.effect_defs.contains(&def) && c.compatible_families.iter().any(|f| !["flail", "maul", "bombs", "rod", "censer"].contains(&f.as_str()))).count();
             assert!(old >= 2, "{id} is only on {old} parts of the old weapons");
         }
-        for id in ["splash", "vortex", "pool", "cluster", "miasma"] {
+        for id in ["splash", "vortex", "cluster", "miasma"] {
             assert!(library.ammo.iter().any(|a| a.effects.iter().any(|e| e == id)), "no ammo with {id}");
         }
+        // Pools left on the ground were taken out, the user asking for it: no part or ammo leaves
+        // them, though what they'd do is kept
+        let pool = library.effects.iter().position(|e| e.id == "pool").expect("there's no pool");
+        assert!(!library.components.iter().any(|c| c.effect_defs.contains(&pool)), "a part leaves pools");
+        assert!(!library.ammo.iter().any(|a| a.effects.iter().any(|e| e == "pool")), "ammo leaves pools");
         // Each new special attack is on a part of one of the weapons it suits
         for (special, families) in [
             (Special::Earthquake, &["maul", "hammer"][..]),
@@ -6008,7 +8966,7 @@ mod tests {
             let family = &library.families[weapon.family];
             let plain = Weapon::assemble(&library, weapon.family, weapon.parts.clone(), seed);
             assert_eq!(plain.size, weapon.size);
-            let scale = weapon.look.scale;
+            let scale = weapon.look.scale / held_size(family);
             assert!((0.8..=1.2).contains(&scale), "{} drawn {scale}", weapon.name);
             assert_eq!(scale > 1.0, weapon.size > SIZES.len() / 2, "{}", weapon.name);
             assert!(weapon.look.longest() < 2.6, "{} is {:.2} m long", weapon.name, weapon.look.longest());
@@ -6029,14 +8987,18 @@ mod tests {
         let library = Library::parse(BUILT_IN).unwrap();
         let mut seen = vec![false; library.components.len()];
         for seed in 0..90_000u32 {
-            let luck = [1.0, 3.0, 8.0][seed as usize % 3];
+            let luck = [1.0, 8.0, LUCKIEST][seed as usize % 3];
             let (_, parts) = library.roll(hash(seed), None, luck);
             for p in parts {
                 seen[p] = true;
             }
         }
-        let missing: Vec<&str> = library.components.iter().zip(&seen).filter(|(_, s)| !**s).map(|(c, _)| c.id.as_str()).collect();
+        // Tools' parts aside, as tools are only made, see src\tools.rs, and those of no weight,
+        // which are never rolled but only given, as the Worldpyre Fang
+        let weapon_part = |c: &Component| c.compatible_families.iter().any(|f| library.family(f).is_some_and(|i| library.families[i].tool.is_none()));
+        let missing: Vec<&str> = library.components.iter().zip(&seen).filter(|(c, s)| !**s && weapon_part(c) && c.weight > 0.0).map(|(c, _)| c.id.as_str()).collect();
         assert!(missing.is_empty(), "never rolled: {missing:?}");
+        assert!(library.components.iter().zip(&seen).all(|(c, s)| weapon_part(c) || !*s), "a tool's part rolled as loot");
         // The new shapes and patterns are there to be had
         for shape in ["leaf", "tapered", "serpent", "hooked", "falx", "notched", "forked", "bearded", "spike_axe", "moon_axe", "flanged", "beaked", "morning", "winged", "trident", "fork", "scythe_saw", "scythe_twin", "halberd_bill", "halberd_moon", "flail_skull", "flail_crystal", "flail_triple", "maul_drum", "maul_spiked", "maul_crystal", "ring", "serpent", "crescent", "shell", "spiked", "flat", "bone", "winged", "horned", "ribbed", "fluted", "bell", "spiral", "inlaid", "talon", "halo", "branches", "prism", "twin", "geode", "vertebrae", "keg", "skull"] {
             assert!(library.components.iter().any(|c| c.visual_profile.shape.as_deref() == Some(shape)), "no part is shaped {shape}");
@@ -6116,20 +9078,249 @@ mod tests {
         // A halo calls down from overhead, a bone cage gathers in both hands, a crook sweeps
         assert_eq!(made("staff", "focus", "ivory_halo_focus").casting, Casting::Overhead);
         assert_eq!(made("staff", "focus", "bone_cage_focus").casting, Casting::Gather);
+        // A talisman's shown, holy as it is, never raised overhead into the eye, and drawn smaller
+        // in the hand than it's made
+        assert_eq!(made("talisman", "focus", "gold_halo_icon").casting, Casting::Present);
+        let talisman = library.generate(11, library.family("talisman"), 0.0);
+        let plain = held_scale(&library.families[talisman.family], talisman.size, talisman.look.longest());
+        assert!(talisman.look.scale < plain * 0.85, "a talisman's drawn {} where its size alone has it {plain}", talisman.look.scale);
         // A matchlock's loaded heavily, a wheel-lock with a flourish
         assert_eq!(made("musket", "lock", "gilded_matchlock").knack, Knack::Heavy);
         assert_eq!(made("pistol", "lock", "copper_wheel_lock").knack, Knack::Showy);
-        // Across everything that rolls, every way of finishing, casting and drawing turns up
+        // Across everything that rolls, every way of finishing, casting and drawing turns up, the
+        // rare ones in lucky loot
         let (mut finishes, mut castings, mut knacks) = (BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
-        for seed in 0..6000 {
-            let p = library.generate(seed, None, 2.0).profile;
+        for seed in 0..30_000u32 {
+            let (family, parts) = library.roll(seed, None, [1.0, 3.0, 8.0, LUCKIEST][seed as usize % 4]);
+            let cs: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+            let p = Weapon::work_out(&library, family, &cs, roll_size(seed), seed).0;
             finishes.insert(format!("{:?}", p.finish));
             castings.insert(format!("{:?}", p.casting));
             knacks.insert(format!("{:?}", p.knack));
         }
-        assert_eq!(finishes.len(), 5, "{finishes:?}");
+        assert_eq!(finishes.len(), 6, "{finishes:?}");
         assert_eq!(castings.len(), 7, "{castings:?}");
         assert_eq!(knacks.len(), 4, "{knacks:?}");
+    }
+
+    /// Loot rolled from a seed is just what it always was, unless the seed swaps in something of
+    /// the second batch: every family and part rolled that's of the first batch is the one rolled
+    /// before there was a second, and most seeds roll the very same weapon. The second batch's
+    /// families and parts turn up as often as their weights make them, and every part of it does.
+    #[test]
+    fn second_batch_keeps_old_seeds() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        let mut before = Library::parse(BUILT_IN).unwrap();
+        before.families.retain(|f| f.batch == 0);
+        before.components.retain(|c| c.batch == 0);
+        let ids = |l: &Library, (f, parts): (usize, Vec<usize>)| (l.families[f].id.clone(), parts.iter().map(|&p| l.components[p].id.clone()).collect::<Vec<_>>());
+        let (mut same, mut new_family, mut new_parts) = (0, 0, 0);
+        let seeds = 20_000u32;
+        for seed in 0..seeds {
+            let luck = [1.0, 3.0, 8.0][seed as usize % 3];
+            let now = library.roll(seed, None, luck);
+            let was = before.roll(seed, None, luck);
+            let fresh = library.families[now.0].batch > 0;
+            let swapped: Vec<bool> = now.1.iter().map(|&p| library.components[p].batch > 0).collect();
+            let (now, was) = (ids(&library, now), ids(&before, was));
+            if fresh {
+                new_family += 1;
+                continue;
+            }
+            assert_eq!(now.0, was.0, "seed {seed} rolled another of the first batch's families");
+            for (k, s) in swapped.iter().enumerate() {
+                if !s {
+                    assert_eq!(now.1[k], was.1[k], "seed {seed} rolled another of the first batch's parts");
+                }
+            }
+            new_parts += swapped.iter().any(|&s| s) as usize;
+            same += (now == was) as usize;
+        }
+        let share = |n: usize| n as f64 / seeds as f64;
+        // The later batches' families as often as there are of them, the second's three and the
+        // third's skull focus and talisman, and a part of a later batch on about one weapon in five
+        // of the rest; with the bells gone, a little more of the rest are of families with later parts
+        let weapons = library.weapon_families();
+        let later = library.families[..weapons].iter().filter(|f| f.batch > 0).count() as f64 / weapons as f64;
+        assert!((share(new_family) - later).abs() < 0.03, "new families {:.3}, for {later:.3} of them", share(new_family));
+        assert!((0.08..0.35).contains(&share(new_parts)), "new parts {:.3}", share(new_parts));
+        // With the fifth batch's parts, a little more again are of later parts
+        assert!(share(same) > 0.58, "only {:.3} the same", share(same));
+        // Every part of the second batch turns up, in lucky loot
+        let mut seen = BTreeSet::new();
+        for seed in 0..60_000u32 {
+            let (_, parts) = library.roll(seed, None, [3.0, LUCKIEST][seed as usize % 2]);
+            seen.extend(parts.into_iter().filter(|&p| library.components[p].batch > 0));
+        }
+        let missing: Vec<&str> = library.components.iter().enumerate().filter(|(i, c)| c.batch > 0 && !seen.contains(i)).map(|(_, c)| c.id.as_str()).collect();
+        assert!(missing.is_empty(), "never rolled: {missing:?}");
+    }
+
+    /// The second batch's parts bring their powers, and the new families move each their own way:
+    /// a war fan sweeps, a katar punches, a naginata reaps and thrusts, each finishing a chain of
+    /// four, and a part with a scimitar's or a khopesh's curve finishes it cutting twice
+    #[test]
+    fn second_batch_moves_its_own_way() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        for (id, style) in [("warfan", Style::Fan), ("katar", Style::Punch), ("naginata", Style::Pole)] {
+            let f = library.family(id).unwrap();
+            assert_eq!(library.families[f].style, style);
+            assert!(Power::of(id).is_some_and(Power::own_move), "{id}'s power has a move of its own");
+            let w = library.generate(5, Some(f), 1.0);
+            assert_eq!(w.profile.style, style);
+        }
+        let katar = library.family("katar").unwrap();
+        assert_eq!(library.generate(5, Some(katar), 1.0).look.hold, Vector3::x(), "a katar's fist closes across its blade");
+        for part in ["scimitar_blade", "khopesh_blade", "sickle_dagger", "split_katar_blade"] {
+            assert_eq!(library.with_part(part, None).unwrap().profile.finish, Finish::Cross, "{part}");
+        }
+        for c in library.components.iter().filter(|c| c.power().is_some()) {
+            assert!(c.tier >= 4, "{} brings a power but isn't legendary", c.id);
+            assert!(c.power().unwrap().own_move());
+        }
+        // Saves keep parts by id, so no new part may share one
+        for c in library.components.iter().filter(|c| c.batch > 0) {
+            assert_eq!(library.components.iter().filter(|o| o.id == c.id).count(), 1, "{} is another part's id too", c.id);
+        }
+    }
+
+    /// The second batch's families take jewels, climb with their item level and take the skill
+    /// web's bonuses as the rest of their kind do, and so do the powers its parts bring
+    #[test]
+    fn second_batch_levels_as_the_rest() {
+        let library = Library::parse(BUILT_IN).unwrap();
+        for id in ["warfan", "katar", "naginata", "sword"] {
+            let f = library.family(id).unwrap();
+            let kind = library.families[f].kind;
+            assert!(crate::jewels::category_of(kind).is_some(), "{id} takes jewels");
+            let mut w = library.generate(9, Some(f), 1.0);
+            let low = w.profile.stat("physicalDamage");
+            w.set_level(30, 0);
+            assert!(w.profile.stat("physicalDamage") > low * 1.2, "{id} at item level 30");
+            let melee = kind == Kind::Melee;
+            assert!(melee, "{id} takes the melee bonuses of the skill web");
+        }
+        let mut w = library.with_part("tigerclaw_katar_blade", None).unwrap();
+        let power = w.profile.power;
+        w.set_level(30, 0);
+        assert_eq!(w.profile.power, power, "a part's power kept at another item level");
+    }
+
+    /// The third batch's families: a war pick swung, throwing knives and a chakram thrown by hand,
+    /// a prism and a runestone each casting its own way. Each has parts of every rarity for what
+    /// strikes or casts, something to see in the hand, a power of its own on right click, takes
+    /// jewels, and is sold by the merchant it should be; and what's thrown by hand takes no ammo.
+    #[test]
+    fn third_batch_is_there_to_be_had() {
+        use crate::merchants::{Trade, trade_of};
+        let library = Library::parse(BUILT_IN).unwrap();
+        for (id, kind, style, rite, trade, main) in [
+            ("warpick", Kind::Melee, Style::Pick, Rite::None, Trade::Bladesmith, "blade"),
+            ("knives", Kind::Ranged, Style::Knife, Rite::None, Trade::Bladesmith, "blade"),
+            ("chakram", Kind::Ranged, Style::Ring, Rite::None, Trade::Bladesmith, "blade"),
+            ("prism", Kind::Magic, Style::Cast, Rite::Prism, Trade::Wandwright, "focus"),
+            ("runestone", Kind::Magic, Style::Cast, Rite::Rune, Trade::Wandwright, "focus"),
+        ] {
+            let f = library.family(id).unwrap_or_else(|| panic!("no {id}"));
+            let family = &library.families[f];
+            assert_eq!((family.kind, family.style, family.batch), (kind, style, 3), "{id}");
+            assert_eq!(trade_of(&library, f), Some(trade), "{id}");
+            assert!(crate::jewels::category_of(kind).is_some(), "{id} takes jewels");
+            let power = Power::of(id).unwrap_or_else(|| panic!("{id} has no power"));
+            assert!(power.own_move(), "{id}'s power has a move of its own");
+            // Every rarity, for its blade or focus
+            for tier in 0..library.rarities.len() {
+                assert!(library.components.iter().any(|c| c.slot_type == main && c.tier == tier && c.fits(id)), "{id} has no {main} of rarity {tier}");
+            }
+            let mut parts = BTreeSet::new();
+            for seed in 0..40 {
+                let weapon = library.generate(seed, Some(f), 4.0);
+                assert_eq!((weapon.profile.style, weapon.profile.rite), (style, rite), "{id}");
+                assert!(weapon.look.frames.iter().all(|(m, _)| m.voxels.iter().any(|&v| v != AIR)), "{id} has something to see");
+                assert!(weapon.look.longest() < 1.4, "{id} is {:.2} m long", weapon.look.longest());
+                if kind == Kind::Ranged {
+                    assert!(weapon.shot().is_none(), "{id} takes ammo");
+                }
+                parts.extend(weapon.parts.iter().copied());
+            }
+            assert!(parts.len() >= 14, "{id} rolls only {} parts", parts.len());
+        }
+        // Throwing knives' Shadowstep is a rogue's at any rarity, as a priest's spear is theirs
+        let knives = library.generate(3, library.family("knives"), 0.0);
+        assert_eq!(knives.profile.power, Some(Power::Shadowstep));
+        // A chakram's held across its rim, its middle up over the hand
+        let chakram = library.generate(3, library.family("chakram"), 0.0);
+        assert_eq!(chakram.look.hold, Vector3::x());
+        assert!(chakram.look.tip.z > chakram.look.grip.z + 0.08);
+        // A war pick's beak reaches out from its haft, its point hooked down
+        let pick = library.with_part("crowbill_head", None).unwrap();
+        assert!(pick.look.tip.x > 0.15 * pick.look.scale, "{:?}", pick.look.tip);
+    }
+
+    /// Contact sheets of the second batch's parts, each on its family's reference weapon, drawn on
+    /// the processor from the side (from above for a crossbow), to look at without the game:
+    /// `WEAPON_SHEET=dir cargo test --release weapon_sheet -- --ignored`
+    #[test]
+    #[ignore]
+    fn weapon_sheet() {
+        let Ok(dir) = std::env::var("WEAPON_SHEET") else {
+            return;
+        };
+        let library = Library::parse(BUILT_IN).unwrap();
+        let palette = crate::assets::palette();
+        let px = 180usize;
+        let tile = |model: &Model, top: bool| -> Vec<[u8; 3]> {
+            let [sx, sy, sz] = model.size.map(|s| s as usize);
+            let (w, h, depth) = if top { (sx, sy, sz) } else { (sx, sz, sy) };
+            let scale = (px as f64 - 8.0) / w.max(h).max(1) as f64;
+            let mut out = vec![[30u8, 32, 38]; px * px];
+            for j in 0..px {
+                for i in 0..px {
+                    let (u, v) = ((i as f64 - (px as f64 - w as f64 * scale) * 0.5) / scale, ((px - 1 - j) as f64 - (px as f64 - h as f64 * scale) * 0.5) / scale);
+                    if u < 0.0 || v < 0.0 || u >= w as f64 || v >= h as f64 {
+                        continue;
+                    }
+                    let (u, v) = (u as usize, v as usize);
+                    for d in 0..depth {
+                        let index = if top { u + (v + (depth - 1 - d) * sy) * sx } else { u + (d + v * sy) * sx };
+                        let m = model.voxels[index];
+                        if m != AIR {
+                            let c = palette[m as usize];
+                            let shade = 1.0 - 0.45 * d as f64 / depth.max(1) as f64;
+                            out[i + j * px] = [0, 1, 2].map(|k| (c[k] as f64 * shade) as u8);
+                            break;
+                        }
+                    }
+                }
+            }
+            out
+        };
+        let mut groups: BTreeMap<String, Vec<(String, Vec<[u8; 3]>)>> = BTreeMap::new();
+        for (c, comp) in library.components.iter().enumerate().filter(|(_, c)| c.batch() > 0) {
+            for fam in comp.compatible_families.iter().take(if comp.compatible_families.len() > 4 { 2 } else { 4 }) {
+                let f = library.family(fam).unwrap();
+                let s = library.families[f].slots.iter().position(|x| *x == comp.slot_type).unwrap();
+                let mut parts = library.reference_parts(f);
+                parts[s] = c;
+                let look = look_of(&library, f, &parts);
+                let top = library.families[f].build.crossbow();
+                let frame = if library.families[f].kind == Kind::Ranged && library.families[f].build == Build::None { 2 } else { 0 };
+                groups.entry(format!("{}_{}", comp.slot_type, if comp.compatible_families.len() > 4 { "shared" } else { fam })).or_default().push((format!("{fam}: {}", comp.id), tile(&look.frames[frame.min(look.frames.len() - 1)].0, top)));
+            }
+        }
+        std::fs::create_dir_all(&dir).unwrap();
+        for (name, tiles) in groups {
+            let columns = tiles.len().min(6);
+            let rows = tiles.len().div_ceil(columns);
+            let mut image = image::RgbImage::new((columns * px) as u32, (rows * px) as u32);
+            for (k, (_, t)) in tiles.iter().enumerate() {
+                for (q, pixel) in t.iter().enumerate() {
+                    image.put_pixel(((k % columns) * px + q % px) as u32, ((k / columns) * px + q / px) as u32, image::Rgb(*pixel));
+                }
+            }
+            image.save(std::path::Path::new(&dir).join(format!("{name}.png"))).unwrap();
+            println!("{name}: {}", tiles.iter().map(|t| t.0.clone()).collect::<Vec<_>>().join(", "));
+        }
     }
 
     #[test]
@@ -6306,6 +9497,75 @@ mod tests {
             Weapon::work_out(&library, maul, &with, 2, 5).0.stat("attackSpeed")
         };
         assert!(speed("stone_maul_head") < speed("iron_maul_head"));
+    }
+
+    /// What the weapons of family `f` do on the whole at each grade, rolled with luck from little
+    /// to a lot so every grade turns up: how hard one blow or shot hits, and that times how many a
+    /// second, at item level 1, for grades rolled at least `least` times
+    fn by_grade(library: &Library, f: usize, least: usize) -> BTreeMap<usize, (f64, f64)> {
+        let speed = |p: &Profile| ["attackSpeed", "drawSpeed", "castSpeed", "reloadSpeed"].iter().map(|k| p.stat(k)).find(|&v| v > 0.0).unwrap_or(0.0);
+        let mut rolled: BTreeMap<usize, Vec<(f64, f64)>> = BTreeMap::new();
+        for seed in 0..1600u32 {
+            let seed = seed * 7 + 1;
+            let (_, parts) = library.roll(seed, Some(f), [0.3, 1.0, 3.0, 8.0][seed as usize % 4]);
+            let cs: Vec<&Component> = parts.iter().map(|&p| &library.components[p]).collect();
+            let (p, _, grade) = Weapon::work_out(library, f, &cs, roll_size(seed), seed);
+            rolled.entry(grade).or_default().push((damage(&p), damage(&p) * speed(&p)));
+        }
+        rolled
+            .into_iter()
+            .filter(|(_, v)| v.len() >= least)
+            .map(|(g, v)| {
+                let n = v.len() as f64;
+                (g, (v.iter().map(|x| x.0).sum::<f64>() / n, v.iter().map(|x| x.1).sum::<f64>() / n))
+            })
+            .collect()
+    }
+
+    /// Even a common musket, blunderbuss or hand cannon hits hard, its one shot after a long load
+    /// worth the wait: through the normal world's levels, a common musket fells an ordinary monster
+    /// of its own level in three shots at most, a blunderbuss's whole spread in three too, and a
+    /// hand cannon's shell, its burst and all, in two. The rarer ones still hit harder, grade by
+    /// grade, and for all that, no powder gun does more a second than the best of the rest of the
+    /// weapons of its grade, the long load being what it pays for it.
+    #[test]
+    fn common_powder_guns_hit_hard() {
+        use crate::levels;
+        let library = Library::parse(BUILT_IN).unwrap();
+        let explosive = library.effects.iter().find(|e| e.id == "explosive").and_then(|e| e.params.get("power").copied()).unwrap();
+        // Each with how much its shot does all told for its damage: a blunderbuss's pellets all
+        // striking, as combat.rs's PELLETS_SHARE has it, and a shell bursting in what it struck
+        let guns = [("musket", 1.0, 3.0), ("blunderbuss", 1.25, 3.0), ("handcannon", 1.0 + explosive, 2.0)];
+        let mut best_of_the_rest: BTreeMap<usize, (f64, &str)> = BTreeMap::new();
+        for (f, fam) in library.families.iter().enumerate() {
+            if fam.tool.is_some() || fam.style == Style::Powder {
+                continue;
+            }
+            for (g, (_, dps)) in by_grade(&library, f, 20) {
+                let best = best_of_the_rest.entry(g).or_insert((0.0, ""));
+                if dps > best.0 {
+                    *best = (dps, &fam.id);
+                }
+            }
+        }
+        for (id, share, most) in guns {
+            let f = library.family(id).unwrap();
+            let grades = by_grade(&library, f, 20);
+            let (common, _) = grades[&0];
+            for level in 1..=levels::BANDS[0].hi {
+                let shot = common * share * levels::weapon_power(level);
+                let shots = levels::MONSTER_HEALTH * levels::toughness(level) / shot;
+                assert!(shots <= most, "a common {id} at level {level} takes {shots:.2} shots to fell an ordinary monster of its level, {shot:.0} a shot");
+            }
+            let mut last = 0.0;
+            for (g, (hit, dps)) in grades {
+                let rarity = &library.rarities[g].id;
+                assert!(hit > last * 1.02, "a {rarity} {id} hits {hit:.1}, no harder than the grade under it, {last:.1}");
+                last = hit;
+                let (best, of) = best_of_the_rest[&g];
+                assert!(dps * share < best, "a {rarity} {id} does {:.1} a second, more than any {rarity} {of}, {best:.1}", dps * share);
+            }
+        }
     }
 
     /// What each family's weapons do, made of its commonest parts, its lightest and heaviest

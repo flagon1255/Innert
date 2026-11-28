@@ -251,6 +251,22 @@ impl Terrain {
         (objects, rects, shafts)
     }
 
+    /// Where the fallen cities reaching into rectangle `r` are, each x0, y0, x1, y1 in meters, as
+    /// the ravines that give way to them see them, see ravines.rs
+    pub(super) fn cities_near(&self, r: [f32; 4], cache: &RiverCache) -> Vec<[f32; 4]> {
+        let first = [0, 1].map(|i| ((r[i] - CITY_REACH) / CITY_CELL).floor() as i32);
+        let last = [0, 1].map(|i| ((r[i + 2] + CITY_REACH) / CITY_CELL).floor() as i32);
+        let mut found = Vec::new();
+        for cy in first[1]..=last[1] {
+            for cx in first[0]..=last[0] {
+                if let Some(city) = self.undercity_in(cx, cy, cache).filter(|c| overlaps(c.bounds, r, 0.0)) {
+                    found.push(city.bounds);
+                }
+            }
+        }
+        found
+    }
+
     /// The nearest fallen city to `near` within a few kilometers, for trying them out
     #[allow(dead_code)]
     pub fn nearest_undercity(&self, near: [f32; 2]) -> Option<Sunken> {
@@ -1603,6 +1619,14 @@ impl Terrain {
         for _ in 0..6 {
             let q = [rng.range(u0 + 1.5, u1 - 5.0), rng.range(v0 + 1.5, v1 - 1.5)];
             bones(&mut b.solids, &at, q, f, rng);
+        }
+        // Plinths either side of the way up to its doorway, a gargoyle asleep on each, see
+        // src\gargoyles.rs
+        for side in [-1.0f32, 1.0] {
+            let q = [u0 - 2.6, side * 5.4];
+            b.solids.push(b.block(around(q, [0.6, 0.6]), [f - 0.3, f + 1.6], c.stone.temple, Pattern::Bricks));
+            b.solids.push(b.block(around(q, [0.75, 0.75]), [f + 1.6, f + 1.85], c.stone.trim, Pattern::Plain));
+            self.site(features, "gargoyle perch", at.point(q[0], q[1], f + 1.85), at.dir([-1.0, 0.0]));
         }
         // The lord's hoard before the altar, and the lord in the middle of the hall
         let hoard = [dais[0] + 0.9, 0.0];

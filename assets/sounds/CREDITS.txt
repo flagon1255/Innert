@@ -66,6 +66,11 @@ packs say CC0 on their pages and in their own licence files.
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: bite_3.ogg
 
+"Cannon Fires, Take 3, Quarter Speed, Debris by CHallSmith" by CHallSmith
+  https://freesound.org/people/CHallSmith/sounds/870746/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cannon_2.ogg
+
 "bones.wav by CaptainYulef" by CaptainYulef
   https://freesound.org/people/CaptainYulef/sounds/641236/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
@@ -75,6 +80,11 @@ packs say CC0 on their pages and in their own licence files.
   https://freesound.org/people/Christopherderp/sounds/364531/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: clang_4.ogg
+
+"Shotgun 02.wav by Clueless79" by Clueless79
+  https://freesound.org/people/Clueless79/sounds/544676/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: blunderbuss_1.ogg, blunderbuss_2.ogg
 
 "Leather Stress 1 (Short) by Crinkem" by Crinkem
   https://freesound.org/people/Crinkem/sounds/501015/
@@ -95,6 +105,11 @@ packs say CC0 on their pages and in their own licence files.
   https://freesound.org/people/Danjocross/sounds/507466/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: swing_3.ogg, dodge_3.ogg
+
+"Explosion 1.wav by Deganoth" by Deganoth
+  https://freesound.org/people/Deganoth/sounds/165911/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: shellburst_1.ogg, shellburst_2.ogg, shellburst_3.ogg
 
 "Fast pain grunt, male by DeqstersLab" by DeqstersLab
   https://freesound.org/people/DeqstersLab/sounds/790832/
@@ -146,6 +161,11 @@ packs say CC0 on their pages and in their own licence files.
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: ratchet_1.ogg
 
+"GUNArtl_69thFieldArtilleryGun01_InMotionAudio_FREESampleSunday.wav by InMotionAudio" by InMotionAudio
+  https://freesound.org/people/InMotionAudio/sounds/702245/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cannon_1.ogg, cannon_2.ogg, cannon_3.ogg
+
 "Pig - Grunt 2 - 96kHz.wav by JarredGibb" by JarredGibb
   https://freesound.org/people/JarredGibb/sounds/233170/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
@@ -159,7 +179,7 @@ packs say CC0 on their pages and in their own licence files.
 "whip and crack sound by JayRom01" by JayRom01
   https://freesound.org/people/JayRom01/sounds/615761/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
-  Used in: crack_2.ogg, boom_2.ogg
+  Used in: crack_2.ogg, boom_2.ogg (crack_2.ogg is also the flail's whip crack)
 
 "Fire Ignite.wav by Jo000" by Jo000
   https://freesound.org/people/Jo000/sounds/687010/
@@ -211,10 +231,10 @@ packs say CC0 on their pages and in their own licence files.
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: heavy_swing_4.ogg
 
-"Musket 2 Shots.mp3 by Kmarz1" by Kmarz1
-  https://freesound.org/people/Kmarz1/sounds/593908/
+"cannon.mp3 by Kneeling" by Kneeling
+  https://freesound.org/people/Kneeling/sounds/448002/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
-  Used in: gunshot_3.ogg
+  Used in: cannon_3.ogg
 
 "Bloody Blade 2.wav by Kreastricon62" by Kreastricon62
   https://freesound.org/people/Kreastricon62/sounds/323526/
@@ -230,6 +250,11 @@ packs say CC0 on their pages and in their own licence files.
   https://freesound.org/people/LeMudCrab/sounds/163453/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: release_1.ogg, snap_1.ogg, volley_1.ogg
+
+"Pistol Shot by LeMudCrab" by LeMudCrab
+  https://freesound.org/people/LeMudCrab/sounds/163456/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: pistol_1.ogg, pistol_2.ogg
 
 "Bird, Thrush Nightingale 03.wav by LilMati" by LilMati
   https://freesound.org/people/LilMati/sounds/365664/
@@ -404,7 +429,7 @@ packs say CC0 on their pages and in their own licence files.
 "Whip Crack.m4a by SciFiSounds" by SciFiSounds
   https://freesound.org/people/SciFiSounds/sounds/529925/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
-  Used in: crack_1.ogg, boom_1.ogg, lasso_1.ogg
+  Used in: crack_1.ogg, boom_1.ogg, lasso_1.ogg (crack_1.ogg is also the flail's whip crack)
 
 "FUSE.wav by Seidolon" by Seidolon
   https://freesound.org/people/Seidolon/sounds/372186/
@@ -441,6 +466,11 @@ packs say CC0 on their pages and in their own licence files.
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: swing_6.ogg
 
+"Shotgun_shots_at_different_cartridge_loads_1 by TheGreenEyedGhost" by TheGreenEyedGhost
+  https://freesound.org/people/TheGreenEyedGhost/sounds/707794/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: blunderbuss_1.ogg, blunderbuss_2.ogg, blunderbuss_3.ogg
+
 "running by Topschool" by Topschool
   https://freesound.org/people/Topschool/sounds/443218/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
@@ -456,15 +486,15 @@ packs say CC0 on their pages and in their own licence files.
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: hurt_4.ogg
 
+"large explosion 1 by V-ktor" by V-ktor
+  https://freesound.org/people/V-ktor/sounds/482993/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: shellburst_1.ogg, shellburst_2.ogg, shellburst_3.ogg
+
 "sandfall5.wav by Wagna" by Wagna
   https://freesound.org/people/Wagna/sounds/326304/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: powder_2.ogg
-
-"Musket Explosion by Willlewis" by Willlewis
-  https://freesound.org/people/Willlewis/sounds/244345/
-  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
-  Used in: gunshot_1.ogg
 
 "Sand slidding out of shovel slowly.wav by XfiXy8" by XfiXy8
   https://freesound.org/people/XfiXy8/sounds/467301/
@@ -491,11 +521,6 @@ packs say CC0 on their pages and in their own licence files.
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: flap_3.ogg
 
-"war horn.wav by adharca" by adharca
-  https://freesound.org/people/adharca/sounds/539956/
-  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
-  Used in: fanfare_2.ogg
-
 "Single Bird Chirp 2 by alegemaate" by alegemaate
   https://freesound.org/people/alegemaate/sounds/233254/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
@@ -510,6 +535,11 @@ packs say CC0 on their pages and in their own licence files.
   https://freesound.org/people/alegemaate/sounds/364690/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: slam_2.ogg
+
+"Musket shots.mp3 by alppdcjr12" by alppdcjr12
+  https://freesound.org/people/alppdcjr12/sounds/662875/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: musket_3.ogg, blunderbuss_3.ogg
 
 "Wing Flap (Flag Flapping) 5a by ani_music" by ani_music
   https://freesound.org/people/ani_music/sounds/244982/
@@ -546,6 +576,11 @@ packs say CC0 on their pages and in their own licence files.
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: heavy_swing_2.ogg
 
+"old musket bang.wav by bruno.auzet" by bruno.auzet
+  https://freesound.org/people/bruno.auzet/sounds/538795/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: musket_3.ogg, pistol_3.ogg
+
 "ricochet.mp3 by cedarstudios" by cedarstudios
   https://freesound.org/people/cedarstudios/sounds/148840/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
@@ -560,6 +595,21 @@ packs say CC0 on their pages and in their own licence files.
   https://freesound.org/people/coffeemakessounds/sounds/849638/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: step_water_4.ogg
+
+"S16-27 Black powder explosion; slow; 3 versions.wav by craigsmith" by craigsmith
+  https://freesound.org/people/craigsmith/sounds/674878/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: musket_2.ogg, blunderbuss_1.ogg, blunderbuss_2.ogg, blunderbuss_3.ogg, shellburst_1.ogg, shellburst_2.ogg, shellburst_3.ogg
+
+"S20-12 Distant cannon fire.wav by craigsmith" by craigsmith
+  https://freesound.org/people/craigsmith/sounds/675613/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cannon_1.ogg, cannon_2.ogg, cannon_3.ogg, shellburst_1.ogg, shellburst_2.ogg, shellburst_3.ogg
+
+"S20-04 Flintlock rifle fire.wav by craigsmith" by craigsmith
+  https://freesound.org/people/craigsmith/sounds/675618/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: musket_1.ogg, musket_2.ogg, musket_3.ogg
 
 "Skeleton bones (game).wav by cribbler" by cribbler
   https://freesound.org/people/cribbler/sounds/381859/
@@ -615,11 +665,6 @@ packs say CC0 on their pages and in their own licence files.
   https://freesound.org/people/erkanozan/sounds/51745/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: cast_poison_1.ogg, bubble_2.ogg
-
-"musket.wav by fennelliott" by fennelliott
-  https://freesound.org/people/fennelliott/sounds/347647/
-  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
-  Used in: gunshot_2.ogg
 
 "Soft Wind by florianreichelt" by florianreichelt
   https://freesound.org/people/florianreichelt/sounds/459977/
@@ -696,11 +741,6 @@ packs say CC0 on their pages and in their own licence files.
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: croak_3.ogg
 
-"Battle_horn_1.wav by kirmm" by kirmm
-  https://freesound.org/people/kirmm/sounds/392180/
-  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
-  Used in: fanfare_1.ogg
-
 "branch breaking forest twig snap crunch.wav by kyles" by kyles
   https://freesound.org/people/kyles/sounds/452570/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
@@ -776,6 +816,21 @@ packs say CC0 on their pages and in their own licence files.
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: cast_storm_2.ogg, zap_1.ogg
 
+"9mm pistol shot by michorvath" by michorvath
+  https://freesound.org/people/michorvath/sounds/427592/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: pistol_1.ogg, pistol_3.ogg
+
+"22 magnum pistol shot by michorvath" by michorvath
+  https://freesound.org/people/michorvath/sounds/427594/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: pistol_2.ogg
+
+"Musket Shot.wav by mlsulli" by mlsulli
+  https://freesound.org/people/mlsulli/sounds/234869/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: musket_1.ogg, musket_2.ogg
+
 "Arrow Flyby by modusmogulus" by modusmogulus
   https://freesound.org/people/modusmogulus/sounds/789389/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
@@ -825,6 +880,11 @@ packs say CC0 on their pages and in their own licence files.
   https://freesound.org/people/qubodup/sounds/184936/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: rumble_1.ogg, rumble_2.ogg
+
+"Cannon Shot by qubodup" by qubodup
+  https://freesound.org/people/qubodup/sounds/187767/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cannon_1.ogg, cannon_2.ogg
 
 "Sword Hit by qubodup" by qubodup
   https://freesound.org/people/qubodup/sounds/442769/
@@ -890,6 +950,16 @@ packs say CC0 on their pages and in their own licence files.
   https://freesound.org/people/qubodup/sounds/841350/
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: chitter_1.ogg, chitter_2.ogg, chitter_3.ogg
+
+"Cannon Fire by raphavpires" by raphavpires
+  https://freesound.org/people/raphavpires/sounds/867028/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cannon_3.ogg
+
+"Large Cannon Fire by raphavpires" by raphavpires
+  https://freesound.org/people/raphavpires/sounds/867030/
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: cannon_1.ogg
 
 "Bubbles 001.wav by ristooooo1" by ristooooo1
   https://freesound.org/people/ristooooo1/sounds/539823/
@@ -1235,4 +1305,166 @@ creak3.ogg from Kenney's "RPG Audio" pack
   https://kenney.nl/assets/rpg-audio
   Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
   Used in: creak_3.ogg
+
+For building and gathering, and for doors, see src\bases.rs and src\gather.rs:
+
+chop.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chop_1.ogg, chop_2.ogg, chop_3.ogg
+
+creak1.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: splinter_1.ogg
+
+creak2.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_1.ogg
+
+creak3.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_2.ogg, splinter_2.ogg
+
+doorClose_1.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: door_close_1.ogg
+
+doorClose_2.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: door_close_2.ogg
+
+doorClose_4.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: door_close_3.ogg
+
+doorOpen_1.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: door_open_1.ogg
+
+doorOpen_2.ogg from Kenney's "RPG Audio" pack
+  https://kenney.nl/assets/rpg-audio
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: door_open_2.ogg
+
+footstep_grass_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: dig_1.ogg
+
+footstep_grass_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: dig_2.ogg
+
+impactGeneric_light_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: place_2.ogg
+
+impactMining_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: mine_1.ogg
+
+impactMining_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: mine_2.ogg
+
+impactMining_004.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: mine_3.ogg
+
+impactPlank_medium_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: place_1.ogg, bang_3.ogg
+
+impactPlank_medium_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_1.ogg, splinter_1.ogg
+
+impactPlank_medium_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bang_1.ogg, splinter_2.ogg
+
+impactPlank_medium_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_2.ogg, splinter_1.ogg
+
+impactPlank_medium_004.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: place_3.ogg, splinter_2.ogg
+
+impactPunch_heavy_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: bang_2.ogg
+
+impactSoft_heavy_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: dig_1.ogg
+
+impactSoft_heavy_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: dig_2.ogg
+
+impactWood_heavy_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_1.ogg, bang_1.ogg
+
+impactWood_heavy_001.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chop_2.ogg, splinter_1.ogg
+
+impactWood_heavy_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_2.ogg, bang_2.ogg
+
+impactWood_heavy_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_1.ogg, splinter_2.ogg
+
+impactWood_heavy_004.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: timber_2.ogg, bang_3.ogg
+
+impactWood_light_000.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: splinter_1.ogg
+
+impactWood_light_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: place_2.ogg
+
+impactWood_light_003.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: splinter_2.ogg
+
+impactWood_medium_002.ogg from Kenney's "Impact Sounds" pack
+  https://kenney.nl/assets/impact-sounds
+  Licence: CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/)
+  Used in: chop_3.ogg
 

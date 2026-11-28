@@ -1,0 +1,29 @@
+{
+  "what": "Bandit Warlord, forearm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    12
+  ],
+  "pivot": [
+    2.04,
+    2.04,
+    10.2
+  ],
+  "anchor": [
+    0.028749999999999998,
+    0.028749999999999998,
+    -0.6375
+  ],
+  "origin": [
+    -2,
+    -2,
+    -10
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1716,
+    "ef7bed1211c14eb3"
+  ]
+}

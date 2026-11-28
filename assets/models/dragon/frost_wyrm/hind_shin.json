@@ -1,0 +1,29 @@
+{
+  "what": "Frost Wyrm, hind shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    5,
+    16
+  ],
+  "pivot": [
+    2.6664722520956277,
+    2.01168,
+    13.814016079242206
+  ],
+  "anchor": [
+    0.11459548424402327,
+    0.03051999999999999,
+    -0.8633760049526379
+  ],
+  "origin": [
+    -3,
+    -2,
+    -14
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1692,
+    "47010b066f473be5"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Harridan, wing right inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    15,
+    18,
+    4
+  ],
+  "pivot": [
+    10.6362797077551,
+    16.32,
+    1.5199999999999998
+  ],
+  "anchor": [
+    -0.1960174817346938,
+    -0.4575,
+    -0.09499999999999999
+  ],
+  "origin": [
+    -11,
+    -16,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2413,
+    "3b2d5d935bf479b6"
+  ]
+}

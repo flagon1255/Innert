@@ -1,0 +1,29 @@
+{
+  "what": "Venom Drake, hind thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    7,
+    15
+  ],
+  "pivot": [
+    3.0451200000000003,
+    3.0451200000000003,
+    11.781120000000001
+  ],
+  "anchor": [
+    0.028429999999999983,
+    0.028429999999999983,
+    -0.7363200000000001
+  ],
+  "origin": [
+    -3,
+    -3,
+    -12
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2412,
+    "1086e4fdab63fc9a"
+  ]
+}

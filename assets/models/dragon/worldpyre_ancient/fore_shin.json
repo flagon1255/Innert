@@ -1,0 +1,29 @@
+{
+  "what": "Worldpyre Ancient, fore shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    32,
+    17,
+    52
+  ],
+  "pivot": [
+    10.687073348772614,
+    8.24,
+    44.04865086308963
+  ],
+  "anchor": [
+    0.3320579157017116,
+    0.016249999999999987,
+    -2.7530406789431017
+  ],
+  "origin": [
+    -11,
+    -8,
+    -44
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    31017,
+    "3eddc9f8b618f528"
+  ]
+}

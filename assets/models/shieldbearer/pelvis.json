@@ -1,0 +1,29 @@
+{
+  "what": "Bandit shieldbearer, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    5,
+    3
+  ],
+  "pivot": [
+    1.5,
+    2.5,
+    1.603200000000001
+  ],
+  "anchor": [
+    0.0,
+    0.0,
+    -0.10020000000000007
+  ],
+  "origin": [
+    -2,
+    -3,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1338,
+    "27b9e4b2e457d5cb"
+  ]
+}

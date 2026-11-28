@@ -124,6 +124,11 @@ impl Skips {
         }
     }
 
+    /// Whether the skips are being worked out again somewhere
+    pub fn busy(&self) -> bool {
+        !self.jobs.is_empty()
+    }
+
     /// The world's built afresh, or changed all over: what was still to be done is let go of
     pub fn forget(&mut self) {
         self.jobs.clear();

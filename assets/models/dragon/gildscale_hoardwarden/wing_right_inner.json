@@ -1,0 +1,29 @@
+{
+  "what": "Gildscale Hoardwarden, wing right inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    53,
+    57,
+    8
+  ],
+  "pivot": [
+    40.512755626400626,
+    53.52,
+    3.2640000000000002
+  ],
+  "anchor": [
+    -0.8757972266500391,
+    -1.5637500000000002,
+    -0.20400000000000001
+  ],
+  "origin": [
+    -41,
+    -54,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    25219,
+    "d689254c3415a741"
+  ]
+}

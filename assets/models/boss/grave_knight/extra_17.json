@@ -1,0 +1,29 @@
+{
+  "what": "Grave Knight, extra 17",
+  "voxels_per_meter": 16.0,
+  "size": [
+    53,
+    46,
+    27
+  ],
+  "pivot": [
+    24.272564461097115,
+    23.281673872297027,
+    1.936
+  ],
+  "anchor": [
+    0.1392147211814303,
+    -0.017604617018564195,
+    -0.121
+  ],
+  "origin": [
+    -24,
+    -23,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5064,
+    "5753709c19d40e96"
+  ]
+}

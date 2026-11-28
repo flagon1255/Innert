@@ -1,0 +1,29 @@
+{
+  "what": "Frost Wyrm, hind thigh",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    5,
+    14
+  ],
+  "pivot": [
+    2.38464,
+    2.38464,
+    11.45664
+  ],
+  "anchor": [
+    0.038459999999999994,
+    0.007209999999999994,
+    -0.71604
+  ],
+  "origin": [
+    -2,
+    -2,
+    -11
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1948,
+    "7ec8069e17ffbc76"
+  ]
+}

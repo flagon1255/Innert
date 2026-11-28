@@ -1,0 +1,37 @@
+{
+  "what": "Hammer, hilt: Wrapped Grip",
+  "voxels_per_meter": 192.0,
+  "size": [
+    12,
+    8,
+    126
+  ],
+  "pivot": [
+    6.112000000000002,
+    4.054400000000001,
+    1.121464860145224
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -4,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2576
+    ],
+    "tip": [
+      0.13,
+      0.0,
+      0.7315999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    16916,
+    "a5967b78d9903e6b"
+  ]
+}

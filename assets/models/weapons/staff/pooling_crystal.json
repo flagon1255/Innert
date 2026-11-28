@@ -1,0 +1,37 @@
+{
+  "what": "Staff, crystal: Pooling Crystal",
+  "voxels_per_meter": 150.0,
+  "size": [
+    10,
+    10,
+    25
+  ],
+  "pivot": [
+    -5.930000000000001,
+    4.8475,
+    -237.71
+  ],
+  "anchor": null,
+  "origin": [
+    6,
+    -5,
+    238
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.775
+    ],
+    "tip": [
+      0.07,
+      0.0,
+      1.67
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    4850,
+    "737ea883ee3b7127"
+  ]
+}

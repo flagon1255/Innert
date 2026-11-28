@@ -1,0 +1,29 @@
+{
+  "what": "Jeweller, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    9,
+    23
+  ],
+  "pivot": [
+    7.4013333333333335,
+    4.5,
+    14.272
+  ],
+  "anchor": [
+    -0.08758333333333335,
+    0.0,
+    -0.892
+  ],
+  "origin": [
+    -7,
+    -5,
+    -14
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    5182,
+    "0e0e03dc331fb5e2"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Venom Drake, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    33,
+    19,
+    21
+  ],
+  "pivot": [
+    16.64,
+    9.389119999999998,
+    8.8816
+  ],
+  "anchor": [
+    -0.008750000000000036,
+    0.006930000000000103,
+    -0.5551
+  ],
+  "origin": [
+    -17,
+    -9,
+    -9
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    27280,
+    "be6a6b06aca45688"
+  ]
+}

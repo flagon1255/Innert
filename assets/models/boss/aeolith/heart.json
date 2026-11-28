@@ -1,0 +1,29 @@
+{
+  "what": "Aeolith, heart",
+  "voxels_per_meter": 16.0,
+  "size": [
+    20,
+    20,
+    23
+  ],
+  "pivot": [
+    9.6,
+    9.6,
+    11.008
+  ],
+  "anchor": [
+    0.025000000000000022,
+    0.025000000000000022,
+    -0.688
+  ],
+  "origin": [
+    -10,
+    -10,
+    -11
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    9035,
+    "cec539178f490c0c"
+  ]
+}

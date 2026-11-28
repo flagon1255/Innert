@@ -1,0 +1,29 @@
+{
+  "what": "Slagwright, extra 17",
+  "voxels_per_meter": 16.0,
+  "size": [
+    16,
+    16,
+    19
+  ],
+  "pivot": [
+    7.68,
+    7.68,
+    6.144
+  ],
+  "anchor": [
+    0.020000000000000018,
+    0.020000000000000018,
+    -0.384
+  ],
+  "origin": [
+    -8,
+    -8,
+    -6
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    7599,
+    "94613180d8a0808c"
+  ]
+}

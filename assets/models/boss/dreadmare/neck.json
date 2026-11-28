@@ -1,0 +1,29 @@
+{
+  "what": "Dreadmare, neck",
+  "voxels_per_meter": 16.0,
+  "size": [
+    23,
+    10,
+    25
+  ],
+  "pivot": [
+    8.12,
+    4.64,
+    4.640000000000001
+  ],
+  "anchor": [
+    0.21125000000000005,
+    0.02250000000000002,
+    -0.29000000000000004
+  ],
+  "origin": [
+    -8,
+    -5,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5895,
+    "beae78c0d56a3bef"
+  ]
+}

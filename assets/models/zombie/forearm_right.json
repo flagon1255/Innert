@@ -1,0 +1,29 @@
+{
+  "what": "Zombie, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    3,
+    2
+  ],
+  "pivot": [
+    1.3999999999999995,
+    1.3399999999999999,
+    1.1999999999999993
+  ],
+  "anchor": [
+    0.13125000000000003,
+    0.010000000000000009,
+    -0.07499999999999996
+  ],
+  "origin": [
+    -1,
+    -1,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1327,
+    "b69d57fc37846eb5"
+  ]
+}

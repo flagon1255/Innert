@@ -19,6 +19,7 @@ use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError, channel};
 use std::sync::{Condvar, Mutex};
 
+use crate::loading::Step;
 use crate::worldgen::{Installing, PagePool, PieceFeatures, Releasing, Strip};
 
 use super::*;
@@ -43,6 +44,8 @@ const STAGE_PIECES: usize = 12;
 const STAGE_MS: f64 = 0.35;
 /// How long the screen takes to go dark, or light again, round moving the world on all at once
 const FADE_SECONDS: f32 = 0.25;
+/// And how long the loading screen takes to fade away once it's done, see Teleport::board
+const BOARD_FADE_SECONDS: f32 = 0.6;
 /// Going faster than this, in meters a second, the next strip's started on as soon as the world's
 /// moved on, rather than once the camera's past the middle of the strip it's in: flying, not
 /// walking, where what's behind is kept as long as can be for turning round
@@ -52,6 +55,13 @@ const FAST_M_S: f64 = 10.0;
 /// and its edge is still well past where things fade into the sky
 const SLOW_FROM_STRIPS: f64 = 1.0;
 const STOP_AT_STRIPS: f64 = 2.5;
+/// How much of where things fade into the sky the edge of the world can come within and still not
+/// be seen, as screenshot runs count it, see perf::PerfLog::cut: within a strip of that, what's
+/// built in the background is hurried, see worldgen::hurry()
+const HURRY_FADE: f64 = 0.7;
+/// A strip's hurried, too, once it's been this long on its way: on four cores one takes a second
+/// or so to build and send over, but once one took four, its first step held up three
+const HURRY_AFTER: Duration = Duration::from_secs(2);
 
 /// What a part of the room beyond the world, each way, holds
 #[derive(Default)]
@@ -121,6 +131,7 @@ enum Target {
     WaterGround,
     WaterDepth,
     WaterFlux,
+    WaterRest,
 }
 
 /// A piece of a strip on its way to the GPU: the host memory it's in, how much of it, and where it
@@ -153,6 +164,8 @@ struct Job {
     /// it's in
     craters: usize,
     stains: usize,
+    /// How far through Bases::version what's built and dug it's built with goes, see bases.rs
+    bases: u64,
 }
 
 enum FromJob {
@@ -164,6 +177,9 @@ enum FromJob {
 /// A strip that's been built and sent over, and what's needed to put it in
 struct Arrival {
     strip: Strip,
+    /// For a world built afresh, see Teleport, the strip put into a world of its own on the job's
+    /// thread, which put in on the game's held it up for a tenth of a second or more
+    world: Option<World>,
     features: PieceFeatures,
     /// Where the rivers flow into the world once it's moved on to the strip, see window_springs()
     springs: Vec<[f32; 4]>,
@@ -181,6 +197,7 @@ struct Pending {
     started: Instant,
     craters: usize,
     stains: usize,
+    bases: u64,
     /// Whether all its layers are in
     done: bool,
     /// Whether it's only just arrived, this frame
@@ -197,6 +214,7 @@ struct Arrived {
     springs: Vec<[f32; 4]>,
     craters: usize,
     stains: usize,
+    bases: u64,
 }
 
 /// How strips have been coming in, for perf logs
@@ -258,6 +276,9 @@ pub struct Teleport {
     pub dark: f32,
     lighter: bool,
     last: Instant,
+    /// Going on with a game somewhere the world wasn't, as a game's started or a realm's gone to:
+    /// the loading screen shown over the dark meanwhile, see loading::Board
+    pub board: Option<crate::loading::Board>,
 }
 
 impl Stream {
@@ -453,6 +474,27 @@ fn send(staging: &Staging, to_main: &Sender<FromJob>, strip: &Strip, room: [u32;
         {
             return false;
         }
+        // Where its water was laid, four columns to a word, see water.rs: strips and the room being
+        // whole numbers of them across, the columns going round do so between words
+        let rest = |i: usize| crate::water::rest_byte(at(ground, i), at(surface, i));
+        for &((kx, ix, nx), (ky, iy, ny)) in &column_rects {
+            debug_assert!(kx % 4 == 0 && ix % 4 == 0 && nx % 4 == 0);
+            let row = (nx / 4) as usize;
+            let fill = |piece: &mut [u32], first: usize| {
+                for (k, word) in piece.iter_mut().enumerate() {
+                    let (x, y) = ((first + k) % row, (first + k) / row);
+                    let i = ix as usize + 4 * x + (iy as usize + y) * sx as usize;
+                    *word = u32::from_le_bytes([rest(i), rest(i + 1), rest(i + 2), rest(i + 3)]);
+                }
+            };
+            let copies = |first: usize, n: usize| {
+                let (y, rows) = ((first / row) as u32, (n / row) as u32);
+                (vec![BufferImageCopy { image_offset: [kx / 4, ky + y, 0], image_extent: [nx / 4, rows, 1], ..Default::default() }], Vec::new())
+            };
+            if !stage(staging, to_main, row * ny as usize, row, Target::WaterRest, fill, copies) {
+                return false;
+            }
+        }
     }
     true
 }
@@ -469,18 +511,30 @@ struct JobInput {
     world_size: [u32; 2],
     craters: Vec<([f64; 3], f64)>,
     stains: Vec<([f64; 3], f64, u8, bool)>,
+    /// What's been built and dug, see bases.rs
+    edits: crate::bases::Edits,
     pool: Arc<Mutex<PagePool>>,
     staging: Arc<Staging>,
     /// How many columns there's room for each way, see World::phys, and whether there's water
     room: [u32; 2],
     water: bool,
+    /// For the world built afresh, see Teleport: how big it is, its strips and its sea, to put it
+    /// together on the job's thread once it's sent over, and how far that's got, for the loading
+    /// screen if it's shown
+    whole: Option<([u32; 3], u32, Option<f32>)>,
+    progress: Option<Arc<crate::loading::Progress>>,
 }
 
 /// Builds a strip of the landscape, with the holes blown and the stains splashed in it, then once
 /// told there's room for it, sends it over to the GPU a piece at a time
 fn run_job(input: JobInput, to_main: Sender<FromJob>, from_main: Receiver<()>) {
+    worldgen::give_way();
     let started = Instant::now();
-    let JobInput { settings, rivers, origin, size, next_corner, world_size, craters, stains, pool, staging, room, water } = input;
+    let JobInput { settings, rivers, origin, size, next_corner, world_size, craters, stains, edits, pool, staging, room, water, whole, progress } = input;
+    // Each step counted for the loading screen, if it's shown
+    if let Some(progress) = &progress {
+        progress.watch_world();
+    }
     let (terrain, mut world) = worldgen::generate_area(&settings, origin, size, &rivers);
     // The holes blown in the landscape are still there, and the stains splashed on it
     let vpm = world.voxels_per_meter as f64;
@@ -499,12 +553,20 @@ fn run_job(input: JobInput, to_main: Sender<FromJob>, from_main: Receiver<()>) {
             world.paint(p, radius * vpm, material, burn);
         }
     }
+    // And what's been built and dug, the empty bricks round what's built skipping no further than
+    // it: as far as they can, which for a strip is no further than its edges, see Strip::new()
+    let (_, filled) = crate::bases::apply_edits(&mut world, &edits, None, None);
+    let reach = (world.size[0].min(world.size[1]) as i64 / 16).clamp(1, world.size[2] as i64 / 8);
+    crate::bases::stop_skips(&mut world, &filled, reach);
     let features = terrain.piece_features();
     drop(terrain);
     let m = |v: i64| v as f32 / vpm as f32;
     let springs = worldgen::window_springs(&settings, &rivers, [m(next_corner[0]), m(next_corner[1])], [m(next_corner[0] + world_size[0] as i64), m(next_corner[1] + world_size[1] as i64)]);
     let strip = Strip::new(world, &pool, room[0] - world_size[0]);
     let built = started.elapsed();
+    if let Some(progress) = &progress {
+        progress.world_built();
+    }
     // Called off, its pages go back: nothing's drawn with them
     let give_back = |strip: &Strip| pool.lock().unwrap_or_else(|e| e.into_inner()).give_back(strip.pages.iter().map(|p| p.0));
     // Told there's room for it, or called off
@@ -518,7 +580,21 @@ fn run_job(input: JobInput, to_main: Sender<FromJob>, from_main: Receiver<()>) {
         return;
     }
     let sent = sending.elapsed();
-    if let Err(std::sync::mpsc::SendError(FromJob::Sent(arrival))) = to_main.send(FromJob::Sent(Box::new(Arrival { strip, features, springs, built, sent }))) {
+    // All of it put in a world of its own, while it's dark
+    let (world, strip) = match whole {
+        Some((size, strip_columns, sea_level)) => {
+            let mut world = World::window(size, strip_columns, origin, settings.voxels_per_meter, sea_level);
+            if let Some(pages) = &mut world.pages {
+                pages.pool = pool.clone();
+            }
+            let mut installing = World::install(strip);
+            while !world.install_step(&mut installing, u32::MAX) {}
+            world.forget_water_surface();
+            (Some(world), installing.strip)
+        }
+        None => (None, strip),
+    };
+    if let Err(std::sync::mpsc::SendError(FromJob::Sent(arrival))) = to_main.send(FromJob::Sent(Box::new(Arrival { strip, world, features, springs, built, sent }))) {
         give_back(&arrival.strip);
     }
 }
@@ -549,10 +625,13 @@ impl App {
             world_size: [self.world.size[0], self.world.size[1]],
             craters: self.craters.clone(),
             stains: self.stains.clone(),
+            edits: self.bases.edits(),
             pool,
             staging: stream.staging.clone(),
             room: self.world.phys,
             water: self.water.active,
+            whole: None,
+            progress: None,
         }
     }
 
@@ -567,7 +646,7 @@ impl App {
         let (to_job, from_main) = channel();
         std::thread::Builder::new().name("strip".into()).spawn(move || run_job(input, to_main, from_main)).unwrap();
         let base = [self.world.origin[0], self.world.origin[1]];
-        stream.job = Some(Job { axis, forward, base, from_job, to_job: Some(to_job), built: None, started: Instant::now(), craters: self.craters.len(), stains: self.stains.len() });
+        stream.job = Some(Job { axis, forward, base, from_job, to_job: Some(to_job), built: None, started: Instant::now(), craters: self.craters.len(), stains: self.stains.len(), bases: self.bases.version });
     }
 
     /// Room on the GPU for every page there is, `pages` of them: made now, before anything's sent
@@ -590,6 +669,15 @@ impl App {
             return;
         };
         let frame_start = Instant::now();
+        // What's built in the background gives way to the game, see worldgen::give_way(), unless
+        // the edge of the world's getting to within a strip of where it'd be seen, the strip being
+        // built is taking far longer than it should, held up by what else the computer's doing, or
+        // the world's being built afresh behind a fade
+        let camera = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
+        let edge = (0..2).map(|i| self.world.size[i] as f64 * 0.5 - (camera[i] - self.world.size[i] as f64 * 0.5).abs()).fold(f64::INFINITY, f64::min);
+        let fade = fade_distance(self.world.size, stream.strip, self.world.voxels_per_meter as f64, self.view_distance);
+        let held_up = stream.job.as_ref().is_some_and(|job| job.started.elapsed() > HURRY_AFTER);
+        worldgen::hurry(stream.teleport.is_some() || held_up || edge < HURRY_FADE * fade + stream.strip as f64);
         // Pages, and pieces of host memory, nothing's drawn with any more, to be filled again
         let released = self.world.take_released();
         if !released.is_empty() {
@@ -626,7 +714,7 @@ impl App {
                 Ok(Some(FromJob::Built { pages })) => keep.as_mut().unwrap().built = Some(pages),
                 Ok(Some(FromJob::Sent(arrival))) => {
                     let job = keep.take().unwrap();
-                    let Arrival { strip, features, springs, built, sent } = *arrival;
+                    let Arrival { strip, features, springs, built, sent, .. } = *arrival;
                     // Still where it goes, unless the world's moved on another way meanwhile
                     if self.world.origin[..2] == job.base {
                         stream.stats.built_ms.push(built.as_secs_f32() * 1000.0);
@@ -635,7 +723,7 @@ impl App {
                         // go of, and nothing's drawn there till the world moves on to it
                         self.water.take_strip(strip.origin, strip.size, &strip.ground, &strip.surface);
                         let installing = World::install(strip);
-                        stream.installing = Some(Pending { installing, features, springs, axis: job.axis, forward: job.forward, started: job.started, craters: job.craters, stains: job.stains, done: false, fresh: true });
+                        stream.installing = Some(Pending { installing, features, springs, axis: job.axis, forward: job.forward, started: job.started, craters: job.craters, stains: job.stains, bases: job.bases, done: false, fresh: true });
                     } else {
                         // Its pages go back, nothing drawn with them
                         stream.stats.discarded += 1;
@@ -701,11 +789,11 @@ impl App {
         {
             pending.done = true;
             if stream.uploads.is_empty() {
-                let Pending { installing, features, springs, axis, forward, started, craters, stains, .. } = stream.installing.take().unwrap();
+                let Pending { installing, features, springs, axis, forward, started, craters, stains, bases, .. } = stream.installing.take().unwrap();
                 let strip = installing.strip;
                 stream.stats.total_ms.push(started.elapsed().as_secs_f32() * 1000.0);
                 stream.stats.strips += 1;
-                self.scroll(&mut stream, axis, forward, Some(Arrived { origin: strip.origin, size: strip.size, features, springs, craters, stains }));
+                self.scroll(&mut stream, axis, forward, Some(Arrived { origin: strip.origin, size: strip.size, features, springs, craters, stains, bases }));
                 // Tens of megabytes of maps, let go of aside
                 std::thread::spawn(move || drop(strip));
             }
@@ -767,6 +855,7 @@ impl Stream {
                 Target::WaterGround => Some(water.ground.clone()),
                 Target::WaterDepth => Some(water.depth.clone()),
                 Target::WaterFlux => Some(water.flux.clone()),
+                Target::WaterRest => Some(water.rest.clone()),
                 Target::Bricks => None,
             };
             match image {
@@ -816,7 +905,7 @@ impl App {
         // Too far out, going faster than strips can be built: moved on all at once
         let edge = (0..2).map(|i| (self.world.size[i] as f64 * 0.5 - off[i].abs()) / strip).fold(f64::INFINITY, f64::min);
         if edge < TELEPORT_STRIPS {
-            self.start_teleport(stream);
+            self.start_teleport(stream, None);
             return;
         }
 
@@ -917,10 +1006,10 @@ impl App {
 
     /// Sends `cells` of the world's grid, changed by holes blown and stains splashed in a strip
     /// that's just come in, and their bricks, and the ground water lies on from `ground`'s first
-    /// column to its second, over with the frame like the strip was: flush_edits() waits for the
-    /// frames there are first, which held up the frame moving on by 10 to 16 ms. None of the frames
-    /// still being drawn have the strip, and the bricks they go in are new.
-    fn send_edits(&mut self, stream: &mut Stream, mut cells: Vec<usize>, ground: Option<([i64; 2], [i64; 2])>) {
+    /// column to its second, over with the frame like the strip was, and ahead of what else of it's
+    /// still to go. None of the frames still being drawn have the strip, and the bricks they go in
+    /// are new.
+    pub(super) fn send_edits(&mut self, stream: &mut Stream, mut cells: Vec<usize>, ground: Option<([i64; 2], [i64; 2])>) {
         cells.sort_unstable();
         cells.dedup();
         let host = |words: Vec<u32>| {
@@ -958,9 +1047,11 @@ impl App {
             }
         }
         if let Some((lo, hi)) = ground {
-            for (at, extent, words) in self.water.take_ground(&self.world, lo, hi) {
-                let images = vec![BufferImageCopy { image_offset: [at[0], at[1], 0], image_extent: [extent[0], extent[1], 1], ..Default::default() }];
-                uploads.push(Upload { words: words.len(), piece: host(words), target: Target::WaterGround, images, buffers: Vec::new(), pooled: false });
+            for p in self.water.take_ground(&self.world, lo, hi) {
+                let images = vec![BufferImageCopy { image_offset: [p.at[0], p.at[1], 0], image_extent: [p.extent[0], p.extent[1], 1], ..Default::default() }];
+                uploads.push(Upload { words: p.ground.len(), piece: host(p.ground), target: Target::WaterGround, images, buffers: Vec::new(), pooled: false });
+                let images = vec![BufferImageCopy { image_offset: [p.rest_at[0], p.rest_at[1], 0], image_extent: [p.rest_extent[0], p.rest_extent[1], 1], ..Default::default() }];
+                uploads.push(Upload { words: p.rest.len(), piece: host(p.rest), target: Target::WaterRest, images, buffers: Vec::new(), pooled: false });
             }
         }
         if uploads.is_empty() {
@@ -1015,7 +1106,7 @@ impl App {
         stream.slots[1 - axis].holds = None;
 
         let springs = match arrived {
-            Some(Arrived { origin: lo, size, features, springs, craters, stains }) => {
+            Some(Arrived { origin: lo, size, features, springs, craters, stains, bases }) => {
                 // Its water's surface is worked out to be drawn
                 let local = [0, 1].map(|i| (lo[i] - origin[i]).clamp(0, self.world.size[i] as i64) as u32);
                 let end = [0, 1].map(|i| (local[i] + size[i]).min(self.world.size[i]));
@@ -1055,6 +1146,13 @@ impl App {
                     if reaches(at, radius * vpm) {
                         cells.extend(self.world.paint_in(at.into(), radius * vpm, material, burn, Some((lo, hi))));
                     }
+                }
+                // And what was built and dug meanwhile, see bases.rs
+                if self.bases.version > bases {
+                    let edits = self.bases.edits();
+                    let (changed, filled) = crate::bases::apply_edits(&mut self.world, &edits, Some(bases), Some((lo, hi)));
+                    cells.extend(changed);
+                    self.built_into(&filled);
                 }
                 self.send_edits(stream, cells, ground);
                 springs
@@ -1098,13 +1196,15 @@ impl App {
     /// Starts building the whole world afresh round where the camera is, as it's got too near the
     /// edge, going faster than strips can be built: what was being built or put in is let be, and
     /// the screen goes dark till it's ready, see update_teleport()
-    fn start_teleport(&mut self, stream: &mut Stream) {
+    fn start_teleport(&mut self, stream: &mut Stream, board: Option<crate::loading::Board>) {
         let camera = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
         let strip = stream.strip as i64;
         let origin = [0, 1].map(|i| (self.world.origin[i] + camera[i] as i64 - self.world.size[i] as i64 / 2).div_euclid(strip) * strip);
         // Into pages of its own, from the first, as nothing of the world there is now is kept
         let pool = Arc::new(Mutex::new(PagePool::default()));
-        let input = self.job_input(stream, origin, [self.world.size[0], self.world.size[1]], origin, pool.clone());
+        let mut input = self.job_input(stream, origin, [self.world.size[0], self.world.size[1]], origin, pool.clone());
+        input.whole = Some((self.world.size, stream.strip, self.world.sea_level));
+        input.progress = board.as_ref().map(|b| b.progress().clone());
         let (to_main, from_job) = channel();
         let (to_job, from_main) = channel();
         std::thread::Builder::new().name("teleport".into()).spawn(move || run_job(input, to_main, from_main)).unwrap();
@@ -1118,10 +1218,43 @@ impl App {
         stream.staging.give_back(dropped);
         stream.stats.teleports += 1;
         println!("The world moves on all at once to {origin:?}, too far to keep up a strip at a time");
-        let job = Job { axis: 0, forward: true, base: origin, from_job, to_job: Some(to_job), built: None, started: Instant::now(), craters: self.craters.len(), stains: self.stains.len() };
+        let job = Job { axis: 0, forward: true, base: origin, from_job, to_job: Some(to_job), built: None, started: Instant::now(), craters: self.craters.len(), stains: self.stains.len(), bases: self.bases.version };
         // Dark at once if the camera's been taken out of the world, as there's nothing to see
         let outside = (0..2).any(|i| camera[i] < 0.0 || camera[i] >= self.world.size[i] as f64);
-        stream.teleport = Some(Teleport { job, pool, origin, arrival: None, dark: if outside { 1.0 } else { 0.0 }, lighter: false, last: Instant::now() });
+        stream.teleport = Some(Teleport { job, pool, origin, arrival: None, dark: if outside { 1.0 } else { 0.0 }, lighter: false, last: Instant::now(), board });
+    }
+
+    /// Builds the whole world afresh round where the player or the camera is now, from the dark at
+    /// once, as when a saved game goes on somewhere else, or on another landscape: whatever was
+    /// being built before, even of the world built afresh, is let go
+    pub(super) fn rebuild_world(&mut self) {
+        let Some(mut stream) = self.stream.take() else {
+            return;
+        };
+        stream.teleport = None;
+        // Going on with a game somewhere the world wasn't, the loading screen's shown meanwhile
+        let board = self.session.arriving.then(|| self.arrival_board());
+        self.start_teleport(&mut stream, board);
+        if let Some(teleport) = &mut stream.teleport {
+            teleport.dark = 1.0;
+        }
+        self.stream = Some(stream);
+    }
+
+    /// The loading screen shown while the world's built afresh round where a game goes on: the
+    /// realm's name over it in Realms, and the land round where the player's to stand rising on it
+    fn arrival_board(&self) -> crate::loading::Board {
+        let progress = crate::loading::Progress::arriving();
+        let at = self.player.as_ref().map_or(camera_to_voxels(self.camera.position, self.world.size), |p| p.position);
+        let vpm = self.world.voxels_per_meter as f64;
+        let middle = [0, 1].map(|i| ((self.world.origin[i] as f64 + at[i]) / vpm) as f32);
+        progress.show_land(self.terrain_settings(), middle);
+        let (title, subtitle) = match (self.session.mode, crate::session::realm_of(&self.session)) {
+            (Some(crate::save::Mode::Realms), Some(realm)) => (crate::realms::REALMS[realm].name.to_owned(), "Realms".to_owned()),
+            (Some(mode), _) => ("Innert".to_owned(), mode.name().to_owned()),
+            (None, _) => ("Innert".to_owned(), String::new()),
+        };
+        crate::loading::Board::new(progress, title, subtitle)
     }
 
     /// Moving the world on all at once, see start_teleport(): the screen goes dark, the world
@@ -1132,7 +1265,10 @@ impl App {
         let dt = teleport.last.elapsed().as_secs_f32();
         teleport.last = Instant::now();
         if teleport.lighter {
-            teleport.dark -= dt / FADE_SECONDS;
+            // The loading screen fades away smoothly even past the first frames in the world, which
+            // can take a while as what's about comes into it
+            let dt = if teleport.board.is_some() { dt.min(1.0 / 30.0) } else { dt };
+            teleport.dark -= dt / if teleport.board.is_some() { BOARD_FADE_SECONDS } else { FADE_SECONDS };
             if teleport.dark <= 0.0 {
                 stream.teleport = None;
             }
@@ -1165,6 +1301,9 @@ impl App {
             && let Some(to_job) = teleport.job.to_job.take()
         {
             let pages = teleport.pool.lock().unwrap_or_else(|e| e.into_inner()).count() as usize;
+            if let Some(board) = &teleport.board {
+                board.progress().begin(Step::Upload);
+            }
             self.room_for_pages(pages);
             let _ = to_job.send(());
         }
@@ -1173,20 +1312,18 @@ impl App {
         if teleport.arrival.is_none() || !stream.uploads.is_empty() {
             return;
         }
-        let Arrival { strip, features, springs, .. } = *teleport.arrival.take().unwrap();
+        let Arrival { strip, world, features, springs, built, sent } = *teleport.arrival.take().unwrap();
+        let putting_in = Instant::now();
         let origin = teleport.origin;
-        let pool = teleport.pool.clone();
         let started = teleport.job.started;
+        let built_with = teleport.job.bases;
         teleport.lighter = true;
-        // A world of its own, all of it put in at once while nothing can be seen
-        let mut world = World::window(self.world.size, stream.strip, origin, self.world.voxels_per_meter, self.world.sea_level);
-        if let Some(pages) = &mut world.pages {
-            pages.pool = pool;
+        if let Some(board) = &teleport.board {
+            board.progress().end(Step::Upload);
+            board.progress().begin(Step::Water);
         }
-        let mut installing = World::install(strip);
-        while !world.install_step(&mut installing, u32::MAX) {}
-        world.forget_water_surface();
-        let strip = installing.strip;
+        // A world of its own, all of it put in on the job's thread while nothing could be seen
+        let world = world.expect("a world built afresh is put together on the job's thread");
         let old = [self.world.origin[0], self.world.origin[1]];
         let old_world = std::mem::replace(&mut self.world, world);
         std::thread::spawn(move || drop(old_world));
@@ -1194,6 +1331,7 @@ impl App {
         // this one already
         self.edited.clear();
         self.edited_ground = None;
+        self.edit_uploads.clear();
         let shift = [origin[0] - old[0], origin[1] - old[1]];
         self.water.moved(shift, self.world.wrap);
         self.water.take_strip(strip.origin, strip.size, &strip.ground, &strip.surface);
@@ -1219,7 +1357,25 @@ impl App {
         stream.pieces = pieces;
         self.reset_accum = true;
         self.light_cache_for = None;
+        // What was built and dug while it was being built goes in now, see bases.rs
+        if self.bases.version > built_with {
+            let edits = self.bases.edits();
+            let (cells, filled) = crate::bases::apply_edits(&mut self.world, &edits, Some(built_with), None);
+            self.built_into(&filled);
+            self.send_edits(stream, cells, None);
+        }
         stream.stats.total_ms.push(started.elapsed().as_secs_f32() * 1000.0);
+        let ms = |d: Duration| d.as_secs_f64() * 1000.0;
+        println!(
+            "The world was built afresh in {:.0} ms: built in {:.0} ms, sent over in {:.0} ms, put in in {:.0} ms",
+            ms(started.elapsed()),
+            ms(built),
+            ms(sent),
+            ms(putting_in.elapsed())
+        );
+        if let Some(board) = stream.teleport.as_ref().and_then(|t| t.board.as_ref()) {
+            board.progress().end(Step::Water);
+        }
         std::thread::spawn(move || drop(strip));
     }
 
@@ -1235,6 +1391,7 @@ impl App {
             all.lights.extend(piece.lights.iter().filter(|l| inside(&l.position)));
             all.sites.extend(piece.sites.iter().filter(|s| inside(&s.position)));
             all.camps.extend(piece.camps.iter().filter(|c| inside(&c.fire)));
+            all.cave_camps.extend(piece.cave_camps.iter().filter(|c| inside(&c.fire)));
             all.waterfalls.extend(piece.waterfalls.iter().filter(|w| inside(&w.0)));
         }
         self.adopt_features(&all);
@@ -1258,6 +1415,11 @@ impl App {
         if let Some(player) = &mut self.player {
             player.position -= shift;
         }
+        if let Some(hook) = &mut self.hook {
+            hook.shift(shift);
+        }
+        self.wings.shift(shift);
+        self.wards.shift(shift);
         if let Some((at, when)) = self.last_camera {
             self.last_camera = Some((at - shift, when));
         }

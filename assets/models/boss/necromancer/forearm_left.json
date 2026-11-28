@@ -1,0 +1,29 @@
+{
+  "what": "Necromancer, forearm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    8
+  ],
+  "pivot": [
+    1.36,
+    1.36,
+    6.16
+  ],
+  "anchor": [
+    0.008749999999999994,
+    0.008749999999999994,
+    -0.385
+  ],
+  "origin": [
+    -1,
+    -1,
+    -6
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1368,
+    "1578a873a0db308e"
+  ]
+}

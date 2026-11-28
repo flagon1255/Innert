@@ -1,0 +1,37 @@
+{
+  "what": "Bombs, casing: Great Keg",
+  "voxels_per_meter": 192.0,
+  "size": [
+    27,
+    27,
+    49
+  ],
+  "pivot": [
+    13.593599999999999,
+    13.343039999999998,
+    9.4816
+  ],
+  "anchor": null,
+  "origin": [
+    -14,
+    -13,
+    -9
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.0396
+    ],
+    "tip": [
+      0.025,
+      0.0,
+      0.233
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    71945,
+    "53f21872654bb64f"
+  ]
+}

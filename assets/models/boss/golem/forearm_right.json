@@ -1,0 +1,29 @@
+{
+  "what": "Stone Warden, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    12,
+    25
+  ],
+  "pivot": [
+    5.76,
+    5.76,
+    19.36
+  ],
+  "anchor": [
+    0.015000000000000013,
+    0.015000000000000013,
+    -1.21
+  ],
+  "origin": [
+    -6,
+    -6,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    7040,
+    "0a6c8f3c4158ea7f"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Belfry Grotesque, wing right inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    30,
+    29,
+    6
+  ],
+  "pivot": [
+    21.86203076009806,
+    26.1184,
+    2.112
+  ],
+  "anchor": [
+    -0.42887692250612885,
+    -0.7261500000000001,
+    -0.132
+  ],
+  "origin": [
+    -22,
+    -26,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5042,
+    "a0d5457f92836665"
+  ]
+}

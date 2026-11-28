@@ -1,0 +1,29 @@
+{
+  "what": "Thunder Drake, wing right inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    21,
+    32,
+    4
+  ],
+  "pivot": [
+    14.697927438106941,
+    29.744000000000007,
+    1.552
+  ],
+  "anchor": [
+    -0.2623704648816838,
+    -0.8590000000000004,
+    -0.097
+  ],
+  "origin": [
+    -15,
+    -30,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3322,
+    "6258d36161e38d14"
+  ]
+}

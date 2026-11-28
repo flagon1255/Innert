@@ -1,0 +1,29 @@
+{
+  "what": "Aeolith, inner ring",
+  "voxels_per_meter": 16.0,
+  "size": [
+    39,
+    39,
+    5
+  ],
+  "pivot": [
+    19.328000000000003,
+    19.063533364436523,
+    1.92
+  ],
+  "anchor": [
+    0.010749999999999815,
+    0.027279164722717297,
+    -0.12
+  ],
+  "origin": [
+    -19,
+    -19,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6531,
+    "57118f18b6c9063f"
+  ]
+}

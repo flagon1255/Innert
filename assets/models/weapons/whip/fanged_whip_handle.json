@@ -1,0 +1,42 @@
+{
+  "what": "Whip, handle: Fanged Handle",
+  "voxels_per_meter": 192.0,
+  "size": [
+    9,
+    7,
+    57
+  ],
+  "pivot": [
+    3.6863999999999995,
+    3.6864,
+    3.6560000000000006
+  ],
+  "anchor": null,
+  "origin": [
+    -4,
+    -4,
+    -4
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.1592
+    ],
+    "lash_root": [
+      0.0,
+      0.0,
+      0.30920000000000003
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.30920000000000003
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    8877,
+    "06f8a1b035397f12"
+  ]
+}

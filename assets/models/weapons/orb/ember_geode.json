@@ -1,0 +1,37 @@
+{
+  "what": "Orb, crystal: Ember Geode",
+  "voxels_per_meter": 192.0,
+  "size": [
+    18,
+    19,
+    18
+  ],
+  "pivot": [
+    9.2544,
+    9.567272771621843,
+    -25.16
+  ],
+  "anchor": null,
+  "origin": [
+    -9,
+    -10,
+    25
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.05
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.1782
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    14565,
+    "1c59974a4829c927"
+  ]
+}

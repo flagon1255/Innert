@@ -1,0 +1,56 @@
+#version 460
+
+// Empty bricks of the main world round what's just been built in it, see src\bases.rs, made to skip
+// no further than it: each empty brick keeps in its cell how far, along any axis, the nearest brick
+// that isn't empty is, and rays skip that far in one go, see EMPTY_BRICK in traverse.comp. A brick
+// that was empty and isn't any more would be skipped right past by those round it, so each of them
+// in a box round it, as far as any skip could reach, is given no more than how far it is from the
+// box round what was built, if that's less than what it had. Each invocation does a column of them.
+
+// Has to match src\worldgen.rs
+const uint EMPTY_BRICK = 0x40000000u;
+const uint DISTANCE = 0xFFFFu;
+
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(set = 0, binding = 0, r32ui) uniform uimage3D brickGrid;
+
+// No more than 128 bytes, see src\limits.rs. In bricks, counted from the world's first.
+layout(push_constant) uniform PushConstants {
+    // xyz: the first brick of the box to work over, w unused
+    ivec4 lo;
+    // xyz: one past its last
+    ivec4 hi;
+    // xyz: the first brick of the box round what was built, and one past its last
+    ivec4 built_lo;
+    ivec4 built_hi;
+    // xy: where the world's first brick is kept in the grid, which its bricks go round, see
+    // mainBrick() in traverse.comp
+    ivec4 wrap;
+} pc;
+
+// Where brick `b` of the world is kept in the grid
+ivec3 kept(ivec3 b) {
+    ivec2 room = imageSize(brickGrid).xy;
+    ivec2 p = b.xy + pc.wrap.xy;
+    return ivec3(p - room * ivec2(greaterThanEqual(p, room)), b.z);
+}
+
+void main() {
+    ivec2 column = pc.lo.xy + ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(column, pc.hi.xy)))
+    return;
+    for (int z = pc.lo.z; z < pc.hi.z; z++) {
+        ivec3 b = ivec3(column, z);
+        ivec3 at = kept(b);
+        uint cell = imageLoad(brickGrid, at).r;
+        if ((cell & EMPTY_BRICK) == 0)
+        continue;
+        ivec3 off = max(max(pc.built_lo.xyz - b, b - (pc.built_hi.xyz - 1)), ivec3(0));
+        uint d = uint(max(max(max(off.x, off.y), off.z), 1));
+        // The bits above the distance are left as they are: the skips worked out again where a
+        // strip joins the world keep what they've found so far there, see skips.comp
+        if (d < (cell & DISTANCE))
+        imageStore(brickGrid, at, uvec4((cell & ~DISTANCE) | d));
+    }
+}

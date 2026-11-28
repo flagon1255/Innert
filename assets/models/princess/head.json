@@ -1,0 +1,29 @@
+{
+  "what": "Princess, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    7
+  ],
+  "pivot": [
+    2.5,
+    2.5,
+    0.3999999999999986
+  ],
+  "anchor": [
+    0.0,
+    0.0,
+    -0.02499999999999991
+  ],
+  "origin": [
+    -3,
+    -3,
+    0
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1517,
+    "cc98ae86997ff405"
+  ]
+}

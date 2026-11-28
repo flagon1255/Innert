@@ -12,6 +12,9 @@
 use super::*;
 use std::f32::consts::PI;
 
+pub(super) mod cave;
+pub use cave::{CAVE_CAMP_SITE, CaveCamp, Folk, GHOST_FIRE_LIGHT};
+
 /// At most one camp in each CAMP_CELL square, in CAMP_CHANCE of them, at the first of SPOTS spots
 /// tried in it that suits
 const CAMP_CELL: f32 = 120.0;
@@ -121,7 +124,7 @@ pub struct Camp {
     pub brutes: u32,
     pub warlord: bool,
     pub spread: f32,
-    /// How rare what's in the chest is likely to be, see Library::roll_rarity(): more so the more
+    /// How rare what's in the chest is likely to be, see Library::odds(): more so the more
     /// there are to fight, far more than in ordinary chests
     pub luck: f32,
 }
@@ -178,8 +181,14 @@ impl Terrain {
                         let (x, y) = (((s.min[0] + s.max[0]) * 0.5).clamp(area[0], area[2]), ((s.min[1] + s.max[1]) * 0.5).clamp(area[1], area[3]));
                         overlaps(flat(s), area, 1.0) && ground(x, y).is_none_or(|g| s.max[2] > g.0 - 1.0)
                     };
+                    // Nor anywhere near a ravine, however far off what's dug for it is, see
+                    // ravines.rs: the next spot in its square instead
                     let clear = |area: [f32; 4]| {
-                        !keep_out.iter().any(|k| overlaps(*k, area, 2.0)) && !footprints.iter().any(|f| overlaps([f[0], f[1], f[2], f[3]], area, 2.0)) && !dug.iter().any(|s| opens(s, area))
+                        !keep_out.iter().any(|k| overlaps(*k, area, 2.0))
+                            && !footprints.iter().any(|f| overlaps([f[0], f[1], f[2], f[3]], area, 2.0))
+                            && !dug.iter().any(|s| opens(s, area))
+                            && !ravines::over_ravine(&self.settings, area, 3.0)
+                            && !self.roads.near_rect(area, 2.0)
                     };
                     self.plan_camp(cx, cy, &ground, &clear)
                 };

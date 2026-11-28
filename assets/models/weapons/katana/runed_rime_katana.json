@@ -1,0 +1,37 @@
+{
+  "what": "Katana, blade: Runed Rime Katana",
+  "voxels_per_meter": 192.0,
+  "size": [
+    14,
+    3,
+    158
+  ],
+  "pivot": [
+    4.384,
+    1.5695999999999994,
+    -67.0
+  ],
+  "anchor": null,
+  "origin": [
+    -4,
+    -2,
+    67
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.15560000000000002
+    ],
+    "tip": [
+      0.0322,
+      0.0,
+      1.1696
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    10238,
+    "ec98e3303d36b7a4"
+  ]
+}

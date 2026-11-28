@@ -1,0 +1,37 @@
+{
+  "what": "Staff, crystal: Phoenix Heart",
+  "voxels_per_meter": 150.0,
+  "size": [
+    14,
+    14,
+    36
+  ],
+  "pivot": [
+    -3.9299999999999997,
+    6.960000000000001,
+    -231.71
+  ],
+  "anchor": null,
+  "origin": [
+    4,
+    -7,
+    232
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.775
+    ],
+    "tip": [
+      0.07,
+      0.0,
+      1.67
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    11606,
+    "9a93c0bcf8b5d5c0"
+  ]
+}

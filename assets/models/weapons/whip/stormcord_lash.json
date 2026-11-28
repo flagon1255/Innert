@@ -1,0 +1,42 @@
+{
+  "what": "Whip, lash: Stormcord Lash",
+  "voxels_per_meter": 192.0,
+  "size": [
+    7,
+    7,
+    12
+  ],
+  "pivot": [
+    3.2432,
+    3.2432,
+    -55.0
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -3,
+    55
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.16419999999999998
+    ],
+    "lash_root": [
+      0.0,
+      0.0,
+      0.31920000000000004
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.31920000000000004
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2100,
+    "c5634e1adb5eefc5"
+  ]
+}

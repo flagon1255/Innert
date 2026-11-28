@@ -1,0 +1,37 @@
+{
+  "what": "Scepter, shaft: Galvanic Shaft",
+  "voxels_per_meter": 192.0,
+  "size": [
+    6,
+    6,
+    143
+  ],
+  "pivot": [
+    2.9250000000000007,
+    3.1499999999999995,
+    1.4750000000000005
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -3,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.22499999999999998
+    ],
+    "tip": [
+      0.0328125,
+      0.0,
+      0.8062500000000001
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    8492,
+    "bdc968b957372d44"
+  ]
+}

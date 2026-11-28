@@ -1,0 +1,29 @@
+{
+  "what": "Thunderborn Giant, shin left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    8,
+    24
+  ],
+  "pivot": [
+    3.696,
+    3.696,
+    19.535999999999998
+  ],
+  "anchor": [
+    0.01899999999999999,
+    0.01899999999999999,
+    -1.2209999999999999
+  ],
+  "origin": [
+    -4,
+    -4,
+    -20
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4368,
+    "18f7543186d743da"
+  ]
+}

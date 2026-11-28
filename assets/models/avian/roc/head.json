@@ -1,0 +1,29 @@
+{
+  "what": "Cloudreaver Roc, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    48,
+    25,
+    25
+  ],
+  "pivot": [
+    16.2656,
+    12.4384,
+    12.4384
+  ],
+  "anchor": [
+    0.48340000000000005,
+    0.00385000000000002,
+    -0.7774
+  ],
+  "origin": [
+    -16,
+    -12,
+    -12
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    43223,
+    "c322e180a3fd4ab7"
+  ]
+}

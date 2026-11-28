@@ -1,0 +1,29 @@
+{
+  "what": "Thunderborn Giant, foot left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    7,
+    6
+  ],
+  "pivot": [
+    3.1680000000000006,
+    3.1679999999999997,
+    3.1679999999999997
+  ],
+  "anchor": [
+    0.17699999999999996,
+    0.02075000000000002,
+    -0.19799999999999998
+  ],
+  "origin": [
+    -3,
+    -3,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1951,
+    "af8653bfa7f15389"
+  ]
+}

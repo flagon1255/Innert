@@ -1,0 +1,29 @@
+{
+  "what": "Gildscale Hoardwarden, tail 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    51,
+    25,
+    28
+  ],
+  "pivot": [
+    38.591622041385634,
+    12.191622041385635,
+    13.410784245524198
+  ],
+  "anchor": [
+    -0.8182263775866021,
+    0.019273622413397806,
+    -0.8381740153452624
+  ],
+  "origin": [
+    -39,
+    -12,
+    -13
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    65885,
+    "69747ddc8e68ad22"
+  ]
+}

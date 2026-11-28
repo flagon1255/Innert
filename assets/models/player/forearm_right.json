@@ -1,0 +1,29 @@
+{
+  "what": "The player, forearm right",
+  "voxels_per_meter": 32.0,
+  "size": [
+    4,
+    3,
+    12
+  ],
+  "pivot": [
+    1.408,
+    1.408,
+    10.240000000000002
+  ],
+  "anchor": [
+    0.018500000000000003,
+    0.0028750000000000026,
+    -0.32000000000000006
+  ],
+  "origin": [
+    -1,
+    -1,
+    -10
+  ],
+  "note": "A piece of the player's own body, seen only in its shadow and reflections, never by the eye: the pivot is its joint. Its leather (73) is drawn in the colour the player chose for its skin, gloves, belt or boots, and its cloth (74) in that of their hair or clothes; everything else in its own colour. Drawn as edited for every look; as exported it's a new character's.",
+  "written": [
+    1480,
+    "17ee6dc55c848b67"
+  ]
+}

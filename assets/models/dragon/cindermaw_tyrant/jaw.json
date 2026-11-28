@@ -1,0 +1,29 @@
+{
+  "what": "Cindermaw Tyrant, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    32,
+    9,
+    10
+  ],
+  "pivot": [
+    4.352,
+    4.352,
+    5.440000000000001
+  ],
+  "anchor": [
+    0.728,
+    0.00924999999999998,
+    -0.3400000000000001
+  ],
+  "origin": [
+    -4,
+    -4,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6056,
+    "193d8c11d45f5e7b"
+  ]
+}

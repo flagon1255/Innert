@@ -36,9 +36,38 @@ pub const PILLAR_STAGE_COUNT: usize = 2;
 pub const MOON: usize = PILLAR_STAGES + PILLAR_STAGE_COUNT;
 /// A spark as a streak along -x behind its hot head at 0, for each look
 pub const STREAKS: usize = MOON + 1;
+/// A boulder of the Earthbreaker Colossus's stone, its middle at 0, STONE_ROUND meters round at
+/// size 1: dark and lumpy, fire glowing in the cracks over it, earth still clinging to its
+/// underside where it was torn up out of the ground. Drawn big for the boulders it hurls, small for
+/// the chunks of stone thrown about.
+pub const STONE_BOULDER: usize = STREAKS + ELEMENT_LOOKS;
+/// A slab of the same stone standing on 0, SLAB_HEIGHT tall, broad along x and thin along y, broken
+/// off jagged at its top, earth clinging to its foot and fire in its seams
+pub const STONE_SLAB: usize = STONE_BOULDER + 1;
+/// A talisman's spear of holy lightning along +x, its point at 0, SPEAR_LENGTH long: a shaft of
+/// light, a gold-collared blade of it, wings spread behind the blade, and lightning wound round
+/// the shaft, so it reads as a spear wherever it's seen from but end on, see faith.rs
+pub const HOLY_SPEAR: usize = STONE_SLAB + 1;
+/// A stretch of lightning for each look: a bar a voxel long along x, three across, white-hot in
+/// its heart and its element's glow round that, stretched along x by the shader to reach from one
+/// point of a bolt to the next, see combat\lightning.rs
+pub const BOLT_BARS: usize = HOLY_SPEAR + 1;
+/// Tendrils of shadow reaching up out of the ground, a meter and a half high, curling, their
+/// middle at 0
+pub const TENDRILS: usize = BOLT_BARS + ELEMENT_LOOKS;
+/// Spikes of bone bursting up out of the ground in a ring, curving in over its middle, a meter
+/// and a half high, standing on 0, a glow of the void at their roots: a Bone Cage's, see
+/// combat/signatures/arcana.rs
+pub const BONE_SPIKES: usize = TENDRILS + 1;
+/// The slim rings on the ground showing where something aimed comes down, one for each of
+/// AIM_RINGS sizes, see aim_ring(): a line a radius 1 round 0, flat, as thin as AIM_LINE whatever
+/// size it's drawn at
+pub const AIM_RING: usize = BONE_SPIKES + 1;
 /// How many effect models there are in all
-#[cfg(test)]
-pub const EFFECT_MODELS: usize = STREAKS + ELEMENT_LOOKS;
+pub const EFFECT_MODELS: usize = AIM_RING + AIM_RINGS;
+pub const STONE_ROUND: f64 = 0.5;
+pub const SLAB_HEIGHT: f64 = 1.6;
+pub const SPEAR_LENGTH: f64 = 1.7;
 
 /// Voxels per meter of each
 pub const BLAST_RES: f64 = MODEL_RES;
@@ -47,6 +76,7 @@ pub const ICE_RES: f64 = 24.0;
 pub const PILLAR_RES: f64 = MODEL_RES;
 pub const MOON_RES: f64 = 32.0;
 pub const STREAK_RES: f64 = 32.0;
+pub const SPEAR_RES: f64 = 32.0;
 /// How far an explosion model reaches from its middle at most, its rays, shards and debris
 /// included, at size 1
 pub const BLAST_REACH: f64 = 1.5;
@@ -1100,6 +1130,265 @@ pub fn bolt(element: Option<Element>) -> (Model, Vector3<f64>) {
     voxelize(&p, MODEL_RES)
 }
 
+/// The Colossus's boulder, see STONE_BOULDER: lumpy and broken, flattened here and there where
+/// it split off, cracks running over it where a noise crosses nought with fire glowing in them,
+/// patches of darker stone, and earth, gravel and moss clinging underneath
+fn stone_boulder() -> (Model, Vector3<f64>) {
+    let seed = 0x570e;
+    let mut g = Grid::round(STONE_ROUND * 1.35, MODEL_RES);
+    g.fill(|p, h| {
+        let r = length(p);
+        let n = if r > 1e-6 { scale(p, 1.0 / r) } else { [0.0, 0.0, 1.0] };
+        let surface = STONE_ROUND * (1.0 + 0.2 * fbm(scale(n, 1.7), seed) + 0.07 * fbm(scale(n, 4.5), seed ^ 0x3b));
+        if r > surface {
+            return AIR;
+        }
+        // Only its skin's ever seen
+        if r < surface - 2.0 / MODEL_RES {
+            return OBSIDIAN;
+        }
+        if fbm(scale(p, 3.4), seed ^ 0xc4ac).abs() < 0.05 {
+            return GLOW_FIRE;
+        }
+        if n[2] < -0.45 + 0.2 * fbm(scale(n, 3.0), seed ^ 0xd17) {
+            let pick = unit(h);
+            return if pick < 0.2 { GRAVEL } else if pick < 0.3 { MOSS } else { DIRT };
+        }
+        let patch = fbm(scale(p, 2.2), seed ^ 0x0b5);
+        if patch > 0.3 {
+            OBSIDIAN
+        } else if patch < -0.25 {
+            GRAVEL
+        } else if unit(h) < 0.1 {
+            STONE
+        } else {
+            MORTAR
+        }
+    });
+    g.model()
+}
+
+/// A slab of the Colossus's stone, see STONE_SLAB: broad at its foot and narrowing a little, its
+/// edges broken, to a jagged top, earth clinging to its foot and fire in the seams across it
+fn stone_slab() -> (Model, Vector3<f64>) {
+    let seed = 0x51ab;
+    let mut g = Grid::span([-0.7, -0.3, -0.15], [0.7, 0.3, SLAB_HEIGHT + 0.15], MODEL_RES);
+    g.fill(|p, h| {
+        let [x, y, z] = p;
+        let rough = fbm(scale(p, 2.6), seed);
+        let up = (z / SLAB_HEIGHT).clamp(0.0, 1.0);
+        let half = 0.55 - 0.15 * up + 0.08 * rough;
+        let thick = 0.2 - 0.06 * up + 0.04 * fbm(scale(p, 4.0), seed ^ 0x7f);
+        let top = SLAB_HEIGHT - 0.12 + 0.2 * fbm([x * 3.5, 0.3, 0.0], seed ^ 0x70b) - 0.15 * (x / 0.55).abs();
+        if x.abs() > half || y.abs() > thick || z > top || z < -0.15 {
+            return AIR;
+        }
+        if z < 0.25 + 0.1 * rough {
+            return if unit(h) < 0.25 { GRAVEL } else { DIRT };
+        }
+        if fbm(scale(p, 3.0), seed ^ 0x5ea).abs() < 0.05 {
+            return GLOW_FIRE;
+        }
+        if rough > 0.3 {
+            OBSIDIAN
+        } else if rough < -0.25 {
+            GRAVEL
+        } else if unit(h) < 0.1 {
+            STONE
+        } else {
+            MORTAR
+        }
+    });
+    g.model()
+}
+
+/// A spear of holy lightning, see HOLY_SPEAR: a shaft of light, a broad leaf of a blade on a gold
+/// collar, gold wings swept back from it, lightning wound round the shaft and a gold knob at its
+/// butt
+fn holy_spear() -> (Model, Vector3<f64>) {
+    let l = SPEAR_LENGTH;
+    let mut p = vec![
+        // The blade, flat across, its point at 0
+        limb([-0.34, 0.0, 0.0], [-0.16, 0.0, 0.0], 0.03, 0.065, GLOW_HOLY).stretched([1.0, 1.0, 0.4]),
+        limb([-0.16, 0.0, 0.0], [0.0, 0.0, 0.0], 0.065, 0.006, GLOW_HOLY).stretched([1.0, 1.0, 0.4]),
+        limb([-0.4, 0.0, 0.0], [-0.33, 0.0, 0.0], 0.034, 0.03, GOLD),
+        ball([-l, 0.0, 0.0], 0.03, GOLD),
+    ];
+    // Wings swept back from the collar, either side and above and below
+    for (y, z) in [(1.0, 0.0), (-1.0, 0.0), (0.0, 1.0), (0.0, -1.0)] {
+        p.push(limb([-0.38, y * 0.03, z * 0.03], [-0.5, y * 0.11, z * 0.11], 0.016, 0.006, GOLD));
+    }
+    // Lightning wound round the shaft, a turn every quarter meter
+    let turns = ((l - 0.45) / 0.25) as usize * 6;
+    for k in 0..turns {
+        let x = -0.45 - k as f64 / turns as f64 * (l - 0.5);
+        let a = k as f64 / 6.0 * TAU;
+        p.push(ball([x, a.cos() * 0.032, a.sin() * 0.032], 0.012, GLOW_STORM));
+    }
+    p.push(limb([-l, 0.0, 0.0], [-0.38, 0.0, 0.0], 0.02, 0.02, GLOW_HOLY));
+    voxelize(&p, SPEAR_RES)
+}
+
+/// A stretch of lightning, see BOLT_BARS: its heart white-hot, its element's glow round it, the
+/// corners left out so it's round enough end on
+fn bolt_bar(look: usize) -> (Model, Vector3<f64>) {
+    use Element::*;
+    let (heart, glow) = match element_of(look) {
+        None | Some(Storm) => (GLOW_HOLY, GLOW_STORM),
+        Some(Holy) => (FLAME, GLOW_HOLY),
+        Some(Frost) => (GLOW_STORM, GLOW_FROST),
+        Some(Fire) => (FLAME, GLOW_FIRE),
+        Some(Poison) => (GLOW_HOLY, GLOW_POISON),
+        Some(Arcane) => (GLOW_HOLY, GLOW_ARCANE),
+        Some(Void) => (GLOW_ARCANE, GLOW_VOID),
+        Some(Blood) => (GLOW_FIRE, GLOW_BLOOD),
+    };
+    let mut m = crate::assets::air([1, 3, 3]);
+    for z in 0..3usize {
+        for y in 0..3usize {
+            let corner = y != 1 && z != 1;
+            m.voxels[y + z * 3] = if y == 1 && z == 1 { heart } else if corner { AIR } else { glow };
+        }
+    }
+    (m, Vector3::zeros())
+}
+
+/// Tendrils of shadow, see TENDRILS: seven reaching up and curling over out of a dark pool, thick
+/// and black at their roots and thinning to glowing tips, a glow of the void in their hearts
+fn tendrils() -> (Model, Vector3<f64>) {
+    let mut seed = 0x7e4d;
+    let mut p = vec![ellipsoid_part([0.0, 0.0, 0.02], [0.5, 0.5, 0.06], OBSIDIAN)];
+    for k in 0..7 {
+        let a = k as f64 / 7.0 * TAU + random(&mut seed) * 0.6;
+        let out = 0.15 + 0.2 * random(&mut seed);
+        let height = 0.9 + 0.6 * random(&mut seed);
+        let curl = 0.25 + 0.25 * random(&mut seed);
+        let (c, s) = (a.cos(), a.sin());
+        let points = [
+            [c * out, s * out, 0.0],
+            [c * (out + 0.08), s * (out + 0.08), height * 0.4],
+            [c * (out + curl * 0.6) - s * 0.1, s * (out + curl * 0.6) + c * 0.1, height * 0.8],
+            [c * (out + curl), s * (out + curl), height * 0.92],
+            [c * (out + curl * 1.25), s * (out + curl * 1.25), height * 0.75],
+        ];
+        for (j, pair) in points.windows(2).enumerate() {
+            let r = 0.07 * (1.0 - j as f64 * 0.22);
+            let material = if j == 3 { GLOW_VOID } else if j == 0 { OBSIDIAN } else { FUR_DARK };
+            p.push(limb(pair[0], pair[1], r, r * 0.75, material));
+            if j < 2 {
+                p.insert(0, limb(pair[0], pair[1], r * 0.35, r * 0.3, GLOW_ARCANE));
+            }
+        }
+    }
+    voxelize(&p, MODEL_RES)
+}
+
+/// Spikes of bone, see BONE_SPIKES: seven rising round a ring and curving in, knuckled where they
+/// bend, yellowed at their roots and whitening to their points, over a dark crack glowing with the
+/// void
+fn bone_spikes() -> (Model, Vector3<f64>) {
+    let mut seed = 0xb07e;
+    let mut p = vec![ellipsoid_part([0.0, 0.0, 0.02], [0.55, 0.55, 0.05], OBSIDIAN), ellipsoid_part([0.0, 0.0, 0.05], [0.3, 0.3, 0.04], GLOW_VOID)];
+    for k in 0..7 {
+        let a = k as f64 / 7.0 * TAU + random(&mut seed) * 0.3;
+        let out = 0.42 + 0.08 * random(&mut seed);
+        let height = 1.1 + 0.45 * random(&mut seed);
+        let (c, s) = (a.cos(), a.sin());
+        let at = |r: f64, z: f64| [c * r, s * r, z];
+        let points = [at(out, 0.0), at(out * 0.98, height * 0.45), at(out * 0.8, height * 0.8), at(out * 0.45, height)];
+        for (j, pair) in points.windows(2).enumerate() {
+            let r = 0.075 * (1.0 - j as f64 * 0.3);
+            p.push(limb(pair[0], pair[1], r, (r * 0.7).max(0.012), if j == 0 { FUR_CREAM } else { BONE }));
+            // A knuckle where it bends
+            p.push(ball(pair[1], r * 0.85, if j == 0 { FUR_CREAM } else { BONE }));
+        }
+        // A barb off its side, pointing in
+        let b = at(out * 0.9, height * 0.6);
+        p.push(limb(b, [b[0] * 0.7 - s * 0.08, b[1] * 0.7 + c * 0.08, b[2] + 0.12], 0.025, 0.008, BONE));
+    }
+    voxelize(&p, MODEL_RES)
+}
+
+/// How many sizes the slim aim rings are made in, see AIM_RING, the smallest one's radius in
+/// meters, and how much bigger each is than the one before: a third of an octave, so the one
+/// nearest a ring's radius is drawn at most 12% bigger or smaller than it was made, and its line
+/// that much wider or thinner. From a quarter of a meter round to nearly 13.
+pub const AIM_RINGS: usize = 18;
+const AIM_SMALLEST: f64 = 0.25;
+const AIM_STEP: f64 = 1.259_921_049_894_873;
+/// How wide an aim ring's line is across the ground, in meters: two of the world's voxels, or on
+/// rings under two meters round AIM_THIN of the radius, so the small ones aren't thick with it
+pub const AIM_LINE: f64 = 0.125;
+const AIM_THIN: f64 = 0.07;
+/// The colour an aim ring's drawn in, see AnimalInstance::skinned(), lit by its own light, see
+/// TINT_LIT: a deep warm red, less fierce than the blood glow, that reads on sand and grass by day
+/// and glows softly by night without washing out pale
+pub const AIM_SKIN: u32 = 110 | 20 << 8 | 14 << 16 | 255 << 24;
+/// How many voxels an aim ring's line reaches down under where it's put, and how many it stands
+/// up over it: no more, so where the ground falls away round it the line floats a little over it
+/// rather than standing up as a wall
+const AIM_UNDER: usize = 1;
+const AIM_OVER: usize = 1;
+/// Short marks pointing in from the line at its four quarters on rings at least AIM_TICKS_FROM
+/// meters round, as long as AIM_TICK of the radius but no longer than AIM_TICK_MOST meters
+const AIM_TICKS_FROM: f64 = 2.0;
+const AIM_TICK: f64 = 0.08;
+const AIM_TICK_MOST: f64 = 0.35;
+
+/// The radius of aim ring `k`, see AIM_RINGS, in meters
+fn aim_ring_radius(k: usize) -> f64 {
+    AIM_SMALLEST * AIM_STEP.powi(k as i32)
+}
+
+/// How big aim ring `k`'s voxels are as it's made, in meters: the world's own, a sixteenth of a
+/// meter, or finer for those under three meters round, so they're still round and their line thin
+fn aim_ring_voxel(k: usize) -> f64 {
+    (1.0 / 16.0f64).min(aim_ring_radius(k) / 48.0)
+}
+
+/// Which model to draw a slim aim ring `radius` meters round with, and its voxels a meter as
+/// combat::place() takes them: it's drawn at size `radius`, the line round exactly that far out
+pub fn aim_ring_for(radius: f64) -> (usize, f64) {
+    let k = ((radius.max(1e-3) / AIM_SMALLEST).ln() / AIM_STEP.ln()).round().clamp(0.0, (AIM_RINGS - 1) as f64) as usize;
+    (AIM_RING + k, aim_ring_radius(k) / aim_ring_voxel(k))
+}
+
+/// Slim aim ring `k`, see AIM_RING: a line AIM_LINE wide round 0 at radius 1, of pale marble drawn
+/// in AIM_SKIN and lit by its own light, so it shows by night, AIM_UNDER and AIM_OVER voxels
+/// under and over 0, with short marks in from its four quarters on the bigger ones, so where it's aimed reads like a sight laid on the
+/// ground without hiding what's under it. Made voxel by voxel: its sizes are in radii, so the
+/// line's the same width in meters whichever size it's drawn at.
+fn aim_ring(k: usize) -> (Model, Vector3<f64>) {
+    let radius = aim_ring_radius(k);
+    let voxel = aim_ring_voxel(k);
+    // Voxels a radius, the line's half width and the marks' length, in radii
+    let res = radius / voxel;
+    let half = (AIM_THIN * radius).clamp(1.5 * voxel, AIM_LINE) * 0.5 / radius;
+    let tick = if radius >= AIM_TICKS_FROM { (AIM_TICK * radius).min(AIM_TICK_MOST) / radius } else { 0.0 };
+    let side = (2.0 * (1.0 + half) * res).ceil() as usize + 2;
+    let height = AIM_UNDER + AIM_OVER;
+    let mut voxels = vec![AIR; side * side * height];
+    let middle = side as f64 * 0.5;
+    for y in 0..side {
+        for x in 0..side {
+            let (px, py) = ((x as f64 + 0.5 - middle) / res, (y as f64 + 0.5 - middle) / res);
+            let r = px.hypot(py);
+            let line = (r - 1.0).abs() <= half;
+            let mark = tick > 0.0 && r <= 1.0 && r >= 1.0 - half - tick && (px.abs() <= half || py.abs() <= half);
+            if line || mark {
+                for z in 0..height {
+                    voxels[x + (y + z * side) * side] = MARBLE;
+                }
+            }
+        }
+    }
+    (Model { size: [side as u32, side as u32, height as u32], voxels }, Vector3::new(0.0, 0.0, -(AIM_UNDER as f64) / res))
+}
+
+fn ellipsoid_part(c: [f64; 3], radii: [f64; 3], material: u8) -> crate::animals::Part {
+    crate::animals::ellipsoid(c, radii, material)
+}
+
 type Job = Box<dyn Fn() -> (Model, Vector3<f64>) + Sync>;
 
 /// The models from BLASTS on, made on every core at once
@@ -1122,6 +1411,17 @@ pub fn models() -> Vec<(Model, Vector3<f64>)> {
     jobs.push(Box::new(moon));
     for look in 0..ELEMENT_LOOKS {
         jobs.push(Box::new(move || streak(look)));
+    }
+    jobs.push(Box::new(stone_boulder));
+    jobs.push(Box::new(stone_slab));
+    jobs.push(Box::new(holy_spear));
+    for look in 0..ELEMENT_LOOKS {
+        jobs.push(Box::new(move || bolt_bar(look)));
+    }
+    jobs.push(Box::new(tendrils));
+    jobs.push(Box::new(bone_spikes));
+    for k in 0..AIM_RINGS {
+        jobs.push(Box::new(move || aim_ring(k)));
     }
     let next = AtomicUsize::new(0);
     let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
@@ -1179,6 +1479,43 @@ mod tests {
         println!("{} effect models, {:.1} MB, made in {:.0} ms", models.len(), bytes as f64 / 1e6, took.as_secs_f64() * 1000.0);
     }
 
+    /// The slim aim rings, drawn as combat draws them at any radius rings are put down at: the
+    /// line goes all the way round exactly that far out, is no wider than a little over AIM_LINE
+    /// wherever it's drawn, and all the sizes together stay small
+    #[test]
+    fn aim_rings_are_slim_and_true() {
+        let models = models();
+        for radius in [0.8, 1.0, 1.5, 2.4, 2.8, 3.5, 4.5, 5.0, 6.0, 7.5, 9.0, 10.0, 12.0] {
+            let (index, res) = aim_ring_for(radius);
+            let (m, anchor) = &models[index - BLASTS];
+            let side = m.size[0] as usize;
+            assert_eq!(m.size[0], m.size[1]);
+            // Its top layer, which is what's seen, a voxel over where it's put
+            let top = (m.size[2] - 1) as usize;
+            let solid = |(x, y): (i64, i64)| x >= 0 && y >= 0 && (x as usize) < side && (y as usize) < side && m.voxels[x as usize + (y as usize + top * side) * side] != AIR;
+            assert!(m.size[2] <= 2 && -anchor.z * radius <= 1.01 * radius / res, "{radius} m: reaches {} m down", -anchor.z * radius);
+            // How big a voxel is drawn, in meters, and where a point that far out is in it
+            let voxel = radius / res;
+            let middle = side as f64 * 0.5;
+            let at = |meters: f64, a: f64| ((a.cos() * meters / voxel + middle).floor() as i64, (a.sin() * meters / voxel + middle).floor() as i64);
+            for k in 0..720 {
+                let a = k as f64 / 720.0 * TAU;
+                assert!(solid(at(radius, a)), "{radius} m: a gap at {a:.3}");
+                // Clear just inside and outside the line, but where a mark points in
+                let off = AIM_LINE * 1.12 * 0.5 + 1.5 * voxel;
+                assert!(!solid(at(radius + off, a)), "{radius} m: wider than it should be outside at {a:.3}");
+                let quarter = (a / (TAU / 4.0)).round() * TAU / 4.0;
+                if radius < AIM_TICKS_FROM || ((a - quarter).abs() * radius) > AIM_LINE + 2.0 * voxel {
+                    assert!(!solid(at(radius - off, a)), "{radius} m: wider than it should be inside at {a:.3}");
+                }
+            }
+        }
+        let rings = &models[AIM_RING - BLASTS..AIM_RING - BLASTS + AIM_RINGS];
+        let bytes: usize = rings.iter().map(|(m, _)| m.voxels.len()).sum();
+        println!("{AIM_RINGS} aim rings, {:.2} MB", bytes as f64 / 1e6);
+        assert!(bytes < 3_500_000, "the aim rings take {bytes} bytes");
+    }
+
     /// What's on the outside of `model`, by material: the voxels next to air
     fn outside(model: &Model) -> Vec<(u8, usize)> {
         let [sx, sy, sz] = model.size.map(|s| s as i64);
@@ -1225,7 +1562,7 @@ mod tests {
     }
 
     /// sRGB colors of the materials, as in the palette in shaders\traverse.comp
-    const PALETTE: [[f64; 3]; 89] = [
+    const PALETTE: [[f64; 3]; 90] = [
         [0.00, 0.00, 0.00], [0.28, 0.48, 0.17], [0.50, 0.35, 0.22], [0.58, 0.56, 0.55], [0.86, 0.74, 0.50], [0.95, 0.97, 1.00], [0.10, 0.30, 0.45], [0.45, 0.29, 0.17],
         [0.27, 0.54, 0.15], [0.92, 0.14, 0.14], [0.98, 0.84, 0.14], [0.80, 0.78, 0.74], [0.42, 0.56, 0.22], [0.10, 0.36, 0.10], [0.95, 0.75, 0.12], [0.95, 0.42, 0.06],
         [0.78, 0.08, 0.06], [0.58, 0.28, 0.85], [0.96, 0.96, 0.92], [0.68, 0.60, 0.54], [0.32, 0.48, 0.14], [0.90, 0.96, 0.98], [0.38, 0.63, 0.20], [0.10, 0.32, 0.20],
@@ -1237,7 +1574,7 @@ mod tests {
         [0.20, 0.58, 0.14], [0.80, 0.70, 0.40], [0.30, 0.56, 0.22], [0.18, 0.48, 0.10], [0.74, 0.42, 0.26], [0.80, 0.82, 0.86], [0.34, 0.36, 0.40], [0.98, 0.76, 0.26],
         [0.70, 0.44, 0.20], [0.40, 0.23, 0.13], [0.60, 0.10, 0.12], [0.86, 0.82, 0.70], [0.10, 0.08, 0.13], [0.92, 0.90, 0.82], [0.72, 0.88, 0.98], [1.00, 0.50, 0.12],
         [0.55, 0.85, 1.00], [0.70, 0.80, 1.00], [0.45, 1.00, 0.25], [0.80, 0.45, 1.00], [0.45, 0.12, 0.75], [0.95, 0.08, 0.12], [1.00, 0.92, 0.60], [0.62, 0.88, 0.16],
-        [0.46, 0.03, 0.06],
+        [0.46, 0.03, 0.06], [0.58, 0.38, 0.27],
     ];
 
     /// A pixel of a voxel of `material` facing `normal`, lit roughly as traverse.comp and post.comp

@@ -13,11 +13,40 @@ use nalgebra::{UnitQuaternion, Vector2, Vector3};
 use crate::animals::{self, ANIMAL_MODELS, Animal, AnimalInstance, Build, Look, Model, pack_models};
 use crate::audio::{Cue, Ground, Sound};
 use crate::bosses::{self, Deed, Flock, Move};
-use crate::combat::{Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
+use crate::combat::{self, Arena, Combat, Controls, HostileKind, Loaded, MAX_MANA, View};
 use crate::leaves::Leaves;
 use crate::player::WaterLevel;
-use crate::weapons::{Build as WeaponBuild, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
-use crate::worldgen::{World, is_passable, material::*};
+use crate::levels::{self, Slain, Source};
+use crate::skills::{self, Stat};
+use crate::realms::{self, Scaling};
+use crate::wings;
+use crate::save;
+use crate::weapons::{Build as WeaponBuild, DROP_BLOOD, DROP_EMBER, DROP_ICE, DROP_MUD, DROP_VENOM, DROP_VOID, DROP_WATER, Element, Kind, Library, Profile, STATS, Shot, Special, Style, Unit, Weapon};
+use crate::worldgen::{self, World, is_passable, material::*};
+use crate::serpents;
+use crate::theme;
+use crate::tools;
+
+/// What dragons breathe and leave burning, see src\dragons.rs
+mod dragonfire;
+/// What avians and gargoyles throw, call down and break into, see src\avians.rs
+mod aerie;
+/// What the krakens do to the player, see bosses::kraken
+mod brine;
+/// The specialist merchants, talked to and asked to the base, see src\merchants.rs
+mod specialists;
+/// Fish and sharks about the player, see src\animals\sealife.rs
+mod sea;
+mod demi;
+pub use demi::DemiLair;
+/// The weapon in hand drawn finer than the rest, see weapons::HELD_FINE
+mod fine;
+/// What's dropped, shown as itself and found by its beam of light
+mod drops;
+/// The camps in caves: their fires heard and smoking, and the dead rising at theirs, see
+/// src\worldgen\camps\cave.rs
+mod cavecamps;
+pub use cavecamps::CaveFire;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -25,12 +54,86 @@ pub const REACH: f64 = 4.0;
 const HUNGER_SECONDS: f64 = 600.0;
 /// Animals further than this aren't drawn, and food further than that, in meters
 const ANIMAL_RANGE: f64 = 90.0;
+/// Bosses nearer than this, in meters, or after the player, are drawn before anything else; those
+/// further off, lying in their lairs, by how near they are like the rest, see Game::instances()
+const BOSS_FIRST: f64 = 20.0;
 const FOOD_RANGE: f64 = 60.0;
 const PROP_RANGE: f64 = 30.0;
+/// Fish aren't drawn further off than this
+const FISH_RANGE: f64 = 40.0;
+/// A serpent's tongue, a hand long, isn't drawn further off than this
+const TONGUE_RANGE: f64 = 25.0;
 /// The most animals, bits of food, props and things flying drawn at once, nearest first
 const MAX_INSTANCES: usize = 140;
+/// Townsfolk, merchants, monsters and animals near the camera, see baked::live_range(), are posed
+/// afresh from their pieces every frame, see baked::Rig::live(), as many as LIVE_PIECES pieces
+/// between them, and never more than MOST_INSTANCES drawn in all: shaders\traverse.comp sorts no
+/// more than 256 by the tiles of the screen, and the hook's rope, wings and wards come after
+const LIVE_PIECES: usize = 110;
+const MOST_INSTANCES: usize = 224;
+/// Those already posed live are chosen to go on being as if they were this much nearer, see
+/// choose_near(), and go on being out to this much further than the rest are chosen
+const LIVE_STICK: f64 = 0.85;
+const LIVE_REACH: f64 = 1.05;
+/// The dead raised, among what's posed live, are by this on from the animals, see
+/// Game::choose_live()
+const RAISED_AT: usize = 1 << 20;
+
+/// Of `near`, each how far it is from the camera, how many pieces it's posed live in, how much it's
+/// posed live now, 0 to 1, and which it is, which are to be posed live, see Game::choose_live():
+/// the nearest within `range` of the camera, as many as LIVE_PIECES pieces between them. Those
+/// posed live already count as a little nearer, so two about as near don't change places back
+/// and forth, and keep their room till they've eased out of it, so one newly come near only starts
+/// to ease in once there's room enough for it as well as for every one still posed live.
+fn choose_near(near: &mut [(f64, usize, f64, usize)], range: f64) -> Vec<usize> {
+    let rank = |&(d, _, live, _): &(f64, usize, f64, usize)| if live > 0.0 { d * LIVE_STICK } else { d };
+    near.sort_by(|a, b| rank(a).total_cmp(&rank(b)));
+    let mut held: usize = near.iter().filter(|n| n.2 > 0.0).map(|n| n.1).sum();
+    let mut taken = 0;
+    let mut wanted = Vec::new();
+    for &(d, pieces, live, k) in near.iter() {
+        let within = if live > 0.0 { range * LIVE_REACH } else { range };
+        if d >= within || pieces == 0 || taken + pieces > LIVE_PIECES {
+            continue;
+        }
+        taken += pieces;
+        if live > 0.0 {
+            wanted.push(k);
+        } else if held + pieces <= LIVE_PIECES {
+            held += pieces;
+            wanted.push(k);
+        }
+    }
+    wanted
+}
+
+/// Those of `out` at `stand_ins` posed live, the first of each pair where its frame is in `out`
+/// and the second which it is, nearest first: each one's pieces from `pieces_of` put after the
+/// rest, seen only from the camera, and its frame left standing in for it, see animals::SEEN, as
+/// many as there's room for, LIVE_PIECES pieces at most and never more than MOST_INSTANCES in all
+fn pose_live(out: &mut Vec<AnimalInstance>, stand_ins: &[(usize, usize)], pieces_of: &mut dyn FnMut(usize, &mut Vec<AnimalInstance>) -> bool) {
+    let mut room = LIVE_PIECES;
+    let mut pieces = Vec::new();
+    for &(at, k) in stand_ins {
+        pieces.clear();
+        if at > 255 || !pieces_of(k, &mut pieces) {
+            continue;
+        }
+        let first = out.len();
+        if pieces.is_empty() || pieces.len() > room || first + pieces.len() > MOST_INSTANCES {
+            continue;
+        }
+        room -= pieces.len();
+        out[at] = out[at].stand_in();
+        let count = pieces.len();
+        out.extend(pieces.iter().map(|p| p.seen(at, first, count)));
+    }
+}
 /// About this many animals live around the player
 const ANIMALS: usize = 38;
+/// How many flocks and perches of what flies are about the player at once, see
+/// avians::spawn_wilds()
+const WINGED_PACKS: usize = 2;
 /// How fast a crossbowman's bolts fly, in meters a second
 const BOLT_PACE: f64 = 32.0;
 /// Apples keep growing back near the player up to this many
@@ -43,6 +146,14 @@ pub enum Item {
     Bucket,
     Apple,
     Meat,
+    /// Meat roasted over a fireplace: more filling than raw, see src\hearths.rs
+    RoastMeat,
+    /// A fish caught, see src\animals\sealife.rs, and one cooked over a fireplace: more filling,
+    /// and it heals
+    RawFish,
+    CookedFish,
+    /// A shark's tooth, a trophy for a merchant to buy
+    SharkTooth,
     Bread,
     /// Heals when drunk
     Potion,
@@ -53,6 +164,17 @@ pub enum Item {
     /// Special ammo, of Library::ammo, and how many: carried as one stack of each kind, used up a
     /// shot at a time
     Ammo(usize, u32),
+    /// What one of a realm's raid bosses leaves, of realm number this of realms::REALMS: three of
+    /// a realm's set into the Innert Gate open the way to the next. Never sold, dropped or lost.
+    InnertBlock(u8),
+    /// A grappling hook, thrown with a click while it's in hand to pull the player to where it
+    /// bites, see src\rope.rs, and wings, which let the player glide while they hold jump in the
+    /// air. Kept for good once found.
+    Hook,
+    /// Wings of kind wings::KINDS[k], worn on the back to glide on, see Game::worn
+    Wings(u8),
+    /// A jewel of kind `j`, see jewels.rs: set into a weapon's socket, it lifts its item level
+    Jewel(u8),
 }
 
 impl Item {
@@ -60,12 +182,23 @@ impl Item {
     fn look(self) -> Option<Look> {
         match self {
             Item::Apple => Some(Look::Apple),
-            Item::Meat => Some(Look::Meat),
+            Item::Meat | Item::RoastMeat => Some(Look::Meat),
             Item::Bread => Some(Look::Bread),
+            Item::RawFish => Some(Look::RawFish),
+            Item::CookedFish => Some(Look::CookedFish),
+            Item::SharkTooth => Some(Look::SharkTooth),
             Item::Potion => Some(Look::Potion),
             Item::Gold(_) => Some(Look::Coins),
-            Item::Bucket | Item::Weapon(_) | Item::Ammo(..) => None,
+            Item::InnertBlock(_) => Some(Look::InnertBlock),
+            Item::Hook => Some(Look::GrappleHook),
+            Item::Wings(_) => Some(Look::Wings),
+            Item::Bucket | Item::Weapon(_) | Item::Ammo(..) | Item::Jewel(_) => None,
         }
+    }
+
+    /// Something the player keeps whatever happens: it can't be sold, dropped or eaten
+    fn kept(self) -> bool {
+        matches!(self, Item::Bucket | Item::InnertBlock(_) | Item::Hook | Item::Wings(_))
     }
 
     fn name(self) -> &'static str {
@@ -73,18 +206,26 @@ impl Item {
             Item::Bucket => "Bucket",
             Item::Apple => "Apple",
             Item::Meat => "Raw Meat",
+            Item::RoastMeat => "Roast Meat",
+            Item::RawFish => "Raw Fish",
+            Item::CookedFish => "Cooked Fish",
+            Item::SharkTooth => "Shark Tooth",
             Item::Bread => "Bread",
             Item::Potion => "Healing Potion",
             Item::Gold(_) => "Gold",
             Item::Weapon(_) => "Weapon",
             Item::Ammo(..) => "Ammo",
+            Item::InnertBlock(_) => "Innert Block",
+            Item::Hook => "Grappling Hook",
+            Item::Wings(k) => wings::KINDS[k as usize].name,
+            Item::Jewel(_) => "Jewel",
         }
     }
 
     /// How many there are of it to show on its slot: the rounds in a stack of ammo, or `count`
     fn shown(self, count: u32) -> Option<u32> {
         match self {
-            Item::Bucket | Item::Weapon(_) => None,
+            Item::Bucket | Item::Weapon(_) | Item::Hook | Item::Wings(_) => None,
             Item::Ammo(_, n) => Some(n),
             _ => Some(count),
         }
@@ -95,6 +236,9 @@ impl Item {
         match self {
             Item::Apple => 12.0,
             Item::Meat => 30.0,
+            Item::RoastMeat => 55.0,
+            Item::RawFish => 14.0,
+            Item::CookedFish => 34.0,
             Item::Bread => 22.0,
             _ => 0.0,
         }
@@ -104,6 +248,7 @@ impl Item {
     fn heal(self) -> f64 {
         match self {
             Item::Potion => 50.0,
+            Item::CookedFish => 15.0,
             _ => 0.0,
         }
     }
@@ -119,14 +264,28 @@ fn food_price(item: Item) -> u32 {
     match item {
         Item::Apple => 4,
         Item::Meat => 6,
+        Item::RoastMeat => 14,
+        Item::RawFish => 4,
+        Item::CookedFish => 11,
+        Item::SharkTooth => 24,
         Item::Bread => 10,
         Item::Potion => 35,
+        // The hook's sold in the normal world once the way to the sky isles is open, see
+        // Game::sky_wares, and wings by every travelling merchant, see Game::stock()
+        Item::Hook => 400,
+        Item::Wings(k) => wings::KINDS[k as usize].price,
+        Item::Jewel(j) => crate::jewels::price(crate::jewels::parts(j).1),
         _ => 0,
     }
 }
 
 /// How much of what a merchant asks it pays for what the player sells it
 const SELL_SHARE: f64 = 0.35;
+
+/// Where a stall's goods start, after its weapons: where wings go, to be seen at the top of them
+fn goods_start(wares: &[Ware]) -> usize {
+    wares.iter().position(|w| matches!(w, Ware::Food(..))).unwrap_or(wares.len())
+}
 /// Slots on the quick bar; the rest of what's carried is only in the inventory
 pub const HOTBAR: usize = 9;
 /// Gold the player starts with
@@ -150,6 +309,11 @@ enum Deal {
     Sort,
     Buy(usize),
     Sell(usize),
+    /// Putting on the wings in a slot, and taking off those worn
+    Wear(usize),
+    TakeOff,
+    /// Setting the jewel in the first slot into the weapon in the second
+    Socket(usize, usize),
 }
 
 /// What was done with a slot in a grid of them: clicked, double or right clicked, or dragged onto
@@ -168,12 +332,165 @@ fn galley_width(painter: &egui::Painter, text: &str, size: f32) -> f32 {
     painter.layout_no_wrap(text.to_owned(), FontId::proportional(size), Color32::WHITE).size().x
 }
 
+/// How much less lucky jewels are rolled than weapons of the same luck, so they're the rarer, and
+/// the chance a chest has one, and how much more for each point of its luck, at most CHEST_JEWEL_MOST
+const JEWEL_LUCK: f64 = 0.35;
+const CHEST_JEWEL: f64 = 0.08;
+const CHEST_JEWEL_LUCK: f64 = 0.03;
+const CHEST_JEWEL_MOST: f64 = 0.35;
+
+/// The most of a blow armour from the skill web takes away
+const ARMOUR_MOST: f64 = 0.6;
+/// Skill points for a realm's three raid bosses all slain, and for a finale, and the most there can
+/// be of them all, see Game::claim_bonus()
+const REALM_POINTS: u32 = 1;
+const FINALE_POINTS: u32 = 2;
+#[cfg_attr(not(test), allow(dead_code))]
+pub const BONUS_POINTS_MOST: u32 = REALM_POINTS * realms::REALM_COUNT as u32 + FINALE_POINTS * 2;
+
+/// For screenshots of it: the moment of going up a level held on the HUD, see `--set level_up_hold`
+pub static HOLD_LEVEL_UP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Seconds the moment of going up a level shows for, see Game::level_hud()
+const LEVEL_UP_SECONDS: f32 = 3.2;
+
+/// The words over a boss's bar, all in `color`: its `name` in blackletter, a good deal bigger than
+/// `size`, what `kind` it is before it and a `note` on how it stands after it, as "enraged", in the
+/// headings' font smaller, so the name's what's seen first and the rest still reads
+fn boss_title(kind: &str, name: &str, note: &str, size: f32, color: Color32) -> egui::text::LayoutJob {
+    let small = egui::text::TextFormat::simple(theme::display(size - 5.0), color);
+    let mut job = egui::text::LayoutJob::default();
+    if !kind.is_empty() {
+        job.append(&format!("{kind}  ·  "), 0.0, small.clone());
+    }
+    job.append(name, 0.0, egui::text::TextFormat::simple(theme::blackletter(size + 7.0), color));
+    if !note.is_empty() {
+        job.append(&format!("  —  {note}"), 0.0, small);
+    }
+    job
+}
+
+/// The color a foe's level is shown in, by how it stands to the player's `player`: red well over,
+/// orange over, white the same, grey under
+fn foe_level_tint(level: u32, player: u32) -> Color32 {
+    if level >= player + 3 {
+        Color32::from_rgb(255, 95, 80)
+    } else if level > player {
+        Color32::from_rgb(255, 190, 90)
+    } else if level == player {
+        Color32::WHITE
+    } else {
+        Color32::from_gray(165)
+    }
+}
+
+/// How many steps up a health bar's lifted at most to clear the bars of what's nearer before it's
+/// left out, and the gap left between them in pixels, see place_bars()
+const BAR_LIFTS: u8 = 2;
+const BAR_GAP: f32 = 2.0;
+/// What's made of a bar left out
+const BAR_HIDDEN: u8 = u8::MAX;
+/// How much room in pixels a bar that was lifted or left out needs before it comes back down, so
+/// bars bunched up don't flicker between one place and another
+const BAR_SPARE: f32 = 5.0;
+/// How much nearer a bar that wasn't lifted counts as than it is, when it comes to which of two is
+/// lifted, so two about as far off don't take turns at it
+const BAR_KEEP: f32 = 0.9;
+/// Health bars fade from this far off, in meters, to this far, where they're this much of what
+/// they were
+const BAR_FADE: [f32; 3] = [25.0, 60.0, 0.55];
+
+/// Seconds a health bar shows for after a hit, see combat::Status::shown, and how long ago at most
+/// a hit can have been for what was hit to have its bar placed first, see focus_bars()
+const BAR_SHOWN: f64 = 4.0;
+const BAR_HIT: f64 = 3.0;
+/// Seconds the crosshair has to stay on something before its bar's placed first, so sweeping it
+/// across a pack doesn't shuffle their bars about, and seconds at the least a bar's placed first
+/// before a hit on something else takes that from it
+const BAR_DWELL: f64 = 0.25;
+const BAR_HOLD: f64 = 0.5;
+
+/// Whose health bar's placed first, never lifted nor left out, see focus_bars()
+#[derive(Clone, Copy, Default, PartialEq, Debug)]
+struct BarFocus {
+    /// The id of what it's over, and when it was last made so, in seconds
+    on: Option<(u32, f64)>,
+    /// What the crosshair's on, and since when
+    aimed: Option<(u32, f64)>,
+}
+
+/// Whose bar's placed first at `now`, in seconds, with `last` what it was a frame before: what
+/// the crosshair's on, `aimed`, once it's stayed there BAR_DWELL; else what was hit last, `hit`
+/// with when, if that was since the bar placed first was, and that's been so for BAR_HOLD at the
+/// least, or there's none; else the same as before, while its bar's `shown`
+fn focus_bars(last: BarFocus, now: f64, aimed: Option<u32>, hit: Option<(u32, f64)>, shown: impl Fn(u32) -> bool) -> BarFocus {
+    let aimed = aimed.map(|id| last.aimed.filter(|a| a.0 == id).unwrap_or((id, now)));
+    let held = last.on.filter(|&(id, _)| shown(id));
+    let on = match (aimed, hit) {
+        (Some((id, since)), _) if now - since >= BAR_DWELL => Some((id, now)),
+        (_, Some((id, at))) if held.is_none_or(|(was, since)| was != id && at > since && now - since >= BAR_HOLD) => Some((id, now)),
+        _ => held,
+    };
+    BarFocus { on, aimed }
+}
+
+/// Where each health bar goes, of those in `plates`, nearest first, each the id of what it's over
+/// and where it'd be with its level's badge: how many steps up it's lifted to clear those nearer,
+/// up to BAR_LIFTS, or BAR_HIDDEN if it's left out. The bar over `focus` goes down first, where it
+/// is, see focus_bars(). `last` is what was made of them last frame, sorted by id, as is what
+/// comes back.
+fn place_bars(plates: &[(u32, Rect)], last: &[(u32, u8)], focus: Option<u32>) -> Vec<(u32, u8)> {
+    let mut placed: Vec<Rect> = Vec::with_capacity(plates.len());
+    let mut lifts = Vec::with_capacity(plates.len());
+    let first = plates.iter().filter(|p| Some(p.0) == focus);
+    for &(id, rect) in first.chain(plates.iter().filter(|p| Some(p.0) != focus)) {
+        let was = last.binary_search_by_key(&id, |e| e.0).ok().map(|k| last[k].1);
+        let step = rect.height() + BAR_GAP;
+        let lift = (0..=BAR_LIFTS).find(|&k| {
+            // Lower than it was only with room to spare
+            let spare = if was.is_some_and(|w| k < w) { BAR_SPARE } else { 0.0 };
+            let at = rect.translate(vec2(0.0, -step * k as f32)).expand(spare + BAR_GAP * 0.5);
+            placed.iter().all(|p| !p.intersects(at))
+        });
+        if let Some(k) = lift {
+            placed.push(rect.translate(vec2(0.0, -step * k as f32)));
+        }
+        lifts.push((id, lift.unwrap_or(BAR_HIDDEN)));
+    }
+    lifts.sort_unstable_by_key(|e| e.0);
+    lifts
+}
+
+/// And a weapon's item level: green over the player's, white the same, grey under
+fn item_level_tint(level: u32, player: u32) -> Color32 {
+    match level.cmp(&player) {
+        std::cmp::Ordering::Greater => Color32::from_rgb(120, 230, 110),
+        std::cmp::Ordering::Equal => Color32::WHITE,
+        std::cmp::Ordering::Less => Color32::from_gray(160),
+    }
+}
+
 /// What a weapon's worth to a merchant, by its rarity, before what its effects and synergies add
 const WEAPON_PRICES: [f64; 6] = [25.0, 60.0, 150.0, 360.0, 850.0, 2000.0];
 /// Seconds what's dropped flies out through the air before it lands
 const DROP_SECONDS: f64 = 0.75;
-/// How far off a weapon's beam of light shows where it lies, in meters
-const BEAM_RANGE: f64 = 45.0;
+/// How far off a beam of light shows where something dropped lies, in meters
+const BEAM_RANGE: f64 = 90.0;
+/// How tall each rarity's beam is, in meters: a legendary's and a mythic's tower over the trees
+const BEAM_HEIGHTS: [f64; 6] = [2.4, 3.2, 4.2, 5.4, 8.5, 11.0];
+/// Inside this many meters a beam has faded right out, and from the next it's whole, so close by
+/// it never washes over the view
+const BEAM_GONE: f64 = 2.0;
+const BEAM_WHOLE: f64 = 7.0;
+/// How many of what's dropped nearest the camera always have room among what's drawn, whatever
+/// else is about, see Game::instances()
+const DROP_ROOM: usize = 16;
+/// How far off what's dropped shows on the compass, in meters
+pub const DROP_MARKED: f64 = 60.0;
+/// How fast something dropped falls when what it lay on is dug away, and rises through water to
+/// float, in meters a second
+const DROP_FALL: f64 = 7.0;
+const DROP_RISE: f64 = 1.5;
 /// How far from a merchant the player can trade, in meters
 const SHOP_REACH: f64 = 6.0;
 
@@ -185,20 +502,32 @@ struct Pickup {
     /// Where it was thrown from as it was dropped, and seconds left before it lands
     from: Vector3<f64>,
     flying: f64,
-    /// Whether the camera can see it, for its beam of light to show
+    /// Whether the camera can see its beam of light, foot, middle or top
     seen: bool,
-    /// Shown by a beam of light like a weapon is, as the gold the player lost when they died
+    /// How much its beam shows, 0 to 1, easing in and out as it comes into sight and goes
+    shown: f32,
+    /// Shown by a beam as bright as an epic weapon's, as the gold the player lost when they died
     beacon: bool,
+    /// Landing without a sound, as what a boss leaves does, so its own death is all that's heard
+    quiet: bool,
+    /// Floating on the water, bobbing, rather than lying on the bottom
+    afloat: bool,
 }
 
 impl Pickup {
     fn lying(item: Item, position: Vector3<f64>, heading: f64) -> Self {
-        Pickup { item, position, heading, from: position, flying: 0.0, seen: false, beacon: false }
+        Pickup::thrown(item, position, heading, position, 0.0)
     }
 
-    /// Whether a beam of light shows where it lies
+    /// Thrown from `from` to land at `position` in `flying` seconds
+    fn thrown(item: Item, position: Vector3<f64>, heading: f64, from: Vector3<f64>, flying: f64) -> Self {
+        Pickup { item, position, heading, from, flying, seen: false, shown: 0.0, beacon: false, afloat: false, quiet: false }
+    }
+
+    /// Whether a beam of light shows where it lies: everything dropped does, but the apples
+    /// growing on the trees and fallen under them
     fn shines(&self) -> bool {
-        self.beacon || matches!(self.item, Item::Weapon(_))
+        self.beacon || self.item != Item::Apple
     }
 
     /// Where it is now, in voxels: flying in an arc from where it was dropped, then where it landed
@@ -280,6 +609,12 @@ pub enum DenKind {
     /// A city fallen under the land, overrun by the dead: its gate, streets, canal, square and the
     /// way into its temple, see src\worldgen\undercity.rs
     Sunken,
+    /// A perch on a castle's walls, a ruin's tower or before a fallen city's temple, a gargoyle
+    /// asleep on it in stone, see src\gargoyles.rs
+    Perch,
+    /// The dead's camp in a cave, the dead lying under its floor until someone comes near, see
+    /// src\game\cavecamps.rs
+    Risen,
 }
 
 /// Where a merchant has their stall: where in voxels, and where in the whole landscape, for what
@@ -291,6 +626,8 @@ pub struct Stall {
     /// For the royal armoury in a castle's throne room, which way the princess keeping it faces:
     /// she sells only legendary and mythic weapons, see royal_stock()
     pub royal: Option<f64>,
+    /// For a specialist's stall, their trade and which way they face, see src\merchants.rs
+    pub trade: Option<(crate::merchants::Trade, f64)>,
 }
 
 /// A town's square: where its middle is in voxels, on the paving, how many folk live round it
@@ -304,8 +641,13 @@ pub struct Town {
 /// How many weapons a royal armoury has for sale
 const ROYAL_WEAPONS: usize = 6;
 
+/// How likely each rarity is for each part of the weapons a royal armoury has, from common up, as
+/// Library::odds() gives them: very lucky, the odds it's always had, whatever those of what's
+/// found about the land, so it's the place to buy the best
+const ROYAL_ODDS: [f64; 6] = [0.55, 0.25 * 9.0, 0.13 * 81.0, 0.05 * 729.0, 0.018 * 6561.0, 0.002 * 59049.0];
+
 /// The weapons a royal armoury sells, rolled from `seed`: legendary and mythic ones only, rolled
-/// very lucky, no two of a family
+/// very lucky, no two of a family. Only those it keeps are built.
 fn royal_weapons(library: &Library, mut seed: u32) -> Vec<Weapon> {
     let legendary = library.rarities.iter().position(|r| r.id == "legendary").unwrap_or(library.rarities.len().saturating_sub(2));
     let mut weapons: Vec<Weapon> = Vec::new();
@@ -315,12 +657,118 @@ fn royal_weapons(library: &Library, mut seed: u32) -> Vec<Weapon> {
         }
         // As random() does, so a seed of 0 doesn't stay 0
         seed = hash(seed.wrapping_add(0x9e37_79b9));
-        let weapon = library.generate(seed, None, 9.0);
-        if weapon.grade >= legendary && weapons.iter().all(|w| w.family != weapon.family) {
-            weapons.push(weapon);
+        let (family, grade, _) = library.preview(seed, None, &ROYAL_ODDS);
+        if grade >= legendary && weapons.iter().all(|w| w.family != family) {
+            weapons.push(library.generate_with(seed, None, &ROYAL_ODDS));
         }
     }
     weapons
+}
+
+/// The families of the weapons the player starts with, one of each, see kit()
+const KIT: [&str; 16] = ["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip", "crossbow", "musket"];
+/// How lucky what a new player starts with is, as for Library::odds(), and the rarest any part of
+/// it, or any weapon of it, can be, of Library::rarities: plain gear, common to rare, nothing
+/// with a special attack, see kit(). Weapons with special attacks are to be found.
+const KIT_LUCK: f64 = 1.0;
+const KIT_RAREST: usize = 2;
+/// How many seeds kit() tries for each weapon no rarer than it's to be
+const KIT_TRIES: usize = 64;
+
+/// The weapons arm() gives the player, one of each of KIT: of which family each is, the seed it's
+/// made from and the odds of each rarity for its parts, as for Library::generate_with(). Rolled
+/// from `seed` with `luck`, and with `rarest`, no part or weapon rarer than that: a synergy or two
+/// can lift a weapon a grade above its parts, so then it's the first seed on whose weapon isn't.
+fn kit(library: &Library, seed: u32, luck: f64, rarest: Option<usize>) -> Vec<(usize, u32, Vec<f64>)> {
+    kit_of(library, &KIT, seed, luck, rarest)
+}
+
+/// The same for weapons of `families`, one of each, as a class starts with, see character::Class::kit()
+fn kit_of(library: &Library, families: &[&str], seed: u32, luck: f64, rarest: Option<usize>) -> Vec<(usize, u32, Vec<f64>)> {
+    let mut odds = library.odds(luck);
+    if let Some(top) = rarest {
+        odds.truncate(top + 1);
+    }
+    families
+        .iter()
+        .enumerate()
+        .filter_map(|(k, id)| {
+            let family = library.family(id)?;
+            let first = hash(seed ^ (k as u32 + 1) * 0x51ed);
+            let seed = match rarest {
+                Some(top) => std::iter::successors(Some(first), |&s| Some(hash(s))).take(KIT_TRIES).find(|&s| library.preview(s, Some(family), &odds).1 <= top).unwrap_or(first),
+                None => first,
+            };
+            Some((family, seed, odds.clone()))
+        })
+        .collect()
+}
+
+/// The share of the dead and of bandits who carry a weapon, to drop when they're killed, and how
+/// lucky it is, as for Library::odds(), before a realm's scaling: what they fought with, mostly
+/// common, one in about 200 with a special attack
+const MONSTER_WEAPON: f64 = 0.06;
+const MONSTER_LUCK: f64 = 0.4;
+
+/// How lucky the weapons a merchant has are, as for Library::odds(), before a realm's scaling:
+/// some of them rare, now and then epic, and only one stall in a dozen or so with something with
+/// a special attack
+const MERCHANT_LUCKS: [f64; 5] = [0.5, 0.7, 0.9, 1.1, 1.3];
+
+/// How much of a realm's scaling of luck what's found there has, as Scaling::luck to this power,
+/// see loot_scaling(): enough that the realms further on are richer, not so much that weapons
+/// with special attacks are in every chest there
+const REALM_LOOT: f64 = 0.5;
+
+/// How many times luckier the weapons found are in a realm scaled `scaling`, see REALM_LOOT
+fn loot_scaling(scaling: Scaling) -> f64 {
+    scaling.luck.max(0.0).powf(REALM_LOOT)
+}
+
+/// What something of `look` slain was, for the experience it gives and how its loot's levelled,
+/// see levels::Slain: a finale or an ultra, a raid boss, a boss or a monster. `key` is its lair's,
+/// for whether it's one of a realm's raid bosses or its finale, see Game::raid_lairs.
+fn slain_of(look: Look, key: Option<[i64; 3]>, raid_lairs: &HashMap<[i64; 3], u8>) -> Slain {
+    if look.is_ultra() || look == crate::dragons::ULTRA || key.is_some_and(|k| realms::is_finale_key(&k)) {
+        Slain::Finale
+    } else if look.is_raid() || key.is_some_and(|k| raid_lairs.contains_key(&k)) {
+        Slain::Raid
+    } else if look.is_boss() {
+        Slain::Boss
+    } else {
+        Slain::Monster
+    }
+}
+
+/// What sort of boss a hoard is a beaten one's, which decides what's in it, see hoard_rolls()
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Hoard {
+    /// One of the bosses about the land: in its lair, a dungeon's deepest hall, a great cavern
+    Boss,
+    /// One of a realm's raid bosses that isn't one of the huge ones
+    Raid,
+    /// One of the huge raid bosses, or a realm's finale
+    Huge,
+}
+
+/// How lucky the weapons a boss leaves are, as for Library::odds(), its best first, before a
+/// realm's scaling: a raid boss leaves far more and far better
+const BOSS_LUCKS: [f64; 2] = [8.0, 2.5];
+const RAID_LUCKS: [f64; 5] = [12.0, 5.0, 3.0, 2.5, 2.0];
+/// How likely the best of them is to be one with a special attack, rolled as lucky till it is,
+/// for each sort of Hoard: one of the bosses about the land's only as luck has it, about one in
+/// five; a realm's raid boss's very likely; a huge raid boss's or a finale's always. The rest of
+/// what they leave only now and then has one, so it's the raid bosses that leave them.
+const SURE_SPECIAL: [f64; 3] = [0.0, 0.8, 1.0];
+
+/// How each weapon in the hoard of a beaten boss is rolled, the best first: how lucky, as for
+/// Library::odds(), before a realm's scaling, and whether it's sure to have a special attack,
+/// which `rng` decides where it's not always so
+fn hoard_rolls(hoard: Hoard, rng: &mut u32) -> Vec<(f64, bool)> {
+    let lucks: &[f64] = if hoard == Hoard::Boss { &BOSS_LUCKS } else { &RAID_LUCKS };
+    let chance = SURE_SPECIAL[hoard as usize];
+    let sure = chance >= 1.0 || (chance > 0.0 && random(rng) < chance);
+    lucks.iter().enumerate().map(|(k, &luck)| (luck, k == 0 && sure)).collect()
 }
 
 /// What villagers say when spoken to
@@ -341,6 +789,9 @@ pub struct Lair {
     pub look: Look,
     pub position: Vector3<f64>,
     pub key: [i64; 3],
+    /// For one of a realm's raid bosses, which realm's Innert block it leaves, see realms.rs: it's
+    /// that boss whatever the land round it, and as hard to beat as the huge raid bosses
+    pub raid: Option<u8>,
 }
 
 /// How much health the player has at full
@@ -353,6 +804,9 @@ const THORNS: usize = 5;
 /// The fastest bosses and monsters can throw the player, in meters a second, along the ground and
 /// up: a blow knocks them a few steps back, it never flings them across the field
 const THROWN_MOST: f64 = 6.0;
+/// How lucky the roll is that makes the Coil Unending's fang, see Game::fang(): far luckier than
+/// any raid boss's best
+const FANG_LUCK: f64 = 60.0;
 /// How fast the player moves while chilled by frost, and stuck in web, next to usual
 const CHILLED_PACE: f64 = 0.55;
 const SNARED_PACE: f64 = 0.4;
@@ -378,6 +832,19 @@ const STORM_HEIGHT: f64 = 18.0;
 /// solid ground with room to stand over it, looking down from a few meters over that height, so
 /// down in a cave or a fallen city rather than up on the land over it; the top of the ground there
 /// if there's none
+/// Whether there's nothing solid between a blow landing at `at` and the player standing at `feet`,
+/// both in voxels, looking a quarter of a meter at a time, from a little over the ground to their
+/// chest
+fn open_between(world: &World, at: Vector3<f64>, feet: Vector3<f64>) -> bool {
+    let vpm = world.voxels_per_meter as f64;
+    let (from, to) = (at + Vector3::new(0.0, 0.0, 0.6 * vpm), feet + Vector3::new(0.0, 0.0, 1.0 * vpm));
+    let steps = ((to - from).norm() / (0.25 * vpm)).ceil() as usize;
+    (1..steps).all(|s| {
+        let p = from + (to - from) * (s as f64 / steps as f64);
+        is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
+    })
+}
+
 fn floor_near(world: &World, x: f64, y: f64, z: f64) -> f64 {
     let vpm = world.voxels_per_meter as f64;
     let (xi, yi) = (x as i64, y as i64);
@@ -396,6 +863,52 @@ struct Root {
     damage: f64,
     drag: Vector3<f64>,
     element: Option<Element>,
+    /// Not roots but a boss's element bursting up, of this kind of drop, see bosses::Deed::Flare
+    flare: Option<usize>,
+}
+
+/// The top of the ground at `x`, `y`, in voxels: the highest of what's solid there that isn't a
+/// tree's trunk
+pub fn ground_top(world: &World, x: f64, y: f64) -> f64 {
+    let (xi, yi) = (x.floor() as i64, y.floor() as i64);
+    let trunk = |m: u8| matches!(m, WOOD | BARK_DARK | BIRCH_BARK | PALM_WOOD | DEAD_WOOD | CACTUS);
+    (0..world.size[2] as i64)
+        .rev()
+        .find(|&z| {
+            let m = world.material_at(xi, yi, z);
+            !is_passable(m) && !trunk(m)
+        })
+        .map_or(0.0, |z| z as f64 + 1.0)
+}
+
+/// How far the water `at` is in goes round it, in meters, if it's a basin of its own no more than
+/// `most` meters out from there every way, as the Drowned Ring's, see worldgen::Arena: out each of
+/// sixteen ways to where the ground comes up out of the water to stay, past any stones standing in
+/// it, the middle one of those. None if it's open water some way.
+fn basin_round(world: &World, water: WaterLevel, at: Vector3<f64>, most: f64) -> Option<f64> {
+    let vpm = world.voxels_per_meter as f64;
+    let mut out = Vec::new();
+    for k in 0..16 {
+        let a = k as f64 * TAU / 16.0;
+        let (mut dry, mut shore) = (0, None);
+        for step in 1..=most as usize {
+            let (x, y) = (at.x + a.cos() * step as f64 * vpm, at.y + a.sin() * step as f64 * vpm);
+            let surface = water(x, y);
+            if !surface.is_finite() || ground_top(world, x, y) >= surface - 0.5 * vpm {
+                dry += 1;
+                // Wider than a stone standing in it
+                if dry >= 7 {
+                    shore = Some((step - dry) as f64);
+                    break;
+                }
+            } else {
+                dry = 0;
+            }
+        }
+        out.push(shore?);
+    }
+    out.sort_by(f64::total_cmp);
+    Some(out[out.len() / 2])
 }
 
 /// The ground under `at`, in voxels, looking down a few meters, or `at` if there's none
@@ -412,6 +925,16 @@ enum Target {
     Animal(usize),
     Pickup(usize),
     Chest(usize),
+}
+
+/// A blow a boss or monster landed: where, in voxels, how far round in meters, how hard, and what
+/// landed it, for what's built there to take, see raids.rs
+#[derive(Clone, Copy, Debug)]
+pub struct Blow {
+    pub at: Vector3<f64>,
+    pub radius: f64,
+    pub damage: f64,
+    pub look: Look,
 }
 
 pub struct Game {
@@ -451,6 +974,8 @@ pub struct Game {
     /// So the sound of being hurt doesn't go off every frame
     hurt_sound: f64,
     breath_sound: f64,
+    /// Seconds till a whirlwind's howl is heard again, see bosses::Deed::Gust
+    gust_sound: f64,
     /// So the whoosh of something just missing doesn't go off over and over
     dodge_sound: f64,
     /// The boss bar: which boss, how much health it showed last, a trail lagging behind that,
@@ -478,9 +1003,16 @@ pub struct Game {
     /// Bosses' lairs in this piece of the world, and those beaten, by where they are in the landscape
     lairs: Vec<Lair>,
     defeated: HashSet<[i64; 3]>,
+    /// The demi-bosses' lairs down in the ravines in this piece of the world, see src\demis.rs;
+    /// those beaten are among defeated
+    demis: Vec<DemiLair>,
+    /// Those the player's come near, marked on the map, see game\demi.rs
+    demis_seen: HashSet<[i64; 3]>,
     /// Dungeon halls in this piece of the world, and those cleared of monsters
     dens: Vec<[i64; 3]>,
     cleared: HashSet<[i64; 3]>,
+    /// The camps in caves in this piece of the world, see game\cavecamps.rs
+    cave_camps: cavecamps::CaveCamps,
     /// Chests beaten bosses left, kept as the world moves on
     boss_chests: Vec<Chest>,
     /// The hoards of the bandits' camps in this piece of the world, by their dens, and where each
@@ -489,6 +1021,12 @@ pub struct Game {
     /// Where the hoards turned up and not yet opened are, that the camera can see, for their beams
     /// of light to show
     beams: Vec<Vector3<f64>>,
+    /// How light it is, 0 at night to 1 by day, for the beams of what's dropped to glow by night
+    /// and stand out by day, see set_daylight()
+    daylight: f64,
+    /// The models of what's dropped that has none among the animals' or the weapons': each kind of
+    /// jewel, see jewels.rs, with its anchor. Drawn after the stage's, see model_words().
+    drop_models: Vec<(Model, Vector3<f64>)>,
     /// Cubic meters of water in the bucket
     bucket: f64,
     /// Gold carried, to spend at merchants
@@ -508,6 +1046,8 @@ pub struct Game {
     messages: Vec<(String, Instant)>,
     /// Sounds to play
     cues: Vec<Cue>,
+    /// Blows bosses and monsters landed since last asked, for what's built to take, see raids.rs
+    blows: Vec<Blow>,
     target: Option<Target>,
     apple_timer: f64,
     /// What weapons can be made of, and the ones the player has
@@ -520,13 +1060,184 @@ pub struct Game {
     loaded: Option<((usize, usize), Loaded)>,
     combat: Combat,
     leaves: Leaves,
-    /// The models of animals and things lying around, see animals::animal_models()
-    models: Vec<Model>,
+    /// Fish and sharks coming and going about the player, see game\sea.rs
+    sea: sea::Sea,
+    /// The models of animals and things lying around, see animals::animal_models(), with those
+    /// drawn from files read in, see src\assets.rs: shared with the thread reading them again
+    models: std::sync::Arc<Vec<Model>>,
     /// Changes whenever there are new models to draw, like when a weapon is found
     models_version: u32,
     seed: u32,
     rng: u32,
+    /// Something worth saving the game for straight away has happened, see take_milestone()
+    milestone: bool,
+    /// The Innert Gate or a realm's portal home, if it's in this piece of the world, see realms.rs,
+    /// and whether the player's just pressed E at it, see take_shrine()
+    shrines: Vec<Shrine>,
+    shrine_used: bool,
+    /// How much harder the realm the player's in is than its monsters' levels make it, see
+    /// realms::Scaling, and the band of levels they keep to, see levels.rs
+    scaling: Scaling,
+    band: levels::Band,
+    /// The player's level, the experience they have towards the next, and seconds since they last
+    /// went up one, for the HUD to show it
+    level: u32,
+    experience: f64,
+    levelled: f64,
+    /// The level the weapons of a save from before there were levels are given, see
+    /// set_legacy_level()
+    legacy_level: u32,
+    /// The skill web, which of its nodes are taken, the start always, and what they add up to,
+    /// see skills.rs; changed each time what's taken is, for the weapons to be worked out again,
+    /// see Weapon::set_boost()
+    web: Rc<skills::Web>,
+    taken: Vec<bool>,
+    totals: skills::Totals,
+    boost_version: u32,
+    /// Skill points over those levels give, for a realm's raid bosses all beaten and its finale,
+    /// and what's been claimed for, so nothing's claimed twice, see claim_bonus()
+    bonus_points: u32,
+    claimed: HashSet<String>,
+    /// Where the skill web's window is looking
+    pub skill_view: skills::View,
+    /// For screenshots: the slot of the inventory or a merchant's stall whose card shows as if the
+    /// pointer were over it, see `--set card_hover`
+    pub card_hover: Option<usize>,
+    /// The jewels' icons, made the first time one's drawn, see jewels::icon()
+    jewel_icons: std::cell::OnceCell<Vec<egui::TextureHandle>>,
+    /// Where each health bar over what's been hurt went last frame, by the id of what it's over, see
+    /// place_bars()
+    bar_lifts: std::cell::RefCell<Vec<(u32, u8)>>,
+    /// Whose bar's laid down first, see focus_bars(), and the clock it goes by
+    bar_focus: std::cell::RefCell<BarFocus>,
+    bar_clock: Instant,
+    /// The lairs of the realm's raid bosses whose Innert blocks open the way on, by their keys,
+    /// with which realm's each leaves
+    raid_lairs: HashMap<[i64; 3], u8>,
+    /// Whether the merchants sell a grappling hook, as they do in the journey through the realms
+    /// once the way to the sky isles is open
+    sky_wares: bool,
+    /// A window's open over the middle of the view, see set_covered()
+    covered: bool,
+    /// Omens of the Coil Unending lying on the way to its lair in Free Roam, see serpents::omens(),
+    /// and how dark the sky's got over it, 0 to 1
+    omens: Vec<(Look, Vector3<f64>, f64)>,
+    gloom: f64,
+    /// The wings worn on the back, of wings::KINDS, and the models of every kind of them
+    worn: Option<u8>,
+    wing_models: Vec<(Model, Vector3<f64>)>,
+    /// How the wings worn are flying, for the HUD, see wings.rs; whether the player's ever glided
+    /// on wings, till when how to is shown by them, and whether they've been told about wings
+    aloft: Option<Aloft>,
+    glided: bool,
+    wings_told: bool,
+    /// When fire last didn't take hold of the player for their drakeskin wings, to say so
+    fire_shrugged: f64,
+    /// The wing shrines in this piece of the world not yet claimed, by their keys, with the kind of
+    /// wings lying in each one's nest and where in voxels, and those the player's been told of, see
+    /// worldgen\aeries.rs
+    aeries: Vec<([i64; 3], u8, Vector3<f64>)>,
+    shrines_seen: HashSet<[i64; 3]>,
+    /// The models of the wards round raid bosses, see guardians.rs
+    ward_models: Vec<(Model, Vector3<f64>)>,
+    /// How many more monsters than usual each den's pack has, see realms::crowd()
+    crowd: usize,
+    /// What dragons breathed, spat and cracked open, going on, see game\dragonfire.rs
+    dragonfire: dragonfire::Fire,
+    /// The model editor's floor, and the weapon or part it's showing, with its voxels a meter,
+    /// see editor.rs
+    stage_models: Vec<Model>,
+    preview: Vec<(Model, Vector3<f64>)>,
+    /// One-off models drawn with the weapons, after the model editor's: trees coming down, see
+    /// felling.rs, each in a slot of its own
+    one_offs: Vec<Vec<u32>>,
+    /// How many times models_version went up for the one-off models alone, and the weapons'
+    /// models packed as of the rest of it, see weapon_model_words()
+    one_off_changes: u32,
+    packed_weapons: std::cell::RefCell<Option<(u32, Vec<u32>)>>,
+    /// The weapon in hand drawn finer, its models after the one-off models, see game\fine.rs
+    fine: fine::Fine,
+    /// What avians and gargoyles threw and called down, going on, see game\aerie.rs
+    aerie: aerie::Sky,
+    /// The krakens' ink and the rest, see game\brine.rs
+    brine: brine::Deep,
+    /// The specialist merchants: who keeps which stall, who's being talked to and who lives at the
+    /// base, see game\specialists.rs
+    trades: specialists::Trades,
+    /// Who's playing, see character.rs: their name, class and how hard it is, and their body's
+    /// pieces made for how they look, drawn after the weapons, in the colours each piece is drawn
+    /// in, see character::body: painted as they've painted it, and after its pieces the arms held
+    /// before the eye with the paint of the forearms, if any's painted there, see
+    /// character::paint::arms()
+    character: crate::character::Character,
+    body_models: Vec<(Model, Vector3<f64>)>,
+    body_colours: [u32; crate::character::body::PIECES],
+    /// Seen by a camera following behind in a screenshot run, see App::chase_camera(): the body
+    /// seen, and nothing held before the eye
+    seen_from_behind: bool,
 }
+
+/// How to glide, with the jump key as it's bound, see bindings.rs: "jump, then hold Space in the
+/// air to glide"
+fn glide_tip() -> String {
+    format!("jump, then hold {} in the air to glide", crate::bindings::words(crate::bindings::Action::Jump))
+}
+
+/// How to go on wings of kind `k`: how to glide, or for wings that truly fly, how to take off,
+/// see wings::Lift
+fn wings_tip(k: u8) -> String {
+    match wings::KINDS[k as usize % wings::KINDS.len()].flight {
+        Some(_) => format!("hold {}, or press it twice, to take off and fly; let go to glide", crate::bindings::words(crate::bindings::Action::Jump)),
+        None => glide_tip(),
+    }
+}
+
+/// How the wings worn are flying just now, shown beside the quick bar, see App::update_wings():
+/// whether they're gliding, and have been for a moment, how ready their move in the air is, from
+/// 0 to 1, with how it's done, and what their perk's doing, if it's worth saying
+#[derive(Clone, Copy, Default)]
+pub struct Aloft {
+    pub gliding: bool,
+    pub glided: bool,
+    pub ready: Option<(f32, &'static str)>,
+    pub note: Option<&'static str>,
+    /// For wings that truly fly, how much wind's left in them, 0 to 1, and whether they've tired
+    pub wind: Option<(f32, bool)>,
+}
+
+/// The chance a boss that isn't a raid boss leaves a pair of wings besides its hoard: a raid
+/// boss always does
+const BOSS_WINGS: f64 = 0.3;
+/// How lucky the wings a boss leaves are, a raid boss's, and an ultra's or a finale's, as for
+/// wings::pick(), before the realm's luck
+const BOSS_WING_LUCK: [f64; 3] = [1.6, 3.5, 8.0];
+/// The chance a chest has wings in, and how much more for each point of its luck, at most
+/// CHEST_WINGS_MOST
+const CHEST_WINGS: f64 = 0.06;
+const CHEST_WINGS_LUCK: f64 = 0.03;
+const CHEST_WINGS_MOST: f64 = 0.4;
+/// The chance a travelling merchant has a rarer pair besides the plain one, and how lucky it is
+const MERCHANT_RARE_WINGS: f64 = 0.4;
+const MERCHANT_WING_LUCK: f64 = 2.5;
+/// How lucky the wings lying on a wing shrine are, before the realm's luck, and how near one the
+/// player's told of it and it's marked on the compass, in meters, see worldgen\aeries.rs
+const SHRINE_WING_LUCK: f64 = 3.0;
+pub const SHRINE_SEEN: f64 = 150.0;
+
+/// The Innert Gate, or a realm's portal home: where the middle of its foot is in voxels, which way
+/// its front faces, for the gate how many of each realm's Innert blocks are set in it, and whether
+/// light fills its opening, as it does once it leads somewhere
+#[derive(Clone, PartialEq, Debug)]
+pub struct Shrine {
+    pub gate: bool,
+    pub position: Vector3<f64>,
+    pub facing: f64,
+    pub placed: [u32; realms::REALM_COUNT],
+    pub open: bool,
+}
+
+/// How near the gate or a portal the player has to be to use it, in meters from its foot
+const SHRINE_REACH: f64 = 6.0;
 
 fn hash(mut x: u32) -> u32 {
     x ^= x >> 16;
@@ -620,6 +1331,7 @@ impl Game {
             fumes: Vec::new(),
             hurt_sound: 0.0,
             breath_sound: 0.0,
+            gust_sound: 0.0,
             dodge_sound: 0.0,
             boss_bar: ("", 1.0, 1.0, 0.0, 0.0),
             knockback: Vector3::zeros(),
@@ -633,11 +1345,16 @@ impl Game {
             safe_for: 0.0,
             lairs: Vec::new(),
             defeated: HashSet::new(),
+            demis: Vec::new(),
+            demis_seen: HashSet::new(),
             dens: Vec::new(),
             cleared: HashSet::new(),
+            cave_camps: Default::default(),
             boss_chests: Vec::new(),
             hoards: HashMap::new(),
             beams: Vec::new(),
+            daylight: 1.0,
+            drop_models: drops::models(),
             bucket: 0.0,
             gold: STARTING_GOLD,
             shop: None,
@@ -648,6 +1365,7 @@ impl Game {
             inspected: None,
             messages: Vec::new(),
             cues: Vec::new(),
+            blows: Vec::new(),
             target: None,
             apple_timer: 0.0,
             library: Library::load(),
@@ -656,31 +1374,116 @@ impl Game {
             loaded: None,
             combat: Combat::new(seed, ANIMAL_MODELS as u32),
             leaves: Leaves::new(seed),
-            models: animals::animal_models(),
+            sea: sea::Sea::default(),
+            models: std::sync::Arc::new(animals::made_ahead()),
             models_version: 0,
             seed,
             rng: hash(seed ^ 0x9a3e),
+            milestone: false,
+            shrines: Vec::new(),
+            shrine_used: false,
+            scaling: Scaling::NONE,
+            band: levels::Band::ANY,
+            level: 1,
+            experience: 0.0,
+            levelled: f64::INFINITY,
+            legacy_level: 1,
+            web: Rc::new(skills::Web::load()),
+            taken: Vec::new(),
+            totals: skills::Totals::default(),
+            boost_version: 1,
+            bonus_points: 0,
+            claimed: HashSet::new(),
+            skill_view: skills::View::new(),
+            card_hover: None,
+            jewel_icons: std::cell::OnceCell::new(),
+            bar_lifts: Default::default(),
+            bar_focus: Default::default(),
+            bar_clock: Instant::now(),
+            raid_lairs: HashMap::new(),
+            sky_wares: false,
+            covered: false,
+            worn: None,
+            wing_models: crate::assets::wings(wings::models()),
+            aloft: None,
+            glided: false,
+            wings_told: false,
+            fire_shrugged: f64::NEG_INFINITY,
+            aeries: Vec::new(),
+            shrines_seen: HashSet::new(),
+            dragonfire: Default::default(),
+            stage_models: crate::editor::stage_models(),
+            preview: Vec::new(),
+            one_offs: Vec::new(),
+            one_off_changes: 0,
+            packed_weapons: std::cell::RefCell::new(None),
+            fine: Default::default(),
+            aerie: Default::default(),
+            brine: Default::default(),
+            trades: Default::default(),
+            omens: Vec::new(),
+            gloom: 0.0,
+            ward_models: crate::assets::wards(crate::guardians::models()),
+            crowd: 0,
+            character: Default::default(),
+            body_models: Vec::new(),
+            body_colours: [0; crate::character::body::PIECES],
+            seen_from_behind: false,
         };
-        game.arm(seed, 1.0);
+        game.forget_skills();
+        game.arm_anew(seed);
         game.populate(world, water, seed, near);
         game
     }
 
-    /// What the player starts with: a sword, a bow and a staff, a crossbow and a musket and one of
-    /// every other kind of weapon, rolled from `seed` with `luck`, as for Library::roll_rarity(),
-    /// a few bundles of special ammo, and the bucket. Replaces whatever weapons they had.
+    /// What a new player starts with, see arm(): plain gear, nothing with a special attack
+    fn arm_anew(&mut self, seed: u32) {
+        let kit = kit_of(&self.library, self.character.class.kit(), seed, KIT_LUCK, Some(KIT_RAREST));
+        self.arm_with(&kit);
+    }
+
+    /// Who's playing, see character.rs: what they're called, the class whose lean is added to the
+    /// skill web's and whose kit a new character starts with, see new_character(), how hard it is,
+    /// and their body made for how they look, its colours on the arms held before the eye too
+    pub fn set_character(&mut self, character: &crate::character::Character) {
+        use crate::character::paint;
+        let looks_changed = self.body_models.is_empty() || self.character.looks != character.looks || self.character.paint != character.paint;
+        self.character = character.clone();
+        if looks_changed {
+            self.body_models = paint::painted(&character.looks, &character.paint);
+            let held = [crate::weapons::ARMS, crate::weapons::ARMS + 1].map(|k| self.combat.models.get(k));
+            if let [Some(right), Some(left)] = held
+                && let Some(arms) = paint::arms(&character.paint, &character.looks, &self.body_models, [right, left])
+            {
+                let anchors = [right.1, left.1];
+                self.body_models.extend(arms.into_iter().zip(anchors));
+            }
+            self.body_colours = crate::character::body::colours(&character.looks);
+            self.models_version += 1;
+        }
+        self.combat.set_outfit(self.body_colours[crate::character::body::FOREARM[0]]);
+        self.retotal();
+    }
+
+    /// For trying them out, as `--set weapon_seed=7 weapon_luck=3` does: what the player starts
+    /// with rolled with `luck`, as for Library::odds(), however rare, see arm_with()
     pub fn arm(&mut self, seed: u32, luck: f64) {
+        let kit = kit(&self.library, seed, luck, None);
+        self.arm_with(&kit);
+    }
+
+    /// The player armed with `kit`, as kit() rolls it: a sword, a bow and a staff, a crossbow and
+    /// a musket and one of every other kind of weapon, a few bundles of special ammo, and the
+    /// bucket. Replaces whatever weapons they had.
+    fn arm_with(&mut self, kit: &[(usize, u32, Vec<f64>)]) {
         self.weapons.clear();
         self.combat.renumber(|_| None);
         self.loaded = None;
         self.slots.retain(|(item, _)| !matches!(item, Item::Weapon(_) | Item::Bucket | Item::Ammo(..)));
         let mut fresh = Vec::new();
-        let families = ["sword", "bow", "staff", "axe", "hammer", "dagger", "spear", "wand", "greatsword", "katana", "scythe", "halberd", "scepter", "whip", "crossbow", "musket"];
-        for (k, family) in families.into_iter().enumerate() {
-            if let Some(family) = self.library.family(family) {
-                self.weapons.push(self.library.generate(hash(seed ^ (k as u32 + 1) * 0x51ed), Some(family), luck));
-                fresh.push((Item::Weapon(self.weapons.len() - 1), 1));
-            }
+        for (family, seed, odds) in kit {
+            self.weapons.push(self.library.generate_with(*seed, Some(*family), odds));
+            fresh.push((Item::Weapon(self.weapons.len() - 1), 1));
         }
         fresh.push((Item::Bucket, 1));
         for id in ["broadhead_arrows", "incendiary_bolts", "scatter_shot"] {
@@ -696,11 +1499,20 @@ impl Game {
 
     /// Fills a new world with animals and apples. What the player carries stays.
     pub fn populate(&mut self, world: &World, water: WaterLevel, seed: u32, near: Vector3<f64>) {
+        // Nothing lives in the model editor's studio, see editor.rs
+        if crate::editor::is_app() {
+            return;
+        }
         self.animals = animals::spawn(world, water, seed, near);
+        let mut rng = hash(seed ^ 0x5e4);
+        self.animals.extend(animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS));
+        self.animals.extend(crate::avians::spawn_wilds(world, water, &mut rng, near, worldgen::land_of(seed), WINGED_PACKS));
+        self.aerie.clear();
         self.lairs.clear();
         self.defeated.clear();
         self.dens.clear();
         self.cleared.clear();
+        self.cave_camps = Default::default();
         self.boss_chests.clear();
         self.hoards.clear();
         self.beams.clear();
@@ -708,6 +1520,7 @@ impl Game {
         self.target = None;
         self.seed = seed;
         self.combat.clear();
+        self.dragonfire.clear();
         self.leaves.clear();
         self.rest = None;
         self.safe_for = 0.0;
@@ -732,7 +1545,16 @@ impl Game {
     /// everything lying around, the arrows, spells and arms, and the falling leaves. The weapons'
     /// come after them, see weapon_model_words().
     pub fn model_words(&self) -> Vec<u32> {
-        let models: Vec<&Model> = self.models.iter().chain(self.combat.models.iter().map(|(m, _)| m)).chain(self.leaves.models.iter()).collect();
+        let models: Vec<&Model> = self
+            .models
+            .iter()
+            .chain(self.combat.models.iter().map(|(m, _)| m))
+            .chain(self.leaves.models.iter())
+            .chain(self.wing_models.iter().map(|(m, _)| m))
+            .chain(self.ward_models.iter().map(|(m, _)| m))
+            .chain(self.stage_models.iter())
+            .chain(self.drop_models.iter().map(|(m, _)| m))
+            .collect();
         pack_models(&models)
     }
 
@@ -740,9 +1562,19 @@ impl Game {
     /// They're kept apart from the rest, which never change, as sending all of those again each
     /// time a weapon turns up takes long enough to hold up the game.
     pub fn weapon_model_words(&self) -> Vec<u32> {
-        let models: Vec<&Model> = self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).collect();
+        // The weapons' packed as they were last time if only the one-off models have changed since,
+        // so a tree coming down doesn't pack every weapon again; the player's body after them, see
+        // character::body, made again whenever how they look is
+        let key = self.models_version.wrapping_sub(self.one_off_changes);
+        let mut cache = self.packed_weapons.borrow_mut();
+        if cache.as_ref().is_none_or(|(k, _)| *k != key) {
+            let models: Vec<&Model> = self.weapons.iter().flat_map(|w| w.look.frames.iter().map(|(m, _)| m)).chain(self.preview.iter().map(|(m, _)| m)).chain(self.body_models.iter().map(|(m, _)| m)).collect();
+            *cache = Some((key, pack_models(&models)));
+        }
         let mut words = vec![self.weapon_model(0)];
-        words.extend(pack_models(&models));
+        // The one-off models, then the weapon in hand's fine look, see game\fine.rs
+        let alone: Vec<&[u32]> = self.one_offs.iter().chain(&self.fine.packed).map(|w| w.as_slice()).collect();
+        words.extend(crate::animals::splice_packed(cache.as_ref().map_or(&[][..], |(_, w)| w.as_slice()), &alone));
         words
     }
 
@@ -758,7 +1590,7 @@ impl Game {
     /// Where weapon `index`'s models start among model_words()
     fn weapon_model(&self, index: usize) -> u32 {
         let before: usize = self.weapons[..index].iter().map(|w| w.look.frames.len()).sum();
-        self.leaf_model() + (self.leaves.models.len() + before) as u32
+        self.leaf_model() + (self.leaves.models.len() + self.wing_models.len() + self.ward_models.len() + self.stage_models.len() + self.drop_models.len() + before) as u32
     }
 
     /// The weapon in hand, with its index
@@ -771,6 +1603,137 @@ impl Game {
 
     pub fn holding_weapon(&self) -> bool {
         self.held().is_some()
+    }
+
+    /// For looking at things with nothing in hand: past the last slot of the quick bar
+    pub fn empty_hands(&mut self) {
+        self.selected = self.slots.len();
+    }
+
+    /// For trying things out: `count` of `item` put first on the quick bar, in hand
+    pub fn hand(&mut self, item: Item, count: u32) {
+        self.slots.insert(0, (item, count));
+        self.selected = 0;
+    }
+
+    /// Whether what's in hand is raw meat or raw fish, to cook over a fire, see src\hearths.rs
+    pub fn holding_raw_meat(&self) -> bool {
+        self.slots.get(self.selected).is_some_and(|(item, _)| matches!(item, Item::Meat | Item::RawFish))
+    }
+
+    /// Whether what's in hand is raw fish, rather than meat
+    pub fn holding_raw_fish(&self) -> bool {
+        self.slots.get(self.selected).is_some_and(|(item, _)| *item == Item::RawFish)
+    }
+
+    /// Roasts a piece of the raw meat in hand into roast meat, or cooks a raw fish: how many raw are
+    /// left
+    pub fn cook_selected(&mut self) -> u32 {
+        let (cooked, count) = match self.slots.get(self.selected) {
+            Some(&(Item::Meat, count)) => (Item::RoastMeat, count),
+            Some(&(Item::RawFish, count)) => (Item::CookedFish, count),
+            _ => return 0,
+        };
+        if count > 1 {
+            self.slots[self.selected].1 -= 1;
+        } else {
+            self.remove_slot(self.selected);
+        }
+        self.add_item(cooked, 1);
+        // What's cooked in hand next, once the raw's all done
+        if count == 1
+            && let Some(at) = self.slots.iter().position(|(item, _)| *item == cooked)
+            && at < HOTBAR
+        {
+            self.selected = at;
+        }
+        self.milestone = true;
+        count - 1
+    }
+
+    /// A fire's smoke or ember, see Combat::wisp()
+    pub fn wisp(&mut self, at: Vector3<f64>, velocity: Vector3<f64>, life: f64, ember: bool) {
+        self.combat.wisp(at, velocity, life, ember);
+    }
+
+    /// Warmed by a fire for `dt` seconds: `rate` health a second back, once `safe` seconds have
+    /// gone by since the player was last hurt
+    pub fn warm(&mut self, dt: f64, rate: f64, safe: f64) {
+        if self.dead.is_none() && self.since_hurt > safe {
+            self.health = (self.health + rate * dt).min(self.max_health());
+        }
+    }
+
+    /// The tool in hand, if it's a tool: which, and how good, see tools.rs
+    pub fn held_tool(&self) -> Option<(tools::Tool, usize)> {
+        self.held().and_then(|(_, w)| tools::of(&self.library, w))
+    }
+
+    /// The tier of the best `tool` carried, if one is
+    pub fn best_tool(&self, tool: tools::Tool) -> Option<usize> {
+        self.best_gear(tool).map(|g| g.tier)
+    }
+
+    /// The best `tool` carried for gathering with, if one is, see tools::best()
+    pub fn best_gear(&self, tool: tools::Tool) -> Option<tools::Gear> {
+        tools::best(
+            self.slots
+                .iter()
+                .filter_map(|&(item, _)| match item {
+                    Item::Weapon(w) => tools::gear(&self.library, &self.weapons[w]),
+                    _ => None,
+                })
+                .filter(|g| g.tool == tool),
+        )
+    }
+
+    /// The tool in hand, everything about it, if it's a tool
+    pub fn held_gear(&self) -> Option<tools::Gear> {
+        self.held().and_then(|(_, w)| tools::gear(&self.library, w))
+    }
+
+    /// What weapons and tools are made of, see weapons.rs
+    pub fn library(&self) -> &Library {
+        &self.library
+    }
+
+    /// How many slots of the pack are taken, for scripts to inspect the last
+    pub fn slot_count(&self) -> usize {
+        self.slots.len()
+    }
+
+    /// The camera shaken this hard at least, 0 to about 1, as by a tree crashing down near by
+    pub fn jolt(&mut self, amount: f64) {
+        self.shake = self.shake.max(amount);
+    }
+
+    /// The player thrown this fast, in voxels a second, as by a tree coming down on them
+    pub fn shove(&mut self, velocity: Vector3<f64>) {
+        self.thrown += velocity;
+    }
+
+    /// How many melee blows have landed, for a tool's to gather where they land, see tools.rs
+    pub fn swings_landed(&self) -> u32 {
+        self.combat.landed
+    }
+
+    /// Puts a tool of `grade` in the pack, see tools.rs, if there's one to make
+    pub fn give_tool(&mut self, tool: tools::Tool, grade: usize) -> bool {
+        match tools::make(&self.library, tool, grade) {
+            Some(weapon) => {
+                self.give_weapon(weapon);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Puts `weapon`, made rather than found, in the pack
+    pub fn give_weapon(&mut self, weapon: Weapon) {
+        self.weapons.push(weapon);
+        self.models_version += 1;
+        self.slots.push((Item::Weapon(self.weapons.len() - 1), 1));
+        self.milestone = true;
     }
 
     pub fn holding_bucket(&self) -> bool {
@@ -816,6 +1779,7 @@ impl Game {
         match item {
             Item::Weapon(i) => self.weapons[i].name.clone(),
             Item::Ammo(k, n) => format!("{n} {}", self.library.ammo[k].display_name),
+            Item::Jewel(j) => crate::jewels::name(j),
             _ => item.name().to_owned(),
         }
     }
@@ -888,6 +1852,20 @@ impl Game {
     }
 
     /// For trying it out: gives the player a bundle of the special ammo called `id` and loads it
+    /// Every kind of special ammo flying slowly across the view in rows in front of `eye`,
+    /// looking along `forward`, for a contact sheet of them, see Combat::ammo_sheet()
+    pub fn ammo_sheet(&mut self, eye: Vector3<f64>, forward: Vector3<f64>) {
+        let bow = self.library.generate(7, self.library.family("bow"), 0.0);
+        self.combat.ammo_sheet(&self.library, &bow.profile, eye, forward);
+    }
+
+    /// A hand cannon's shell coming down on `at` and bursting `size` times as big as usual, see
+    /// Combat::drop_shell()
+    pub fn drop_shell(&mut self, at: Vector3<f64>, size: f64) {
+        let cannon = self.library.generate(7, self.library.family("handcannon"), 0.0);
+        self.combat.drop_shell(&cannon.profile, at, size);
+    }
+
     pub fn give_ammo(&mut self, id: &str) {
         if let Some(k) = self.library.ammo.iter().position(|a| a.id == id) {
             self.add_item(Item::Ammo(k, self.library.ammo[k].bundle * 3), 1);
@@ -920,11 +1898,18 @@ impl Game {
         self.weapons.iter().map(|w| self.describe(w)).collect::<Vec<_>>().join("\n")
     }
 
+    /// What a player does with the mouse to use the power on right click of the weapon in hand,
+    /// `t` seconds after starting to, for scripts, see Combat::power_controls()
+    pub fn power_controls(&self, t: f64, step: f64) -> crate::combat::Controls {
+        self.held().map_or_else(Default::default, |(_, w)| self.combat.power_controls(w, t, step))
+    }
+
     /// The weapon in hand, as describe_weapons() puts it, with its special attack
     pub fn describe_held(&self) -> String {
         self.held().map_or("nothing".into(), |(_, w)| {
             let special = w.profile.special.as_ref().map_or(String::new(), |(s, part)| format!(" Special: {} from {}.", s.name(), part));
-            format!("{}{}", self.describe(w), special)
+            let power = w.profile.power.map_or(String::new(), |p| format!(" Right click: {}.", p.name(w.profile.element)));
+            format!("{}{}{}", self.describe(w), special, power)
         })
     }
 
@@ -968,7 +1953,7 @@ impl Game {
     /// hunted, and the mana left
     pub fn report(&self, near: Vector3<f64>) -> String {
         let nearest = self.animals.iter().filter(|a| !a.look.is_pet()).min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()));
-        let animal = nearest.map_or("no animals".to_owned(), |a| format!("nearest {} at {:.0}/{:.0} health, tint {}", a.look.name(), a.health, a.look.health(), a.status.tint()));
+        let animal = nearest.map_or("no animals".to_owned(), |a| format!("nearest {} at {:.0}/{:.0} health, tint {}", a.look.name(), a.health, a.max_health, a.status.tint()));
         let held = self.held().map_or("nothing".to_owned(), |(_, w)| w.name.clone());
         let bosses = self.animals.iter().filter(|a| a.look.is_boss()).count();
         let boss = self.animals.iter().filter(|a| a.look.is_boss()).min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()));
@@ -978,7 +1963,7 @@ impl Game {
                 b.look.name(),
                 (b.position - near).norm() / self.combat.vpm(),
                 b.health,
-                b.look.health(),
+                b.max_health,
                 if b.boss.as_ref().is_some_and(|s| s.engaged) { " fighting" } else { "" }
             ),
             None => animal,
@@ -1029,18 +2014,67 @@ impl Game {
         self.target = None;
     }
 
+    /// One more lair, as when a realm's finale rises, see realms::on_raids_beaten()
+    pub fn add_lair(&mut self, world: &World, water: WaterLevel, lair: Lair) {
+        let mut lairs = std::mem::take(&mut self.lairs);
+        lairs.retain(|l| l.key != lair.key);
+        lairs.push(lair);
+        self.set_lairs(world, water, lairs);
+    }
+
     /// The bosses' lairs in the piece of the world just built, in its voxels: a boss turns up in each
     /// that isn't beaten and doesn't have one already
     pub fn set_lairs(&mut self, world: &World, water: WaterLevel, lairs: Vec<Lair>) {
         for lair in &lairs {
+            if let Some(realm) = lair.raid {
+                self.raid_lairs.insert(lair.key, realm);
+            }
             // Not the monsters of a den at the same spot, like a warlord's bandits
             let here = self.animals.iter().any(|a| a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.key == lair.key));
             if here || self.defeated.contains(&lair.key) {
                 continue;
             }
             let seed = hash(lair.key[0] as u32 ^ hash(lair.key[1] as u32));
-            let look = lair.look.for_ground(ground_round(world, water, lair.position));
-            if let Some(boss) = animals::spawn_boss(world, water, look, lair.position, lair.key, seed) {
+            // A raid boss is that boss whatever the land, and so's a realm's guardian, see guardians.rs
+            // Otherwise the kind of it for the land it's in, the Dreaming Red's own, and for the
+            // ground round it
+            let look = if lair.raid.is_some() || lair.look.is_great_serpent() || realms::is_guardian_key(&lair.key) {
+                lair.look
+            } else {
+                lair.look.for_land(worldgen::land_of(self.seed)).for_ground(ground_round(world, water, lair.position))
+            };
+            // A great serpent that swims lies in the deep water by its lair, out from the shore, the
+            // rest on the ground
+            let least = match look {
+                _ if look.is_ultra() => 2.5,
+                Look::Kraken => 3.0,
+                Look::GrottoSquid => bosses::kraken::SHALLOW,
+                _ => 1.5,
+            };
+            let deep = look.swims().then(|| animals::deep_water_near(world, water, lair.position, if look.is_ultra() { 55.0 } else { 40.0 }, least)).flatten();
+            // A kraken's only ever in the water, looked for further off if there's none near; but a
+            // realm's guardian has to be somewhere, as its raid bosses are warded till it's slain
+            let deep = deep.or_else(|| look.is_kraken().then(|| animals::deep_water_near(world, water, lair.position, 120.0, 1.2)).flatten());
+            if look.is_kraken() && deep.is_none() && !realms::is_guardian_key(&lair.key) {
+                continue;
+            }
+            let swimming = deep.map(|at| Animal::boss(look, Vector3::new(at.x, at.y, water(at.x, at.y) - serpents::draft(look) * world.voxels_per_meter as f64), lair.key, seed));
+            if let Some(mut boss) = swimming.or_else(|| animals::spawn_boss(world, water, look, lair.position, lair.key, seed)) {
+                // The Coil Unending's as hard as it is already, whether it's the Water realm's finale
+                // or in Free Roam, see Look::health()
+                if lair.raid.is_some() && !look.is_raid() && !look.is_ultra() {
+                    boss.toughen(realms::RAID_PROMOTION);
+                }
+                // A realm's finale is the hardest of all of it
+                if realms::is_finale_key(&lair.key) && !look.is_ultra() {
+                    boss.toughen(realms::FINALE_PROMOTION);
+                }
+                // Risen in a basin of its own, as the Drowned Ring's, the Coil Unending keeps to it
+                if look.is_ultra()
+                    && let Some(state) = &mut boss.boss
+                {
+                    state.basin = basin_round(world, water, boss.position, 40.0);
+                }
                 self.animals.push(boss);
             }
         }
@@ -1055,12 +2089,18 @@ impl Game {
     /// pack to a den.
     pub fn set_dens(&mut self, world: &World, water: WaterLevel, dens: Vec<Den>) {
         self.hoards = dens.iter().filter_map(|d| d.band.as_ref().map(|b| (d.key, (b.hoard.clone(), b.hint)))).collect();
+        self.cave_camps.dead.clear();
         for den in &dens {
             let here = self.animals.iter().any(|a| a.look.is_monster() && a.boss.as_ref().is_some_and(|b| b.key == den.key));
             if here || self.cleared.contains(&den.key) {
                 continue;
             }
             let seed = hash(den.key[0] as u32 ^ hash(den.key[1] as u32 ^ 0xde4));
+            // The dead of a camp in a cave lie under its floor until someone comes near
+            if den.kind == DenKind::Risen {
+                self.cave_camps.dead.push(cavecamps::Sleeping { position: den.position, key: den.key, looks: cavecamps::risen(seed) });
+                continue;
+            }
             // A camp's band as many as it says, some of its bandits crossbowmen or shieldbearers
             let band: Vec<Look>;
             let haunted: &[Look] = match den.kind {
@@ -1110,13 +2150,25 @@ impl Game {
                     2 => &[Look::Spiderling, Look::Spiderling, Look::Spiderling, Look::Spiderling],
                     _ => &[Look::Gloomwing, Look::Gloomwing, Look::Gloomwing, Look::Skeleton],
                 },
+                // A gargoyle of the land's own stone, alone on its perch
+                DenKind::Perch => {
+                    band = vec![crate::gargoyles::of_land(worldgen::land_of(self.seed))];
+                    &band
+                }
+                // Not yet, see above
+                DenKind::Risen => &[],
             };
             let spread = match &den.band {
                 Some(b) => b.within,
                 None if den.kind == DenKind::Camp => animals::PACK_SPREAD + 0.7,
+                None if den.kind == DenKind::Perch => 0.2,
                 None => animals::PACK_SPREAD + 0.4,
             };
-            for mut monster in animals::spawn_pack(world, water, haunted, den.position, spread, hash(seed)) {
+            // More of them the further on in the realms, see realms::crowd(), but for a camp's
+            // band, as many as its camp has room for
+            let extra = if matches!(den.kind, DenKind::Camp | DenKind::Perch) { 0 } else { self.crowd };
+            let haunted: Vec<Look> = haunted.iter().copied().chain(haunted.iter().copied().cycle().take(extra)).collect();
+            for mut monster in animals::spawn_pack(world, water, &haunted, den.position, spread, hash(seed)) {
                 if let Some(state) = &mut monster.boss {
                     state.key = den.key;
                 }
@@ -1124,6 +2176,57 @@ impl Game {
             }
         }
         self.dens = dens.iter().map(|d| d.key).collect();
+    }
+
+    /// For trying out a necromancer's summons in a screenshot run, see main.rs's `summons` script:
+    /// a weapon made with the part `id` in hand, its power ready and the mana for it. False if
+    /// there's no such part.
+    pub fn hold_part(&mut self, id: &str) -> bool {
+        let Some(weapon) = self.library.with_part(id, None) else {
+            return false;
+        };
+        self.weapons.push(weapon);
+        self.slots.insert(0, (Item::Weapon(self.weapons.len() - 1), 1));
+        self.selected = 0;
+        self.models_version += 1;
+        self.combat.ready_power();
+        true
+    }
+
+    /// The same: one monster, `look`, put down at `at`, leaving the player be till roused; its id
+    pub fn place_foe(&mut self, world: &World, water: WaterLevel, look: Look, at: Vector3<f64>) -> Option<u32> {
+        let at = Vector3::new(at.x, at.y, floor_near(world, at.x, at.y, at.z));
+        // Somewhere dry near it, if not right there
+        let mut monster = [0.5, 3.0, 8.0].into_iter().find_map(|within| animals::spawn_pack(world, water, &[look], at, within, self.rng).pop())?;
+        self.rng = hash(self.rng);
+        if let Some(state) = &mut monster.boss {
+            state.leave_be();
+        }
+        let id = monster.id;
+        self.animals.push(monster);
+        Some(id)
+    }
+
+    /// Rouses the monster `id`, to come for the player, and gives the middle of it, if it's up
+    pub fn rouse(&mut self, id: u32) -> Option<Vector3<f64>> {
+        let vpm = self.combat.vpm();
+        let a = self.animals.iter_mut().find(|a| a.id == id && a.health > 0.0)?;
+        if let Some(state) = &mut a.boss {
+            state.provoke();
+        }
+        Some(a.center(vpm as u32))
+    }
+
+    /// The middle of monster `id`, if it's up
+    pub fn foe_at(&self, id: u32) -> Option<Vector3<f64>> {
+        let vpm = self.combat.vpm();
+        self.animals.iter().find(|a| a.id == id && a.health > 0.0).map(|a| a.center(vpm as u32))
+    }
+
+    /// What a necromancer's dead are after, for a screenshot run to say
+    pub fn summons_line(&self) -> String {
+        let on = self.combat.summons_on().and_then(|(id, why)| self.animals.iter().find(|a| a.id == id).map(|a| format!("the {} {id} ({why}, {:.0} health)", a.look.name(), a.health)));
+        format!("{} of the dead up, after {}", self.combat.raised_count(), on.unwrap_or_else(|| "nothing".into()))
     }
 
     /// For trying them out: a pack of monsters, `looks`, turns up `distance` meters along `ahead`
@@ -1227,6 +2330,18 @@ impl Game {
         let at = near + flat * distance * vpm;
         let ground = floor_near(world, at.x, at.y, near.z);
         let key = [at.x as i64, at.y as i64, -1];
+        // What swims in deep water nearby, out from the shore, a kraken only there
+        if look.swims() {
+            let least = if look.is_kraken() { if look == Look::Kraken { 3.0 } else { bosses::kraken::SHALLOW } } else { 1.5 };
+            if let Some(deep) = animals::deep_water_near(world, water, Vector3::new(at.x, at.y, ground), 45.0, least) {
+                let top = water(deep.x, deep.y) - serpents::draft(look) * vpm;
+                self.animals.push(Animal::boss(look, Vector3::new(deep.x, deep.y, top), key, self.rng));
+                return;
+            }
+            if look.is_kraken() {
+                return;
+            }
+        }
         if let Some(boss) = animals::spawn_boss(world, water, look, Vector3::new(at.x, at.y, ground), key, self.rng) {
             self.animals.push(boss);
         }
@@ -1245,7 +2360,16 @@ impl Game {
             if let Some(boss) = &mut animal.boss {
                 boss.recenter(shift);
             }
+            if let Some(dragon) = &mut animal.dragon {
+                dragon.recenter(shift);
+            }
+            if let Some(winged) = &mut animal.winged {
+                winged.recenter(shift);
+            }
         }
+        self.dragonfire.recenter(shift);
+        self.aerie.recenter(shift);
+        self.brine.recenter(shift);
         for root in &mut self.roots {
             root.at -= shift;
         }
@@ -1259,23 +2383,31 @@ impl Game {
             pickup.position -= shift;
         }
         self.pickups.retain(|p| inside(&p.position));
+        for (_, at, _) in &mut self.omens {
+            *at -= shift;
+        }
+        self.omens.retain(|(_, at, _)| inside(at));
         for chest in &mut self.boss_chests {
             chest.position -= shift;
         }
         self.boss_chests.retain(|c| inside(&c.position));
+        for (_, _, at) in &mut self.aeries {
+            *at -= shift;
+        }
         self.knockback = Vector3::zeros();
         self.thrown = Vector3::zeros();
         self.combat.recenter(shift);
         self.leaves.recenter(shift);
         self.target = None;
         self.merchants.retain(|(id, _)| self.animals.iter().any(|a| a.id == *id));
+        self.recenter_trades(shift);
         self.forget_weapons();
         self.rest = self.rest.map(|r| r - shift).filter(inside);
 
         // Animals and wolves wander in to make up the numbers, away from the player so they don't
         // pop up right in front of them. Bosses, dungeon monsters, merchants and villagers have
         // homes of their own.
-        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && a.look != Look::Merchant && !a.look.is_villager() && !a.look.is_royal()).count());
+        let missing = ANIMALS.saturating_sub(self.animals.iter().filter(|a| a.look.build().is_none() && !a.look.is_sea() && !a.look.is_merchant() && a.look != Look::TradeStall && !a.look.is_villager() && !a.look.is_royal()).count());
         let wolves = self.animals.iter().filter(|a| a.look == Look::Wolf).count();
         let bandits = self.animals.iter().filter(|a| a.look.is_bandit()).count();
         // The packs of the country the player's come into, as the old ones are left behind
@@ -1299,6 +2431,22 @@ impl Game {
                     self.animals.push(animal);
                 }
             }
+        }
+        // And serpents of the land it is, a nest or two of them, as those about are left behind
+        let serpents = self.animals.iter().filter(|a| a.look.is_serpent()).count();
+        if serpents < 3 {
+            let vpm = world.voxels_per_meter as f64;
+            let mut rng = hash(self.rng ^ 0x5e4);
+            let nests = animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS);
+            self.animals.extend(nests.into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm));
+        }
+        // And what flies in the land it is, as those about are left behind, see avians.rs
+        let fliers = self.animals.iter().filter(|a| a.look.is_winged() && a.look.is_monster() && a.boss.as_ref().is_some_and(|b| b.key[2] == -2)).count();
+        if fliers < 4 {
+            let vpm = world.voxels_per_meter as f64;
+            let mut rng = hash(self.rng ^ 0xa71a);
+            let flocks = crate::avians::spawn_wilds(world, water, &mut rng, near, worldgen::land_of(seed), WINGED_PACKS);
+            self.animals.extend(flocks.into_iter().filter(|a| (a.position - near).norm() > 40.0 * vpm));
         }
         self.rng = hash(self.rng);
     }
@@ -1338,6 +2486,27 @@ impl Game {
     }
 
     /// The sounds to play since last time, the fighting's too
+    /// The blows bosses and monsters landed since last asked, see Blow
+    pub fn take_blows(&mut self) -> Vec<Blow> {
+        std::mem::take(&mut self.blows)
+    }
+
+    /// Brings a monster into the world, as night raids do, see raids.rs
+    pub fn add_animal(&mut self, animal: Animal) {
+        self.animals.push(animal);
+    }
+
+    /// Every animal, boss and monster, for night raids to lead round walls, see raids.rs
+    pub fn animals_mut(&mut self) -> impl Iterator<Item = &mut Animal> {
+        self.animals.iter_mut()
+    }
+
+    /// Where things have gone into water since last time, and how big a splash each made, see
+    /// Combat::waves
+    pub fn take_waves(&mut self) -> Vec<(Vector3<f64>, f64)> {
+        std::mem::take(&mut self.combat.waves)
+    }
+
     pub fn take_cues(&mut self) -> Vec<Cue> {
         let mut cues = std::mem::take(&mut self.cues);
         cues.append(&mut self.combat.cues);
@@ -1347,6 +2516,11 @@ impl Game {
     /// How many leaves are falling around, to tell if there are trees about
     pub fn leaves_falling(&self) -> usize {
         self.leaves.count()
+    }
+
+    /// Shows the falling leaves or hides them, as the settings say
+    pub fn show_falling_leaves(&mut self, on: bool) {
+        self.leaves.set_falling(on);
     }
 
     /// Where explosions want holes blown in the world since last time, and how big, in meters
@@ -1378,9 +2552,31 @@ impl Game {
     /// which way it looks, and `controls` what the mouse buttons do with a weapon in hand.
     pub fn update(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View, controls: Controls, dt: f64) {
         self.gather_packs();
+        // Bosses and monsters as tough as their levels make them, however they turned up: in their
+        // lairs and dens, wandering in, or called up by a boss. Each is given its level here,
+        // unless it came with one, see levels::foe_level().
+        let (band, player_level, journeys) = (self.band, self.level, self.scaling.toughness);
         for animal in &mut self.animals {
+            if !animal.toughened && animal.look.build().is_some() {
+                animal.toughened = true;
+                if animal.level == 0 {
+                    let slain = if animal.demi.is_some() { Slain::Demi } else { slain_of(animal.look, animal.boss.as_ref().map(|b| b.key), &self.raid_lairs) };
+                    let mut roll = hash(animal.id ^ 0x1e7e1);
+                    animal.level = levels::foe_level(band, player_level, slain, random(&mut roll));
+                }
+                animal.toughen(levels::toughness(animal.level) * journeys);
+            }
             animal.update(world, water, player, dt);
+            // What's struck at a dragon lands on whichever part of it the player's looking at
+            if let Some(dragon) = &mut animal.dragon {
+                dragon.aim(view.eye, view.forward(), world.voxels_per_meter as f64);
+            }
+            if let Some(winged) = &mut animal.winged {
+                winged.aim(view.eye, view.forward(), world.voxels_per_meter as f64);
+            }
         }
+        self.aim_at_serpents(view);
+        self.tend_sea(world, water, player, view, dt);
 
         // The dead don't fight
         let held = match self.slots.get(self.selected) {
@@ -1393,9 +2589,15 @@ impl Game {
         if self.loaded.as_ref().map(|(key, _)| *key) != wanted {
             self.loaded = wanted.map(|(w, k)| {
                 let profile = Rc::new(self.library.loaded(&self.weapons[w], k));
-                ((w, k), Loaded { ammo: k, profile, head: self.library.ammo[k].head, burst: self.library.ammo[k].burst })
+                ((w, k), Loaded { ammo: k, profile, head: self.library.ammo[k].head, burst: self.library.ammo[k].burst, style: crate::weapons::ammo_style(&self.library.ammo[k].id) })
             });
         }
+        self.boost_weapons();
+        // The special attack charging as the skill web has it, and as much quicker for blows as
+        // the weapon's item level makes them harder, so it charges in about as many blows at
+        // every level
+        self.combat.charge_rate = self.charge_rate();
+        self.combat.charge_scale = held.map_or(1.0, |i| levels::weapon_power(self.weapons[i].item_level()));
         let weapon = held.map(|i| (i, &self.weapons[i]));
         let loaded = self.loaded.as_ref().map(|(_, l)| l);
         self.combat.update(&mut Arena { world, animals: &mut self.animals, view, player, water }, weapon, loaded, controls, dt);
@@ -1409,14 +2611,34 @@ impl Game {
         // What the bosses did, and what they threw landing
         let mut deeds = Vec::new();
         for animal in &mut self.animals {
+            // What its attacks are made of: the Coil Unending's changes as it goes, see
+            // serpents::ULTRA_ELEMENTS
+            let element = serpents::element_now(animal);
             if let Some(boss) = &mut animal.boss {
-                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, d)));
+                // Whether what it's doing is made of its element, so the rings showing where it's
+                // coming down glow with it
+                let glowing = boss.doing().is_some_and(|d| bosses::elemental(d.m, element));
+                deeds.extend(boss.deeds.drain(..).map(|d| (animal.look, element, d, glowing, animal.id)));
             }
         }
-        for (look, deed) in deeds {
-            self.carry_out(look, deed, world, water, player, view);
+        for (look, element, deed, glowing, id) in deeds {
+            if glowing && let Some(e) = element {
+                self.glow_deed(e, deed);
+            }
+            // Whose it is, for whatever of it strikes the player to be known as its, see hurt()
+            self.combat.set_doer(Some(id));
+            self.carry_out(look, element, deed, world, water, player, view);
+            self.combat.set_doer(None);
         }
+        self.tend_dragonfire(world, player, view, dt);
+        self.tend_aerie(world, player, view, dt);
+        self.tend_cave_camps(world, water, player, view, dt);
+        self.tend_brine(player, dt);
+        self.watch_for_lairs(player);
+        self.watch_for_shrines(player);
         self.grow_roots(world, player, view, dt);
+        self.whirl(world, water, player, dt);
+        self.shove_out_of_serpents(player, world.voxels_per_meter as f64);
         self.spin_webs(player, dt);
         self.reek(world, player, dt);
         for (damage, from, element) in std::mem::take(&mut self.combat.player_hits) {
@@ -1428,13 +2650,22 @@ impl Game {
         // What a special attack did for the player
         let heal = std::mem::take(&mut self.combat.heal);
         if heal > 0.0 && self.health > 0.0 {
-            self.health = (self.health + heal).min(MAX_HEALTH);
+            self.health = (self.health + heal).min(self.max_health());
         }
         self.knockback += std::mem::take(&mut self.combat.dash);
         self.look_after_player(world, water, player, dt);
         // The boss bar's trail catching up with what it's lost, a moment after each blow
-        if let Some((foe, health, ..)) = self.foe(view.eye) {
-            let name = foe.name();
+        if let Some((foe, health, .., name)) = self.foe(view.eye) {
+            // A demi-boss stirring from among the bones, see src\demis.rs
+            if foe.is_monster() && name != self.boss_bar.0 {
+                self.say(format!("{name} stirs among the bones and comes for you!"));
+            }
+            // A boss newly come for the player taunts them by name
+            if !foe.is_monster() && name != self.boss_bar.0 && !name.is_empty() {
+                const TAUNTS: [&str; 5] = ["So, {}. You came at last.", "Kneel, {}, and it will be quick.", "Another fool. Your name, {}, dies with you.", "I smell your fear, {}.", "{}... they will sing nothing of you."];
+                let taunt = TAUNTS[hash(name.len() as u32 ^ self.seed ^ self.level) as usize % TAUNTS.len()].replace("{}", &self.character.name);
+                self.say(format!("The {name}: \"{taunt}\""));
+            }
             let (shown, mut trail, mut hold, mut flash) = if name == self.boss_bar.0 { (self.boss_bar.1, self.boss_bar.2, self.boss_bar.3, self.boss_bar.4) } else { (health, health, 0.0, 0.0) };
             if health < shown - 0.03 {
                 flash = 1.0;
@@ -1448,10 +2679,16 @@ impl Game {
             }
             self.boss_bar = (name, health, trail.max(health), hold, (flash - dt / 0.18).max(0.0));
         }
+        if let Some(feet) = player {
+            self.note_demis(feet, world.voxels_per_meter as f64);
+        }
         self.reap(world);
-        self.leaves.update(world, water, view.eye, dt);
-        self.look_over_loot(world, player, view, dt);
+        // Who near the camera is posed live from their pieces, easing in and out of it
+        self.choose_live(view, dt);
+        self.leaves.update(world, water, view.eye, view.forward(), dt);
+        self.look_over_loot(world, water, player, view, dt);
 
+        self.levelled = if HOLD_LEVEL_UP.load(std::sync::atomic::Ordering::Relaxed) { 0.7 } else { self.levelled + dt };
         if player.is_some() {
             let before = self.hunger;
             self.hunger = (self.hunger - 100.0 * dt / HUNGER_SECONDS).max(0.0);
@@ -1479,9 +2716,117 @@ impl Game {
         self.messages.retain(|(_, at)| at.elapsed().as_secs_f64() < 4.0);
     }
 
-    /// What a boss or monster did: hurting the player, throwing things, sounds and shaking the ground
-    fn carry_out(&mut self, look: Look, deed: Deed, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View) {
+    /// The whirlpool a great serpent keeps its lair in, see serpents::LairKind: the water spinning
+    /// round where it is, spray thrown up off it, and whoever's swimming in it drawn round and in
+    fn whirl(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, dt: f64) {
         let vpm = world.voxels_per_meter as f64;
+        let time = self.combat.time();
+        let pools: Vec<Vector3<f64>> = self
+            .animals
+            .iter()
+            .filter(|a| a.health > 0.0 && serpents::lair_kind(a.look) == Some(serpents::LairKind::Whirlpool))
+            .filter_map(|a| a.boss.as_ref().map(|b| b.home))
+            .filter(|home| (home - self.feet.unwrap_or(*home)).norm() < 80.0 * vpm)
+            .collect();
+        for home in pools {
+            let surface = water(home.x, home.y);
+            if !surface.is_finite() || surface <= home.z - vpm {
+                continue;
+            }
+            for k in 0..3 {
+                let round = 3.0 + 3.5 * k as f64;
+                let a = time * (1.6 - 0.35 * k as f64) + k as f64 * 2.1;
+                let at = Vector3::new(home.x + a.cos() * round * vpm, home.y + a.sin() * round * vpm, surface);
+                self.combat.stir(at, 0.5, dt, DROP_WATER);
+            }
+            // Drawn round and in, swimming in it
+            if let Some(feet) = player {
+                let off = (feet - home).xy() / vpm;
+                let d = off.norm();
+                if d > 1.0 && d < 12.0 && water(feet.x, feet.y) > feet.z + 0.3 * vpm {
+                    let round = Vector2::new(-off.y, off.x) / d;
+                    let pull = (round * 1.6 - off / d * 0.9) * (1.0 - d / 12.0);
+                    self.thrown += Vector3::new(pull.x, pull.y, 0.0) * vpm * dt * 4.0;
+                }
+            }
+        }
+    }
+
+    /// Whoever a great serpent's lunged through, come up beside or slithered over shoved out from
+    /// its body, so they're never stood inside it with nothing to see, see serpents::Coils::shove()
+    fn shove_out_of_serpents(&mut self, player: Option<Vector3<f64>>, vpm: f64) {
+        let Some(feet) = player else {
+            return;
+        };
+        let middle = feet + Vector3::new(0.0, 0.0, 0.9 * vpm);
+        let push: Vector3<f64> = self.animals.iter().filter(|a| (a.position - feet).norm() < 80.0 * vpm).filter_map(|a| a.coils()).map(|c| c.shove(middle, 1.8, vpm)).sum();
+        // Out about as far as it's in, as a shove dies away, see player::Player::push()
+        if push.norm() > 0.05 * vpm {
+            self.thrown += push * 9.0;
+        }
+    }
+
+    /// The omens of the Coil Unending lying about in the world as it is, in its voxels, see
+    /// serpents::omens()
+    pub fn set_omens(&mut self, omens: Vec<(Look, Vector3<f64>, f64)>) {
+        self.omens = omens;
+    }
+
+    /// How dark the sky's got over the Coil Unending's lair where the player is, 0 to 1, see
+    /// serpents::gloom()
+    pub fn set_gloom(&mut self, gloom: f64) {
+        self.gloom = gloom;
+    }
+
+    /// Where blows on each serpent near enough to be hit land: the part of its long body the player's
+    /// aiming at, see serpents::focus()
+    fn aim_at_serpents(&mut self, view: &View) {
+        let vpm = view.vpm;
+        for a in self.animals.iter_mut().filter(|a| a.look.is_serpent() || a.look.is_great_serpent() || a.look.is_kraken()) {
+            a.focus = None;
+            let points = match a.coils() {
+                Some(coils) => Some(coils.hit_points(vpm)),
+                // A kraken's head, its mantle and its arms near it, see bosses::kraken::Body
+                None if a.look.is_kraken() => a.kraken().map(|k| k.hit_points(vpm)),
+                None if (a.position - view.eye).norm() < 70.0 * vpm => a.spine(vpm as u32),
+                None => None,
+            };
+            if let Some(points) = points {
+                a.focus = serpents::focus(&points, view.eye, view.forward()).map(|p| p - a.position);
+            }
+        }
+    }
+
+    /// The light of `element` where what a boss or monster is doing in it shows on the ground: a
+    /// ring of it brightening as it closes in on where it's coming down, and a shockwave of it
+    /// lighting the ground it runs over, see Combat::glow()
+    fn glow_deed(&mut self, element: Element, deed: Deed) {
+        let vpm = self.combat.vpm();
+        match deed {
+            Deed::Mark { at, radius, closing } => {
+                let strength = 0.35 + 0.55 * (1.0 - closing.clamp(0.0, 1.0));
+                self.combat.glow(at + Vector3::new(0.0, 0.0, 0.6 * vpm), radius + 3.0, element.light(), strength as f32, 0.15);
+            }
+            Deed::Quake { at, to, .. } => self.combat.glow(at + Vector3::new(0.0, 0.0, 1.0 * vpm), to + 3.0, element.light(), 0.7, 0.3),
+            _ => {}
+        }
+    }
+
+    /// What a boss or monster did: hurting the player, throwing things, sounds and shaking the ground
+    #[allow(clippy::too_many_arguments)]
+    fn carry_out(&mut self, look: Look, element: Option<Element>, deed: Deed, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View) {
+        let vpm = world.voxels_per_meter as f64;
+        // What dragons do is their own, see game\dragonfire.rs
+        match deed {
+            Deed::Dragon(act) => return self.dragon_act(look, act, world, water, player, view),
+            Deed::Phase { at, stage } if look.is_dragon() => return self.dragon_phase(look, at, stage, view),
+            // And what avians and gargoyles do, see game\aerie.rs
+            Deed::Aerie(act) => return self.aerie_act(look, act, world, player, view),
+            // And what krakens do, see game\brine.rs
+            Deed::Kraken(act) => return self.kraken_act(look, element, act, world, water, player, view),
+            Deed::Phase { at, stage } if look.is_winged() => return self.aerie_phase(look, at, stage, view),
+            _ => {}
+        }
         // How much something at `at` is felt, from 1 right there to nothing 40 meters off
         let felt = |at: Vector3<f64>| (1.0 - (at - view.eye).norm() / vpm / 40.0).max(0.0);
         // Monsters snarl and rattle rather than roar, and don't shake the ground
@@ -1546,30 +2891,86 @@ impl Game {
                     (Look::Necromancer, Some(Move::Summon)) => Cue::at(Sound::Wail, at, 0.8).pitched(0.5),
                     (Look::Necromancer, Some(Move::Spit)) => Cue::at(Sound::Cast(Element::look(Some(Element::Void)) as u8), at, 0.7).pitched(0.6),
                     (Look::Necromancer, _) => Cue::at(Sound::Wail, at, 0.6).pitched(0.7),
+                    // A serpent's hiss as it rears to strike, deeper as it raises its head to spit
+                    // with its element gathering in its throat, the snow or sand hissing away as it
+                    // dives in, and a loud hiss as it turns on the player or dies
+                    (look, Some(Move::Spit)) if look.is_serpent() => {
+                        self.cues.push(Cue::at(Sound::Cast(Element::look(look.element()) as u8), at, 0.5).pitched(0.7));
+                        Cue::at(Sound::Hiss, at, 0.8).pitched(serpents::voice(look) * 0.8)
+                    }
+                    (look, Some(Move::Burrow)) if look.is_serpent() => Cue::at(Sound::Slither, at, 0.8).pitched(0.8),
+                    (look, None) if look.is_serpent() => Cue::at(Sound::Hiss, at, 0.95).pitched(serpents::voice(look) * vary),
+                    (look, _) if look.is_serpent() => Cue::at(Sound::Hiss, at, 0.7).pitched(serpents::voice(look) * vary * 1.1),
+                    // A shark surging in, the water churning off its tail
+                    (look, _) if look.is_sea() => {
+                        let top = water(at.x, at.y);
+                        if top.is_finite() && top < at.z + 1.2 * vpm {
+                            self.combat.splash_up(Vector3::new(at.x, at.y, top), 0.35);
+                        }
+                        Cue::at(Sound::Splash, at, 0.8).pitched(0.55 * vary)
+                    }
                     _ => Cue::at(Sound::Hiss, at, 0.5).pitched(1.5),
                 };
                 self.cues.push(cue);
-                // A lurker bursting up out of the water it lay in
-                if look == Look::MireLurker && m.is_none() && water(at.x, at.y) > at.z {
+                // A lurker or a coiler bursting up out of the water it lay in
+                if matches!(look, Look::MireLurker | Look::SiltCoiler) && m.is_none() && water(at.x, at.y) > at.z {
                     self.combat.splash_up(Vector3::new(at.x, at.y, water(at.x, at.y)), 0.9);
+                    if look == Look::SiltCoiler {
+                        self.cues.push(Cue::at(Sound::Splash, at, 0.8).pitched(1.1));
+                    }
+                }
+                // A viper rising up out of the grass it lay in, the blades thrown aside
+                if look == Look::ReedViper && m.is_none() {
+                    self.combat.stir(at, 0.9, 0.2, DROP_MUD);
                 }
                 return;
             }
         }
         let voice = match look.build() {
             Some(Build::Golem) => 0.6,
-            Some(Build::Drake) => 1.15,
             Some(Build::Spider) => 1.5,
             Some(Build::Treant) => 0.5,
+            _ if look.is_ultra() => 0.5,
             _ => 0.85,
         };
-        let element = look.element();
         match deed {
+            // A great serpent's hiss, deep as its size, and what each move sounds like coming: its
+            // body tightening to coil, its tail swishing up, water or earth churning as it dives,
+            // the ground rumbling where it's coming up, its element gathering in its throat
+            Deed::WindUp(m, at) if look.is_great_serpent() => {
+                let deep = serpents::voice(look);
+                let hiss = Cue::at(Sound::Hiss, at, 1.0).pitched(deep);
+                let cue = match m {
+                    Move::Coil => {
+                        self.cues.push(Cue::at(Sound::Squeeze, at, 0.9).pitched(0.55));
+                        Cue::at(Sound::Slither, at, 1.0).pitched(0.6)
+                    }
+                    Move::Tail => {
+                        self.cues.push(Cue::at(Sound::Slither, at, 0.8).pitched(0.7));
+                        Cue::at(Sound::Swoop, at, 0.9).pitched(0.55)
+                    }
+                    Move::Burrow if serpents::great_of(look).is_some_and(|g| g.medium == serpents::Medium::Water) => Cue::at(Sound::Splash, at, 1.0).pitched(0.6),
+                    Move::Burrow => Cue::at(Sound::Dig, at, 1.0).pitched(0.5),
+                    Move::Erupt => Cue::at(Sound::Rumble, at, 1.0).pitched(0.55),
+                    Move::Spit | Move::Breath | Move::Storm | Move::Cataclysm => {
+                        self.cues.push(Cue::at(Sound::Cast(Element::look(Some(element.unwrap_or(Element::Poison))) as u8), at, 0.8).pitched(0.45));
+                        hiss
+                    }
+                    Move::Charge => {
+                        self.cues.push(Cue::at(Sound::Roar, at, 0.6).pitched(deep * 1.2));
+                        hiss
+                    }
+                    _ => hiss,
+                };
+                self.cues.push(cue);
+            }
             // Each move sounds its own way coming, so it can be told apart
             Deed::WindUp(m, at) => {
                 let cue = match m {
                     Move::Charge => Cue::at(Sound::Roar, at, 0.7).pitched(voice * 1.3),
                     Move::Leap => Cue::at(Sound::Roar, at, 0.6).pitched(voice * 1.6),
+                    // A grunt as it gathers itself to bound out of where it's stuck
+                    Move::Vault => Cue::at(Sound::Roar, at, 0.4).pitched(voice * 1.9),
                     Move::Breath => Cue::at(Sound::Rumble, at, 0.9).pitched(voice * 1.6),
                     // A spider hissing, or something gathering in a drake's throat in the voice of
                     // its element
@@ -1587,20 +2988,51 @@ impl Game {
                         Cue::at(Sound::Flap, at, 0.8).pitched(0.85)
                     }
                     Move::Maul => Cue::at(Sound::Roar, at, 0.5).pitched(voice * 1.8),
+                    // The Aeolith's rings whirring up, its wind rising; the Stormbell's thunder
+                    // gathering and lightning crackling down its tendrils
+                    Move::Ringcast | Move::Shardfall => Cue::at(Sound::Whirr, at, 0.9).pitched(0.6),
+                    Move::Gyre => Cue::at(Sound::Gale, at, 1.0).pitched(0.9),
+                    Move::Staticfall | Move::Overcharge => Cue::at(Sound::Thunder, at, 0.8).pitched(0.7),
+                    Move::Thunderlash => Cue::at(Sound::Zap, at, 0.9).pitched(0.7),
+                    // The duelist's blade drawn, the queen's wings and brood stirring, the digger's
+                    // claws in the ground, the bog heaving in the hulk
+                    Move::Lunge | Move::Crescent => Cue::at(Sound::Swing, at, 0.8).pitched(0.75),
+                    Move::Riposte => Cue::at(Sound::Swing, at, 0.7).pitched(1.2),
+                    Move::Swarm => Cue::at(Sound::Whirr, at, 0.9).pitched(1.6),
+                    Move::Stingrain => Cue::at(Sound::Hiss, at, 0.8).pitched(0.9),
+                    Move::Rockspray | Move::Undermine => Cue::at(Sound::Dig, at, 1.0).pitched(0.6),
+                    Move::Mirestomp => Cue::at(Sound::Rumble, at, 1.0).pitched(0.4),
+                    Move::Bogspew => Cue::at(Sound::Squelch, at, 1.0).pitched(0.5),
                     _ => Cue::at(Sound::Rumble, at, 0.9).pitched(voice * 1.2),
                 };
                 self.cues.push(cue);
             }
             Deed::Roar { at, angry } => {
-                self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * if angry { 1.1 } else { 1.0 }));
-                // A drake spreads its wings as it roars
-                if look.build() == Some(Build::Drake) {
-                    self.cues.push(Cue::at(Sound::Flap, at, 0.8).pitched(0.8));
+                // A great serpent's hiss under its roar, water thrown off it as it rears out of it
+                if look.is_great_serpent() {
+                    self.cues.push(Cue::at(Sound::Hiss, at, 1.0).pitched(serpents::voice(look) * 0.85));
+                    if water(at.x, at.y) > at.z - 1.0 * vpm {
+                        self.combat.splash_up(Vector3::new(at.x, at.y, water(at.x, at.y)), 1.6);
+                        self.cues.push(Cue::at(Sound::Splash, at, 1.0).pitched(0.5));
+                    }
                 }
+                self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * if angry { 1.1 } else { 1.0 }));
                 self.shake = self.shake.max(0.6 * felt(at));
-                self.say(if angry { format!("The {} is enraged!", look.name()) } else { format!("The {} turns on you!", look.name()) });
+                self.say(if look.is_ultra() && !angry {
+                    "The water heaves and darkens: Ysveth, the Coil Unending, rises from the deep!".to_owned()
+                } else if angry {
+                    format!("The {} is enraged!", look.name())
+                } else {
+                    format!("The {} turns on you!", look.name())
+                });
+                if look.is_ultra() && !angry {
+                    self.shake = self.shake.max(1.0 * felt(at));
+                    self.cues.push(Cue::at(Sound::Quake, at, 1.0).pitched(0.5));
+                }
             }
             Deed::Slam { at, radius, damage, crater } => {
+                // What's built round it takes the blow too, see raids.rs
+                self.blows.push(Blow { at, radius, damage, look });
                 if crater > 0.0 {
                     self.combat.craters.push((at, crater));
                     // Frost spreading out from it, the ground scorched, or venom splashed
@@ -1630,6 +3062,26 @@ impl Game {
                         self.shake = self.shake.max(0.35 * felt(at));
                         Cue::at(Sound::Burst, at, 0.8).pitched(0.55)
                     }
+                    // A shark's jaws snapping shut, the water thrown up if it's near the top
+                    _ if look.is_sea() => {
+                        let top = water(at.x, at.y);
+                        if top.is_finite() && top < at.z + 1.0 * vpm {
+                            self.combat.splash_up(Vector3::new(at.x, at.y, top), 0.6);
+                        }
+                        self.cues.push(Cue::at(Sound::Swing, at, 0.4).pitched(0.7));
+                        Cue::at(Sound::Bite, at, 1.0).pitched(if look == Look::Ghostmaw { 0.45 } else { 0.6 })
+                    }
+                    // A serpent's jaws snapping shut where its head lunged to
+                    _ if look.is_serpent() => {
+                        self.cues.push(Cue::at(Sound::Swing, at, 0.5).pitched(1.3));
+                        Cue::at(Sound::Bite, at, 0.9).pitched(serpents::voice(look) * 1.15)
+                    }
+                    // A great serpent's, or its tail or its coils coming down, shaking the ground
+                    _ if look.is_great_serpent() => {
+                        self.shake = self.shake.max(0.5 * felt(at));
+                        self.cues.push(Cue::at(Sound::Burst, at, 0.8).pitched(0.5));
+                        Cue::at(Sound::Bite, at, 1.0).pitched(serpents::voice(look))
+                    }
                     _ if look.is_monster() => Cue::at(Sound::Swing, at, 0.7).pitched(0.8),
                     _ => {
                         self.shake = self.shake.max(0.6 * felt(at));
@@ -1640,7 +3092,8 @@ impl Game {
                 if let Some(feet) = player {
                     let off = feet - at;
                     let d = off.xy().norm() / vpm;
-                    if d < radius && off.z.abs() < 2.5 * vpm {
+                    // Not through a wall or a shut door
+                    if d < radius && off.z.abs() < 2.5 * vpm && open_between(world, at, feet) {
                         self.hurt(damage * (1.0 - 0.5 * d / radius), at, feet, world, look.name());
                         self.afflict(element);
                         // A tusker tosses what it gores, and a shieldbearer shoves them back with
@@ -1675,9 +3128,13 @@ impl Game {
                 self.combat.hurl(HostileKind::Spell(element), from, to, time, damage, radius);
                 self.cues.push(Cue::at(Sound::Cast(Element::look(Some(element)) as u8), from, 1.0).pitched(0.6));
             }
-            Deed::Breath { from, direction, dt: seconds } => {
+            Deed::Breath { from, direction, dt: seconds } | Deed::Jet { from, direction, dt: seconds } => {
                 let element = element.unwrap_or(Element::Fire);
-                self.combat.breathe(from, direction, seconds, element);
+                if matches!(deed, Deed::Jet { .. }) {
+                    self.combat.jet(from, direction, seconds, element);
+                } else {
+                    self.combat.breathe(from, direction, seconds, element);
+                }
                 if self.breath_sound <= 0.0 {
                     self.breath_sound = 1.8;
                     self.cues.push(Cue::at(Sound::Breath, from, 1.0).pitched(if element == Element::Fire { 1.0 } else { 1.25 }));
@@ -1698,7 +3155,7 @@ impl Game {
             Deed::Roots { at } => {
                 // On the ground under the player, if they're jumping
                 let at = ground_under(world, at);
-                self.roots.push(Root { at, left: ROOTS_WARNING, radius: ROOTS_RADIUS, damage: 24.0, drag: Vector3::zeros(), element: None });
+                self.roots.push(Root { at, left: ROOTS_WARNING, radius: ROOTS_RADIUS, damage: 24.0, drag: Vector3::zeros(), element: None, flare: None });
                 self.cues.push(Cue::at(Sound::Rumble, at, 0.8).pitched(0.7));
             }
             // Lines of roots, each bursting up a little after the one before, dragging the player
@@ -1712,7 +3169,7 @@ impl Game {
                     let along = Vector3::new(ahead.x * c - ahead.y * s, ahead.x * s + ahead.y * c, 0.0);
                     for k in 0..WAVE_ROOTS {
                         let at = ground_under(world, from + along * (3.0 + WAVE_SPACING * k as f64) * vpm + Vector3::new(0.0, 0.0, 1.0 * vpm));
-                        self.roots.push(Root { at, left: 0.8 + 0.15 * k as f64, radius: WAVE_RADIUS, damage: 16.0, drag: -along, element });
+                        self.roots.push(Root { at, left: 0.8 + 0.15 * k as f64, radius: WAVE_RADIUS, damage: 16.0, drag: -along, element, flare: None });
                     }
                 }
                 self.cues.push(Cue::at(Sound::Rumble, from, 1.0).pitched(0.5));
@@ -1797,8 +3254,20 @@ impl Game {
                 self.cues.push(Cue::at(Sound::Roar, at, 1.0).pitched(voice * 0.8));
                 self.cues.push(Cue::at(Sound::Quake, at, 0.8).pitched(0.7));
                 self.shake = self.shake.max(0.9 * felt(at));
-                self.combat.craters.push((at, 1.5 * look.size()));
-                self.say(if stage >= 2 { format!("The {} is enraged! Its last fury is upon you.", look.name()) } else { format!("The {} calls down the sky!", look.name()) });
+                // The Coil Unending sheds its skin for the next realm's element; the ground's left be
+                if look.is_ultra() {
+                    let said = match stage {
+                        1 => "The Coil Unending sheds its skin: storm crackles down its coils, and it rises to strike!",
+                        2 => "The Coil Unending sheds its skin again: blood wells in its scales, and its brood answers its call!",
+                        _ => "The Coil Unending sheds its last skin: frost seizes its coils, and it rages! Its last fury is upon you.",
+                    };
+                    self.cues.push(Cue::at(Sound::Hiss, at, 1.0).pitched(0.3));
+                    self.combat.splash_up(Vector3::new(at.x, at.y, water(at.x, at.y).max(at.z)), 1.8);
+                    self.say(said);
+                } else {
+                    self.combat.craters.push((at, 1.5 * look.size()));
+                    self.say(if stage >= 2 { format!("The {} is enraged! Its last fury is upon you.", look.name()) } else { format!("The {} calls down the sky!", look.name()) });
+                }
             }
             Deed::Swipe(at, k) => self.cues.push(Cue::at(Sound::Claw, at, 0.85).pitched(0.9 + 0.1 * k as f32)),
             // A pack answering a howl, the dead clawing up out of the ground, spiderlings swarming
@@ -1808,6 +3277,7 @@ impl Game {
                     Look::Spiderling | Look::Bandit => 4,
                     Look::Skeleton => 3,
                     Look::ArmoredSkeleton | Look::Zombie => 4,
+                    _ if brood.is_serpent() => 3,
                     _ => 2,
                 };
                 let near = self.animals.iter().filter(|a| a.look == brood && a.health > 0.0 && (a.position - at).norm() < 30.0 * vpm).count();
@@ -1819,6 +3289,10 @@ impl Game {
                         if let Some(state) = &mut monster.boss {
                             state.provoke();
                             state.pack = pack;
+                            // A serpent rising up out of the ground or the water it was called from
+                            if brood.is_serpent() {
+                                state.emerge();
+                            }
                         }
                         self.combat.stir(monster.position, 0.8, 0.4, DROP_MUD);
                         self.animals.push(monster);
@@ -1874,17 +3348,23 @@ impl Game {
             }
             // Sand churned up over a burrower tunnelling along, hissing
             Deed::Burrow { at } => {
-                self.combat.stir(at, 0.45, 0.14, DROP_MUD);
+                // Snow thrown up over a drift serpent swimming along under it, or water churned over
+                // a great serpent under it
+                let snow = element == Some(Element::Frost);
+                let kind = if look.swims() && water(at.x, at.y) > at.z { DROP_WATER } else if snow { DROP_ICE } else { DROP_MUD };
+                let size = if look.is_great_serpent() { 1.6 } else { 0.45 };
+                self.combat.stir(at, size, 0.14, kind);
                 self.rng = hash(self.rng);
                 if random(&mut self.rng) < 0.2 {
-                    self.cues.push(Cue::at(Sound::Skitter, at, 0.35).pitched(0.5));
+                    self.cues.push(if look.is_serpent() { Cue::at(Sound::Slither, at, 0.35).pitched(0.9) } else { Cue::at(Sound::Skitter, at, 0.35).pitched(0.5) });
                 }
             }
             // Bursting up out of the sand, throwing whoever's on top of it into the air
             Deed::Erupt { at } => {
-                self.combat.burst_up(at, DROP_MUD);
+                let snow = element == Some(Element::Frost);
+                self.combat.burst_up(at, if snow { DROP_ICE } else { DROP_MUD });
                 self.cues.push(Cue::at(Sound::Burst, at, 0.8).pitched(1.4));
-                self.cues.push(Cue::at(Sound::Chitter, at, 0.8).pitched(0.8));
+                self.cues.push(if look.is_serpent() { Cue::at(Sound::Hiss, at, 0.9).pitched(serpents::voice(look)) } else { Cue::at(Sound::Chitter, at, 0.8).pitched(0.8) });
                 self.shake = self.shake.max(0.3 * felt(at));
                 if let Some(feet) = player {
                     let off = feet - at;
@@ -1927,6 +3407,89 @@ impl Game {
                     self.cues.push(Cue::at(Sound::Step(Ground::Stone), at, 0.9).pitched(0.4));
                 }
             }
+            // Seen to above
+            Deed::Dragon(_) | Deed::Aerie(_) | Deed::Kraken(_) => {}
+            // The Colossus working stone, see combat/stones.rs: the boulder it tore up and lifted
+            // hurled out of its hands, with a grunt
+            Deed::Hurl { id, from, to } => {
+                let time = ((to - from).norm() / vpm / 16.0).clamp(0.9, 1.7);
+                self.combat.hurl_boulder(id, from, to, time, 28.0, 2.4);
+                self.cues.push(Cue::at(Sound::HeavySwing, from, 1.0).pitched(0.4));
+                self.cues.push(Cue::at(Sound::Roar, from, 0.5).pitched(voice * 1.3));
+                self.shake = self.shake.max(0.3 * felt(from));
+            }
+            Deed::Heave { at, radius } => {
+                self.combat.heave(world, at, radius);
+                self.shake = self.shake.max(0.3 * felt(at));
+            }
+            Deed::Spire { at, height, lean } => self.combat.spire(world, at, height, lean),
+            Deed::Pillar { at, stand } => {
+                self.combat.pillar(world, at, player.unwrap_or(at), stand);
+                self.shake = self.shake.max(0.3 * felt(at));
+            }
+            // A rock flung down out of one of its pillars: the first right on the player, the rest
+            // anywhere round them, as the sky comes down for the other raid bosses
+            Deed::Rockfall { from, to, k } => {
+                let mut to = to;
+                if k > 0 {
+                    let a = random(&mut self.rng) * TAU;
+                    let r = (2.0 + 9.0 * random(&mut self.rng).sqrt()) * vpm;
+                    to += Vector3::new(a.cos() * r, a.sin() * r, 0.0);
+                }
+                let to = ground_under(world, to + Vector3::new(0.0, 0.0, 2.0 * vpm));
+                self.combat.rockfall(from, to, k, 18.0, 2.4);
+                if k % 3 == 0 {
+                    self.cues.push(Cue::at(Sound::Whistle, to, 0.6).pitched(0.6 + 0.15 * random(&mut self.rng) as f32));
+                }
+            }
+            Deed::Shed { at, from, loud } => self.combat.shed(at, from, loud),
+            // A boss's element about to burst up out of the ground, the ground stirring there till
+            // then, see grow_roots(); in the air, on the ground under it
+            Deed::Flare { at, delay, radius, damage } => {
+                let at = ground_under(world, at);
+                let kind = match element {
+                    Some(Element::Fire) => DROP_EMBER,
+                    Some(Element::Frost) => DROP_ICE,
+                    Some(Element::Poison) => DROP_VENOM,
+                    Some(Element::Blood) => DROP_BLOOD,
+                    Some(Element::Void) => DROP_VOID,
+                    // Rain thrown up out of a thundercloud's lightning striking
+                    Some(Element::Storm) => DROP_WATER,
+                    _ => DROP_MUD,
+                };
+                self.roots.push(Root { at, left: delay, radius, damage, drag: Vector3::zeros(), element, flare: Some(kind) });
+            }
+            // A whirlwind round a boss: dust and its element whirling in to it, howling, and
+            // whoever's within it drawn in, harder the nearer, but never off their feet
+            Deed::Gust { at, reach, pull, dt: seconds } => {
+                self.combat.gust(at, reach, seconds, element);
+                self.gust_sound -= seconds;
+                if self.gust_sound <= 0.0 {
+                    self.gust_sound = 1.6;
+                    self.cues.push(Cue::at(Sound::Gale, at, 0.9).pitched(0.8));
+                }
+                if let Some(feet) = player {
+                    let off = (at - feet).xy();
+                    let d = off.norm() / vpm;
+                    if d < reach && d > 0.8 && (feet.z - at.z).abs() < 4.0 * vpm {
+                        let inward = off / off.norm();
+                        let round = Vector2::new(-inward.y, inward.x);
+                        let strength = pull * (0.45 + 0.55 * (1.0 - d / reach));
+                        let drawn = (inward + round * 0.35) * strength;
+                        self.thrown += Vector3::new(drawn.x, drawn.y, 0.0) * vpm * seconds * 4.0;
+                    }
+                }
+            }
+            // Its element, or a burning rock of it, lobbed to come down where it shows
+            Deed::Lob { from, to, time, damage, radius, rock } => {
+                let e = element.unwrap_or(Element::Fire);
+                let kind = if rock { HostileKind::Boulder(Some(e)) } else { HostileKind::Spell(e) };
+                self.combat.hurl(kind, from, to, time.max(0.2), damage, radius);
+                // Not every one heard, when there are so many at once
+                if random(&mut self.rng) < 0.35 {
+                    self.cues.push(Cue::at(if rock { Sound::HeavySwing } else { Sound::Cast(Element::look(Some(e)) as u8) }, from, 0.8).pitched(if rock { 0.55 } else { 0.8 }));
+                }
+            }
         }
     }
 
@@ -1946,9 +3509,18 @@ impl Game {
             return;
         }
         match element {
-            Some(Element::Fire) => self.burning = self.burning.max(2.0),
-            Some(Element::Poison) => self.poisoned = self.poisoned.max(4.0),
-            Some(Element::Frost) => self.chilled = self.chilled.max(2.5),
+            // Drakeskin wings never let it take hold, saying so now and then
+            Some(Element::Fire) if self.worn_perk() == Some(wings::Perk::Fireproof) => {
+                let now = self.combat.time();
+                if let Some(feet) = self.feet.filter(|_| now - self.fire_shrugged > 2.0) {
+                    self.fire_shrugged = now;
+                    let vpm = self.combat.vpm();
+                    self.combat.popups.push(crate::combat::Popup { position: feet + Vector3::new(0.0, 0.0, 1.2 * vpm), text: "Fireproof".into(), color: [255, 150, 60], size: 17.0, age: 0.0 });
+                }
+            }
+            Some(Element::Fire) => self.burning = self.burning.max(2.0 * self.resisted(Stat::ResistFire)),
+            Some(Element::Poison) => self.poisoned = self.poisoned.max(4.0 * self.resisted(Stat::ResistPoison)),
+            Some(Element::Frost) => self.chilled = self.chilled.max(2.5 * self.resisted(Stat::ResistFrost)),
             _ => {}
         }
     }
@@ -1957,7 +3529,7 @@ impl Game {
     pub fn pace(&self) -> f64 {
         let chilled = if self.chilled > 0.0 { CHILLED_PACE } else { 1.0 };
         // Braced on a siege crossbow's leg, all but still
-        let chilled = chilled * self.combat.pace();
+        let chilled = chilled * self.combat.pace() * (1.0 + self.totals.share(Stat::MoveSpeed)).max(0.3);
         if self.snared > 0.0 { chilled.min(SNARED_PACE) } else { chilled }
     }
 
@@ -1970,21 +3542,45 @@ impl Game {
             let at = root.at;
             let near = (1.0 - (at - view.eye).norm() / vpm / 30.0).max(0.0);
             if root.left > 0.0 {
-                // Stirring harder and shaking more as it comes, a ring closing in on where
+                // Stirring harder and shaking more as it comes, a ring closing in on where; a
+                // flare's stirring its own element up, and only shaking the ground once it bursts
                 let closing = (root.left / ROOTS_WARNING).min(1.0);
-                self.combat.stir(at, root.radius, dt * (2.0 - closing), DROP_MUD);
+                self.combat.stir(at, root.radius, dt * (2.0 - closing), root.flare.unwrap_or(DROP_MUD));
                 self.combat.mark(at, root.radius, closing);
-                self.shake = self.shake.max((0.1 + 0.15 * (1.0 - closing)) * near);
+                // A flare of fire or a spell's element glowing up through the ground as it comes
+                if root.flare.is_some()
+                    && let Some(e) = root.element
+                {
+                    self.combat.glow(at + Vector3::new(0.0, 0.0, 0.5 * vpm), root.radius + 2.5, e.light(), (0.3 + 0.5 * (1.0 - closing)) as f32, 0.15);
+                }
+                if root.flare.is_none() {
+                    self.shake = self.shake.max((0.1 + 0.15 * (1.0 - closing)) * near);
+                }
                 self.roots.push(root);
                 continue;
             }
-            self.combat.erupt(at, root.radius);
-            self.shake = self.shake.max(0.5 * near);
+            match root.flare {
+                Some(kind) => {
+                    self.combat.flare(at, root.element, kind, root.radius);
+                    self.shake = self.shake.max(0.25 * near);
+                    if root.damage > 0.0 || random(&mut self.rng) < 0.4 {
+                        self.cues.push(Cue::at(Sound::Burst, at, 0.6).pitched(0.9 + 0.3 * random(&mut self.rng) as f32));
+                    }
+                    if root.damage <= 0.0 {
+                        continue;
+                    }
+                }
+                None => {
+                    self.combat.erupt(at, root.radius);
+                    self.shake = self.shake.max(0.5 * near);
+                }
+            }
             if let Some(feet) = player {
                 let off = feet - at;
                 if off.xy().norm() < root.radius * vpm && off.z.abs() < 2.0 * vpm {
-                    self.hurt(root.damage, at, feet, world, "roots");
-                    let up = if root.drag == Vector3::zeros() { 5.5 } else { 3.0 };
+                    self.hurt(root.damage, at, feet, world, if root.flare.is_some() { "the ground bursting" } else { "roots" });
+                    // A flare throws them up a little; roots high, or dragging them along
+                    let up = if root.flare.is_some() { 2.2 } else if root.drag == Vector3::zeros() { 5.5 } else { 3.0 };
                     self.thrown += (root.drag * 4.0 + Vector3::new(0.0, 0.0, up)) * vpm;
                     self.afflict(root.element);
                 }
@@ -2044,11 +3640,34 @@ impl Game {
         if self.health <= 0.0 || damage <= 0.0 {
             return;
         }
+        // What did it, for a necromancer's dead to turn on: whose doing it is, or else whatever's
+        // fighting the player right where it came from
+        let vpm = world.voxels_per_meter as f64;
+        let culprit = self.combat.doer().or_else(|| {
+            self.animals
+                .iter()
+                .filter(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.engaged))
+                .map(|a| ((a.center(vpm as u32) - from).norm() / vpm - a.look.body().1, a.id))
+                .filter(|&(d, _)| d < 1.5)
+                .min_by(|a, b| a.0.total_cmp(&b.0))
+                .map(|(_, id)| id)
+        });
+        if let Some(id) = culprit {
+            self.combat.blame(id);
+        }
         // Turned aside by a riposte
         if self.combat.parry(from, feet) {
             return;
         }
-        let vpm = world.voxels_per_meter as f64;
+        // Pricked back by thorned wings, as hard as the levels about make what's there tough, and
+        // by the skill web's thorns, see skills::Stat::Thorns
+        let thorns = self.thorns();
+        if thorns > 0.0 {
+            self.prick(from, damage * thorns * self.foe_toughness());
+        }
+        // Harder the higher the level of what's about, see levels::damage(), and less for armour
+        // from the skill web, never more than ARMOUR_MOST of it
+        let damage = damage * self.foe_damage() * self.armoured();
         self.health -= damage;
         self.since_hurt = 0.0;
         self.hurt_flash = (self.hurt_flash + damage / 25.0).min(1.0);
@@ -2085,19 +3704,20 @@ impl Game {
         }
     }
 
-    /// The player at `feet` is killed by `by`. Half the gold they carry spills where they fell, to
-    /// come back for, and every boss and monster goes home healed.
+    /// The player at `feet` is killed by `by`. As much of the gold they carry as how hard it is
+    /// says spills where they fell, to come back for: none on Story, half on Normal, all of it on
+    /// Hard. Every boss and monster goes home healed.
     fn die(&mut self, by: &str, feet: Vector3<f64>, vpm: f64) {
         self.health = 0.0;
         self.dead = Some((by.to_owned(), 0.0));
         self.died = true;
         self.shop = None;
-        let lost = self.gold / 2;
+        let lost = (self.gold as f64 * self.character.difficulty.gold_lost()).round() as u32;
         self.lost = lost;
         if lost > 0 {
             self.gold -= lost;
             let from = feet + Vector3::new(0.0, 0.0, 1.0 * vpm);
-            self.pickups.push(Pickup { item: Item::Gold(lost), position: feet, heading: 0.0, from, flying: DROP_SECONDS, seen: false, beacon: true });
+            self.pickups.push(Pickup { beacon: true, ..Pickup::thrown(Item::Gold(lost), feet, 0.0, from, DROP_SECONDS) });
         }
         self.say(if lost > 0 { format!("You were slain by the {by}. {lost} gold lies where you fell.") } else { format!("You were slain by the {by}.") });
         self.shake = self.shake.max(1.2);
@@ -2107,15 +3727,18 @@ impl Game {
             if let Some(boss) = &mut animal.boss {
                 boss.spare();
                 boss.stage = 0;
-                animal.health = animal.look.health();
+                animal.health = animal.max_health;
                 // Burning or bleeding from the fight would turn it on them again
                 animal.status = Default::default();
             }
         }
         self.combat.clear();
+        self.dragonfire.clear();
+        self.aerie.clear();
         self.roots.clear();
         self.webs.clear();
         self.fumes.clear();
+        self.brine.clear();
         self.burning = 0.0;
         self.poisoned = 0.0;
         self.chilled = 0.0;
@@ -2124,6 +3747,11 @@ impl Game {
 
     pub fn dead(&self) -> bool {
         self.dead.is_some()
+    }
+
+    /// Where the player last stood safe, their feet in voxels, where they'd rise again
+    pub fn rest_spot(&self) -> Option<Vector3<f64>> {
+        self.rest
     }
 
     /// How far the view has sunk to the ground as the player fell dead, 0 to 1
@@ -2148,7 +3776,7 @@ impl Game {
     /// or None for where they fell
     pub fn rise(&mut self) -> Option<Vector3<f64>> {
         self.dead = None;
-        self.health = MAX_HEALTH;
+        self.health = self.max_health();
         self.hunger = self.hunger.max(40.0);
         self.combat.mana = MAX_MANA;
         self.down = 0.0;
@@ -2195,6 +3823,7 @@ impl Game {
             self.roots.clear();
             self.webs.clear();
             self.fumes.clear();
+        self.brine.clear();
             self.safe_for = 0.0;
             return;
         };
@@ -2231,7 +3860,8 @@ impl Game {
             }
         }
         if self.since_hurt > 5.0 {
-            self.health = (self.health + 4.0 * dt).min(MAX_HEALTH);
+            let rate = 4.0 * self.regen();
+            self.health = (self.health + rate * dt).min(self.max_health());
         }
         // Starving wears the player down, though not all the way
         if self.hunger <= 0.0 && self.health > 10.0 {
@@ -2239,27 +3869,79 @@ impl Game {
         }
     }
 
-    /// The boss fighting the player, if any, nearest first: which it is, how much health it has
-    /// left, 0-1, and whether it's enraged
-    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool, Vector3<f64>)> {
+    /// The boss fighting the player, if any, nearest first, or a demi-boss, see src\demis.rs:
+    /// which it is, how much health it has left, 0-1, whether it's enraged, where its middle is,
+    /// whether it's warded, its level, and what it's called
+    #[allow(clippy::type_complexity)]
+    fn foe(&self, near: Vector3<f64>) -> Option<(Look, f64, bool, Vector3<f64>, Option<(u8, u8)>, u32, &'static str)> {
         let vpm = self.combat.vpm() as u32;
         self.animals
             .iter()
-            .filter(|a| a.health > 0.0 && a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.engaged))
+            .filter(|a| a.health > 0.0 && (a.look.is_boss() || a.demi.is_some()) && a.boss.as_ref().is_some_and(|b| b.engaged))
             .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()))
-            .map(|a| (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged), a.center(vpm)))
+            .map(|a| {
+                let name = match (a.demi, &a.boss) {
+                    (Some(kind), Some(b)) => crate::demis::name(kind, b.key),
+                    _ => a.look.name(),
+                };
+                (a.look, a.vitality(), a.boss.as_ref().is_some_and(|b| b.enraged), a.center(vpm), a.status.warded, a.level, name)
+            })
+    }
+
+    /// Whether a boss being fought has its bar up along the bottom of the view, see hud()
+    pub fn boss_bar_up(&self, near: Vector3<f64>) -> bool {
+        self.foe(near).is_some()
     }
 
     /// For trying out dying: the player down to `health`
     pub fn set_health(&mut self, health: f64) {
-        self.health = health.clamp(1.0, MAX_HEALTH);
+        self.health = health.clamp(1.0, self.max_health());
     }
 
     /// For trying them out: every boss about down to `fraction` of its health
     pub fn hurt_bosses(&mut self, fraction: f64) {
-        for animal in self.animals.iter_mut().filter(|a| a.look.is_boss()) {
-            animal.health = animal.look.health() * fraction.clamp(0.01, 1.0);
+        for animal in self.animals.iter_mut().filter(|a| a.look.is_boss() || a.demi.is_some()) {
+            animal.health = animal.max_health * fraction.clamp(0.01, 1.0);
         }
+    }
+
+    /// For trying it out: every boss and demi-boss about slain where it stands, to leave its hoard
+    pub fn slay_bosses(&mut self) {
+        for animal in self.animals.iter_mut().filter(|a| a.look.is_boss() || a.demi.is_some()) {
+            println!("Slain where it stands: the {}", animal.look.name());
+            animal.health = 0.0;
+        }
+    }
+
+    /// Every boss about made to make only `m`, as soon as it's ready, for shots of it
+    /// For seeing one bound out of a hole: a pit `radius` meters round blown under every boss and
+    /// monster about, each turned on the player, see bosses\vault.rs
+    pub fn pit_bosses(&mut self, radius: f64) {
+        let vpm = self.combat.vpm();
+        for a in self.animals.iter_mut().filter(|a| a.boss.is_some()) {
+            self.combat.craters.push((a.position - Vector3::new(0.0, 0.0, 0.35 * radius * vpm), radius));
+            if let Some(boss) = &mut a.boss {
+                boss.provoke();
+            }
+        }
+    }
+
+    pub fn force_boss_move(&mut self, m: Move) {
+        for boss in self.animals.iter_mut().filter_map(|a| a.boss.as_mut()) {
+            boss.forced = Some(m);
+        }
+    }
+
+    /// For looking at it: where the nearest of the look named `name`, or whose name ends so, is, its
+    /// feet, in voxels. `summon` is the nearest of the dead the player's raised, and until there
+    /// are any the nearest boss or monster, to look at what they'll be raised to fight.
+    pub fn nearest_named(&self, near: Vector3<f64>, name: &str) -> Option<Vector3<f64>> {
+        let wanted = name.to_lowercase();
+        let nearest = |spots: &mut dyn Iterator<Item = Vector3<f64>>| spots.min_by(|a, b| (a - near).norm().total_cmp(&(b - near).norm()));
+        if wanted == "summon" {
+            return nearest(&mut self.combat.raised().into_iter().map(|(_, at)| at)).or_else(|| self.nearest_boss(near));
+        }
+        nearest(&mut self.animals.iter().filter(|a| a.health > 0.0 && format!("{:?}", a.look).to_lowercase().ends_with(&wanted)).map(|a| a.position))
     }
 
     /// The middle of the body of the boss or monster nearest `near`, if there's one about
@@ -2332,19 +4014,65 @@ impl Game {
         let mut cleared = Vec::new();
         let mut k = 0;
         while k < self.animals.len() {
-            if self.animals[k].health > 0.0 {
+            // A serpent thrashes, rolls over and lies still a moment before it's gone, and a great
+            // serpent crashes down and sinks away
+            let writhing = |a: &Animal| {
+                let throes = if a.look.is_great_serpent() { serpents::GREAT_THROES } else { serpents::DEATH_THROES };
+                (a.look.is_serpent() || a.look.is_great_serpent()) && a.boss.as_ref().is_some_and(|b| b.dying.is_none_or(|t| t < throes))
+            };
+            // And a dragon falls out of the sky and lies a moment where it fell first, a jointed
+            // boss falls, see rig::dying(), and an avian or a gargoyle comes down, see avians::dying()
+            let a = &self.animals[k];
+            if a.health > 0.0 || writhing(a) || crate::dragons::dying(a) || crate::rig::dying(a) || crate::avians::dying(a) || bosses::kraken::dying(a) {
                 k += 1;
                 continue;
             }
             let animal = self.animals.remove(k);
             let look = animal.look;
+            // A boss or a demi-boss falling is heard only by its own death, its cry and its body
+            // coming down: no fanfare, no level gained, no loot landing nor chest over it, though
+            // all of it's said
+            let hush = (look.is_boss() || animal.demi.is_some()).then_some((self.cues.len(), self.pickups.len()));
             let middle = animal.position + Vector3::new(0.0, 0.0, look.body().0 * vpm);
+            // Experience for every monster and boss slain, by its level and what it was
+            let slain = self.slain(&animal);
+            if look.is_monster() || look.is_boss() {
+                let more = self.experience_boost();
+                self.gain_experience((levels::experience(animal.level.max(1), slain) * more).round(), Some(middle + Vector3::new(0.0, 0.0, 1.2 * vpm)));
+                // Health back for every kill, from the skill web
+                let leech = self.leech();
+                if leech > 0.0 {
+                    self.mend(leech);
+                }
+                if matches!(slain, Slain::Raid | Slain::Finale) {
+                    self.claim_bonus(look, slain);
+                }
+            }
+            let from = (animal.level.max(1), match slain {
+                Slain::Monster => Source::Found,
+                Slain::Demi => Source::Demi,
+                Slain::Boss => Source::Boss,
+                Slain::Raid | Slain::Finale => Source::Raid,
+            });
+            // Bloodmoth wings give back a little health for each monster or boss slain, more for a
+            // boss, the blood of it rising off it
+            if (look.is_monster() || look.is_boss()) && self.worn_perk() == Some(wings::Perk::Leech) {
+                let back = if look.is_boss() { wings::LEECH_BOSS } else { wings::LEECH };
+                self.mend(back);
+                self.combat.stir(animal.position, 0.6, 0.3, DROP_BLOOD);
+                self.combat.popups.push(crate::combat::Popup { position: middle + Vector3::new(0.0, 0.0, 0.8 * vpm), text: format!("+{back:.0} health"), color: [235, 60, 70], size: 18.0, age: 0.0 });
+            }
             // A monster bursts apart its own way. The dead and spiders' victims had a little gold on
             // them, now and then a weapon.
             // A bloater that burst by itself, rather than being killed, leaves nothing but its venom
             let burst = animal.health <= animals::BURST * 0.5;
             if look.is_monster() {
                 self.combat.perish(&animal);
+                // A serpent's blood, or the venom it was full of, spilling out along it
+                if look.is_serpent() {
+                    let kind = if look.element() == Some(Element::Poison) { DROP_VENOM } else { DROP_BLOOD };
+                    self.combat.stir(animal.position, 1.2, 0.35, kind);
+                }
                 // A bloater bursts into a cloud of venom, however it died
                 if look == Look::Bloater {
                     self.fumes.push((animal.position, FUMES_SECONDS, 0.3));
@@ -2353,7 +4081,16 @@ impl Game {
                     }
                 }
             }
-            if look.is_monster() && !burst {
+            // A fish caught, or a shark's teeth, see game\sea.rs
+            let sea = look.is_sea();
+            if sea {
+                self.sea_spoils(&animal);
+            }
+            // A demi-boss leaves what it hoarded down there, see game\demi.rs
+            if let Some(kind) = animal.demi {
+                self.demi_spoils(world, &animal, kind, from);
+            }
+            if look.is_monster() && !burst && !sea && animal.demi.is_none() {
                 let mut loot = Vec::new();
                 // People and the dead had a little gold on them; what spiders and burrowers caught
                 // now and then did; wolves, gloomwings, lurkers and tuskers have nothing
@@ -2362,8 +4099,8 @@ impl Game {
                 if !nothing && random(&mut self.rng) < if undead { 0.7 } else { 0.4 } {
                     loot.push(Item::Gold(if undead { 3 } else { 2 } + (random(&mut self.rng) * if undead { 10.0 } else { 5.0 }) as u32));
                 }
-                if undead && random(&mut self.rng) < 0.06 {
-                    loot.push(self.roll_weapon(1.5));
+                if undead && random(&mut self.rng) < MONSTER_WEAPON {
+                    loot.push(self.roll_weapon(MONSTER_LUCK, false, from));
                 } else if !nothing && random(&mut self.rng) < 0.1 {
                     loot.push(if random(&mut self.rng) < 0.5 { Item::Potion } else { Item::Bread });
                 }
@@ -2381,14 +4118,66 @@ impl Game {
             }
             if let Some(boss) = animal.boss.as_ref().filter(|_| look.is_boss()) {
                 self.defeated.insert(boss.key);
+                self.milestone = true;
+                // One of a realm's raid bosses leaves its Innert block, straight into the player's
+                // hands, so it can't be left behind and lost as the world moves on
+                // A realm's finale leaves no block, see realms::on_raids_beaten()
+                let block = self.raid_lairs.get(&boss.key).copied().filter(|_| !realms::is_finale_key(&boss.key));
+                if let Some(realm) = block {
+                    self.add_item(Item::InnertBlock(realm), 1);
+                    self.cues.push(Cue::here(Sound::Chest, 1.0).pitched(0.6));
+                }
+                // The Worldpyre Ancient leaves its fang, see game\dragonfire.rs
+                if look == crate::dragons::ULTRA {
+                    self.claim_worldpyre();
+                }
+                // And a winged boss its wings, see game\aerie.rs
+                self.winged_spoils(look);
                 // What it hoarded bursts out of it onto the ground round about: weapons, gold and
                 // potions, a raid boss's far more and far better
-                let raid = look.is_raid();
-                // Its best weapon's very likely legendary or better, the rest a mix
-                let (lucks, piles, potions): (&[f64], _, _) = if raid { (&[12.0, 5.0, 3.0, 2.5, 2.0], 3, 3) } else { (&[6.0, 2.5], 1, 1) };
-                let mut loot: Vec<Item> = lucks.iter().map(|&luck| self.roll_weapon(luck)).collect();
+                // Both ultras: the Coil Unending, and the Worldpyre Ancient, see src\dragons.rs
+                let ultra = look.is_ultra() || look == crate::dragons::ULTRA;
+                let raid = look.is_raid() || block.is_some() || ultra;
+                // Its best weapon's the luckiest, a raid boss's very likely with a special attack,
+                // a huge one's, a finale's or an ultra's always, the rest a mix; the Coil Unending
+                // leaves more than any raid boss, and its own fang among it
+                let hoard = if look.is_raid() || ultra || realms::is_finale_key(&boss.key) {
+                    Hoard::Huge
+                } else if raid {
+                    Hoard::Raid
+                } else {
+                    Hoard::Boss
+                };
+                let (piles, potions) = if ultra { (6, 5) } else if raid { (3, 3) } else { (1, 1) };
+                // And jewels, straight into the player's hands: a raid boss's or a finale's more and
+                // luckier, a lesser boss's only now and then
+                let (count, luck) = match hoard {
+                    Hoard::Boss => (usize::from(random(&mut self.rng) < 0.45), BOSS_LUCKS[0]),
+                    Hoard::Raid => (1 + usize::from(random(&mut self.rng) < 0.5), RAID_LUCKS[0]),
+                    Hoard::Huge => (2 + usize::from(random(&mut self.rng) < 0.5), RAID_LUCKS[0] * 2.0),
+                };
+                let jewels: Vec<Item> = (0..count).map(|_| self.roll_jewel(luck)).collect();
+                let rolls = hoard_rolls(hoard, &mut self.rng);
+                // Leaning to what suits it, see bosses::taste()
+                let mut loot: Vec<Item> = rolls.into_iter().map(|(luck, sure)| self.roll_weapon_for(look, luck, sure, from)).collect();
+                // Often a tool too, rare ones likelier than crafting makes, see tools.rs
+                if random(&mut self.rng) < if raid { 0.8 } else { 0.35 } {
+                    loot.extend(self.roll_tool(if raid { 4.0 } else { 2.5 }));
+                }
+                // The Coil Unending's fang among it; the Worldpyre Ancient's is put straight into
+                // the player's hands, above
+                if look == Look::Ysveth {
+                    let fang = self.fang(from.0);
+                    loot.insert(0, fang);
+                }
                 for _ in 0..piles {
-                    let gold = if raid { 200.0 + 100.0 * random(&mut self.rng) } else { 80.0 + 80.0 * random(&mut self.rng) };
+                    let gold = if ultra {
+                        320.0 + 180.0 * random(&mut self.rng)
+                    } else if raid {
+                        200.0 + 100.0 * random(&mut self.rng)
+                    } else {
+                        80.0 + 80.0 * random(&mut self.rng)
+                    };
                     loot.push(Item::Gold(gold as u32));
                 }
                 loot.extend(std::iter::repeat_n(Item::Potion, potions));
@@ -2396,15 +4185,39 @@ impl Game {
                     Item::Weapon(w) => Some(self.weapons[w].grade),
                     _ => None,
                 }).max().unwrap_or(0);
-                self.scatter(world, middle, animal.position, loot, 2.0 * look.size().sqrt() + look.body().1 * 0.5);
+                // What a serpent that swims leaves is thrown up onto the land round the player,
+                // rather than sinking into the deep water it went down into
+                let around = if look.swims() { self.feet.unwrap_or(animal.position) } else { animal.position };
+                self.scatter(world, middle, around, loot, 2.0 * look.size().sqrt() + look.body().1 * 0.5);
                 self.combat.fell(middle, look.body().1);
                 self.shake = self.shake.max(1.0);
                 self.cues.push(Cue::here(Sound::Fanfare, if raid { 1.0 } else { 0.8 }));
                 let rarity = self.library.rarities[best].display_name.to_lowercase();
-                if raid {
-                    self.say(format!("Raid boss slain! The {} falls, and its hoard spills out. Some of it's {rarity}!", look.name()));
+                // What its hoard's called, for those with one of their own, see bosses::roster
+                let hoard_name = bosses::roster::hoard(look).or_else(|| bosses::wilds::hoard(look)).unwrap_or("hoard");
+                if ultra {
+                    self.say(format!("Ysveth, the {}, is slain! Its coils sink into the deep, and among its hoard lies the {}, mythic and like no other.", look.name(), serpents::FANG));
+                } else if let Some(realm) = block {
+                    let name = realms::REALMS[realm as usize % realms::REALMS.len()].name;
+                    self.say(format!("Raid boss slain! The {} falls before {}, and leaves an Innert block of {name}. Its {hoard_name} spills out, some of it {rarity}!", look.name(), self.character.name));
+                } else if raid {
+                    self.say(format!("Raid boss slain! The {} falls before {}, and its {hoard_name} spills out. Some of it's {rarity}!", look.name(), self.character.name));
+                } else if bosses::roster::has(look) || bosses::wilds::has(look) {
+                    self.say(format!("{} defeated the {}! Its {hoard_name} lies scattered round. The best of it's {rarity}.", self.character.name, look.name()));
                 } else {
-                    self.say(format!("You defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", look.name()));
+                    self.say(format!("{} defeated the {}! Its loot lies scattered round. The best of it's {rarity}.", self.character.name, look.name()));
+                }
+                self.find_jewels(jewels);
+                // And a pair of wings, said after: a raid boss always leaves one, a realm's of the
+                // realm's own kind first, and any other boss now and then, each a kind the player
+                // hasn't yet, the luckier the bigger the boss
+                let own = block.map(|r| r as usize).and_then(wings::of_realm).filter(|&k| !self.carries(Item::Wings(k)));
+                let luck = BOSS_WING_LUCK[if hoard == Hoard::Huge { 2 } else if raid { 1 } else { 0 }] * self.scaling.luck;
+                let chance = if raid { 1.0 } else { BOSS_WINGS };
+                let pair = own.or_else(|| (random(&mut self.rng) < chance).then(|| random(&mut self.rng)).and_then(|roll| wings::pick(roll, luck, |k| self.carries(Item::Wings(k)))));
+                if let Some(k) = pair {
+                    let name = wings::KINDS[k as usize].name;
+                    self.find_once(Item::Wings(k), &format!("Among what it leaves are the {name}!"));
                 }
             }
             for m in 0..look.meat() {
@@ -2414,9 +4227,9 @@ impl Game {
             }
             if burst {
                 self.say("A bloater bursts in a cloud of venom!");
-            } else if look.is_monster() {
+            } else if look.is_monster() && animal.demi.is_none() {
                 self.say(format!("You slew a {}.", look.name()));
-            } else if !look.is_boss() {
+            } else if !look.is_boss() && !sea {
                 self.say(if look.meat() > 0 { format!("You hunted a {}. It dropped some meat.", look.name()) } else { format!("You hunted a {}.", look.name()) });
             }
             // The last of a den's keepers dead leaves it clear for good: a dungeon hall, a nest, or a
@@ -2425,14 +4238,25 @@ impl Game {
                 && !self.animals.iter().any(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| b.key == key))
             {
                 self.cleared.insert(key);
-                cleared.push(key);
+                cleared.push((key, hush.is_some()));
+                self.milestone = true;
+            }
+            if let Some((cues, pickups)) = hush {
+                self.cues.truncate(cues);
+                for pickup in self.pickups.iter_mut().skip(pickups) {
+                    pickup.quiet = true;
+                }
             }
             self.target = None;
         }
         // Where a camp was cleared, the chest of the bandits' hoard turns up, said after the rest of
-        // what fell
-        for key in cleared {
+        // what fell, without a sound if its warlord was the last of them
+        for (key, quiet) in cleared {
+            let cues = self.cues.len();
             self.reveal_hoard(key);
+            if quiet {
+                self.cues.truncate(cues);
+            }
         }
     }
 
@@ -2474,15 +4298,15 @@ impl Game {
         fell
     }
 
-    /// What was dropped landing, which weapons lying about the camera can see, for their beams of
-    /// light to show, and the merchant being traded with left behind
-    fn look_over_loot(&mut self, world: &World, player: Option<Vector3<f64>>, view: &View, dt: f64) {
+    /// What was dropped landing and kept on what it lies on, which beams of light the camera can
+    /// see, see game\drops.rs, and the merchant being traded with left behind
+    fn look_over_loot(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View, dt: f64) {
         let vpm = world.voxels_per_meter as f64;
         self.feet = Some(player.unwrap_or(view.eye));
         for pickup in &mut self.pickups {
             if pickup.flying > 0.0 {
                 pickup.flying -= dt;
-                if pickup.flying <= 0.0 {
+                if pickup.flying <= 0.0 && !pickup.quiet {
                     let cue = match pickup.item {
                         Item::Weapon(_) => Cue::at(Sound::Clang, pickup.position, 0.35).pitched(1.6),
                         Item::Gold(_) => Cue::at(Sound::Coins, pickup.position, 0.35).pitched(1.1),
@@ -2491,37 +4315,13 @@ impl Game {
                     self.cues.push(cue);
                 }
             }
-            // Looking a quarter of a meter at a time for anything in the way
-            if pickup.shines() {
-                let to = pickup.at(vpm) + Vector3::new(0.0, 0.0, 0.4 * vpm) - view.eye;
-                let d = to.norm();
-                let steps = (d / (0.25 * vpm)) as usize;
-                pickup.seen = d < BEAM_RANGE * vpm
-                    && (1..steps).all(|s| {
-                        let p = view.eye + to * (s as f64 / steps as f64);
-                        is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
-                    });
-            }
         }
-        // So do the hoards of the camps cleared, until they're opened
-        self.beams.clear();
-        for chest in self.chests.iter().filter(|c| c.hoard && !self.opened.contains(&c.key)) {
-            let to = chest.position + Vector3::new(0.0, 0.0, 0.5 * vpm) - view.eye;
-            let d = to.norm();
-            let steps = (d / (0.25 * vpm)) as usize;
-            let seen = d < BEAM_RANGE * vpm
-                && (1..steps).all(|s| {
-                    let p = view.eye + to * (s as f64 / steps as f64);
-                    is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
-                });
-            if seen {
-                self.beams.push(chest.position);
-            }
-        }
-        if let Some(key) = self.shop {
+        self.watch_drops(world, water, view, dt);
+        if let Some(key) = self.shop.or(self.talking_to()) {
             let near = self.merchants.iter().find(|(_, k)| *k == key).and_then(|(id, _)| self.animals.iter().find(|a| a.id == *id));
             if near.is_none_or(|m| (m.position - view.eye).norm() > SHOP_REACH * vpm) {
                 self.shop = None;
+                self.stop_talking();
                 self.say("You walk away from the merchant.");
             }
         }
@@ -2572,10 +4372,91 @@ impl Game {
         self.models_version += 1;
     }
 
-    /// A new weapon rolled with `luck`, as for Library::roll_rarity(), kept among Game::weapons
-    fn roll_weapon(&mut self, luck: f64) -> Item {
+    /// The Coil Unending's own weapon, the one of its kind: a mythic whip whose special is a serpent
+    /// lash or a coil bind if any is, made the same every time, and called by its own name, which
+    /// it keeps in the save, see save::WeaponSave::name
+    fn fang(&mut self, level: u32) -> Item {
+        let family = self.library.family("whip");
+        let mythic = self.library.rarities.len() - 1;
+        let serpentine = |s: u32| matches!(self.library.special_of(s, family, FANG_LUCK), Some(Special::SerpentLash | Special::CoilBind));
+        // The first seed that makes it of the rarest grade with a serpent's special, or failing
+        // that the first with the special
+        let mut found = None;
+        for seed in (0..20_000u32).map(|k| hash(k ^ 0x7e57_f00d)).filter(|&s| serpentine(s)) {
+            let weapon = self.library.generate(seed, family, FANG_LUCK);
+            let best = weapon.grade == mythic;
+            if best || found.is_none() {
+                found = Some(weapon);
+            }
+            if best {
+                break;
+            }
+        }
+        let mut weapon = found.unwrap_or_else(|| self.library.generate(0x7e57_f00d, family, FANG_LUCK));
+        weapon.name = serpents::FANG.to_owned();
+        let weapon = self.levelled(weapon, level, Source::Raid);
+        self.weapons.push(weapon);
+        self.models_version += 1;
+        Item::Weapon(self.weapons.len() - 1)
+    }
+
+    /// `weapon` given an item level rolled from `level`, that of what gave it, as `source` rolls it,
+    /// see levels::drop_level()
+    fn levelled(&mut self, mut weapon: Weapon, level: u32, source: Source) -> Weapon {
+        weapon.set_level(levels::drop_level(level, source, random(&mut self.rng)), 0);
+        weapon
+    }
+
+    /// The same, rolled from `seed`, for what's the same every time it's looked at, as a chest's
+    /// or a merchant's
+    fn levelled_by(&self, mut weapon: Weapon, level: u32, source: Source, seed: u32) -> Weapon {
+        let mut roll = hash(seed ^ 0x1e7e1);
+        weapon.set_level(levels::drop_level(level, source, random(&mut roll)), 0);
+        weapon
+    }
+
+    /// A new weapon rolled with `luck`, as for Library::odds(), kept among Game::weapons: with
+    /// `sure`, one with a special attack. Of an item level rolled from `from`, the level of what
+    /// left it and what that was.
+    fn roll_weapon(&mut self, luck: f64, sure: bool, from: (u32, Source)) -> Item {
         self.rng = hash(self.rng ^ 0x1007);
-        let weapon = self.library.generate(self.rng, None, luck);
+        // Better in the realms further on
+        let luck = luck * loot_scaling(self.scaling);
+        let seed = if sure { self.library.special_seed(self.rng, None, luck) } else { self.rng };
+        let weapon = self.library.generate(seed, None, luck);
+        let weapon = self.levelled(weapon, from.0, from.1);
+        self.weapons.push(weapon);
+        self.models_version += 1;
+        Item::Weapon(self.weapons.len() - 1)
+    }
+
+    /// A weapon a boss of `look` leaves: most of the time of one of the families that suit it, and
+    /// of its element if one of a few rolls comes up with it, see bosses::taste(); otherwise any
+    fn roll_weapon_for(&mut self, look: Look, luck: f64, sure: bool, from: (u32, Source)) -> Item {
+        let (families, element) = bosses::taste(look);
+        self.rng = hash(self.rng ^ 0x7a57e);
+        if families.is_empty() || random(&mut self.rng) > 0.75 {
+            return self.roll_weapon(luck, sure, from);
+        }
+        let pick = families[(random(&mut self.rng) * families.len() as f64) as usize % families.len()];
+        let Some(family) = self.library.families.iter().position(|f| f.id == pick) else {
+            return self.roll_weapon(luck, sure, from);
+        };
+        let luck = luck * loot_scaling(self.scaling);
+        let mut chosen = None;
+        for _ in 0..8 {
+            self.rng = hash(self.rng ^ 0x1007);
+            let seed = if sure { self.library.special_seed(self.rng, Some(family), luck) } else { self.rng };
+            let weapon = self.library.generate(seed, Some(family), luck);
+            let suits = element.is_none() || weapon.profile.element == element;
+            if suits || chosen.is_none() {
+                chosen = Some(weapon);
+            }
+            if suits {
+                break;
+            }
+        }
+        let weapon = self.levelled(chosen.expect("rolled at least once"), from.0, from.1);
         self.weapons.push(weapon);
         self.models_version += 1;
         Item::Weapon(self.weapons.len() - 1)
@@ -2601,7 +4482,7 @@ impl Game {
             });
             let landed = landed.map_or(spot, |z| Vector3::new(spot.x, spot.y, z as f64 + 1.0));
             let heading = random(&mut self.rng) * TAU;
-            self.pickups.push(Pickup { item, position: landed, heading, from, flying: DROP_SECONDS, seen: false, beacon: false });
+            self.pickups.push(Pickup::thrown(item, landed, heading, from, DROP_SECONDS));
         }
     }
 
@@ -2662,6 +4543,13 @@ impl Game {
     /// Adds `count` of `item` to what's carried, on its stack if there is one: ammo of the same
     /// kind goes on the one stack however many are in it
     fn add_item(&mut self, item: Item, count: u32) {
+        // The first wings found are put on at once
+        if let Item::Wings(k) = item
+            && self.worn.is_none()
+        {
+            self.worn = Some(k);
+            return;
+        }
         if let Item::Ammo(k, more) = item {
             match self.slots.iter_mut().find(|(i, _)| matches!(i, Item::Ammo(a, _) if *a == k)) {
                 Some((Item::Ammo(_, n), _)) => *n += more * count,
@@ -2686,6 +4574,12 @@ impl Game {
                     self.interact(eye);
                     return;
                 }
+                // Warded by its realm's guardians, see guardians.rs
+                if let Some((slain, of)) = self.animals[i].status.warded {
+                    self.cues.push(Cue::at(Sound::Clang, self.animals[i].position, 0.7).pitched(1.5));
+                    self.say(format!("Immune: slay the guardians ({slain}/{of})"));
+                    return;
+                }
                 self.cues.push(Cue::at(Sound::Hit, self.animals[i].position, 0.7));
                 if self.animals[i].hurt(eye) {
                     self.target = None;
@@ -2708,17 +4602,27 @@ impl Game {
             Some(Target::Chest(i)) => self.open_chest(i),
             Some(Target::Animal(i)) => {
                 let look = self.animals[i].look;
-                if look == Look::Merchant || look == Look::Princess {
+                if look.is_merchant() || look == Look::Princess {
                     let id = self.animals[i].id;
-                    if let Some(&(_, key)) = self.merchants.iter().find(|(m, _)| *m == id) {
+                    // A specialist's talked to first, see game\specialists.rs
+                    if let Some(&(_, key)) = self.merchants.iter().find(|(m, _)| *m == id)
+                        && self.is_specialist(key)
+                    {
+                        self.talk_to(key, self.animals[i].position);
+                    } else if let Some(&(_, key)) = self.merchants.iter().find(|(m, _)| *m == id) {
                         self.stock(key);
                         self.shop = Some(key);
                         self.cues.push(Cue::here(Sound::Chest, 0.5).pitched(1.3));
                         self.say(if look == Look::Princess {
                             "\"Welcome to the royal armoury. Only blades fit for a legend, and they're priced like it.\""
                         } else {
-                            "\"Have a look. Good steel, fresh bread, potions that work.\""
+                            "\"Have a look. Good steel, fresh bread, potions that work. Wings, too.\""
                         });
+                        // The first wings seen for sale, how they're worn
+                        if !self.wings_told && self.sells_wings(key) {
+                            self.wings_told = true;
+                            self.say(format!("Wings for sale! Bought, they're put on your back: {}.", glide_tip()));
+                        }
                     }
                 } else if look == Look::RoyalGuard {
                     self.say("\"Her Highness receives travellers in the throne room. Mind your manners.\"");
@@ -2736,6 +4640,11 @@ impl Game {
                     self.say(format!("The {} won't let you near. Click to hunt it.", look.name()));
                 }
             }
+            // At the Innert Gate or a portal home, see realms.rs
+            None if self.shrine_near(eye).is_some() => {
+                self.shrine_used = true;
+                self.cues.push(Cue::here(Sound::Chest, 0.5).pitched(0.7));
+            }
             None => {}
         }
     }
@@ -2744,6 +4653,7 @@ impl Game {
     fn take(&mut self, item: Item) {
         match item {
             Item::Gold(n) => {
+                let n = self.more_gold(n);
                 self.gold += n;
                 self.cues.push(Cue::here(Sound::Coins, 0.7));
                 self.say(format!("+{n} gold"));
@@ -2761,6 +4671,21 @@ impl Game {
                 self.cues.push(Cue::here(Sound::Ratchet, 0.6).pitched(0.7));
                 self.say(format!("+{n} {}", self.library.ammo[k].display_name));
             }
+            // From a wing shrine's nest: claimed for good, never to lie there again
+            Item::Wings(k) => {
+                if let Some(at) = self.aeries.iter().position(|a| a.1 == k) {
+                    let (key, ..) = self.aeries.remove(at);
+                    self.opened.insert(key);
+                    self.milestone = true;
+                }
+                self.cues.push(Cue::here(Sound::Fanfare, 0.6));
+                if self.carries(item) {
+                    self.say(format!("The {} are yours already.", item.name()));
+                } else {
+                    self.say("You claim the wings from the shrine's nest!");
+                    self.gain_wings(k);
+                }
+            }
             _ => {
                 self.add_item(item, 1);
                 self.cues.push(Cue::here(Sound::Pickup, 0.6));
@@ -2773,14 +4698,24 @@ impl Game {
     fn open_chest(&mut self, i: usize) {
         let chest = &self.chests[i];
         let key = chest.key;
+        let chest_luck = chest.luck;
         let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32))));
-        let weapon = self.library.generate(seed, None, chest.luck);
+        let weapon = self.library.generate(seed, None, chest.luck * loot_scaling(self.scaling));
+        // Of the level of where it is, a bandits' hoard's leaning higher, as a boss's does
+        let weapon = self.levelled_by(weapon, self.area_level(), if chest.hoard { Source::Boss } else { Source::Found }, seed);
         let gold = 10 + (hash(seed ^ 0x601d) % 30) as u32 + (chest.luck * 4.0) as u32;
         // A bandits' hoard has what they've taken in it too
         let hoard = chest.hoard;
         let gold = if hoard { gold + 60 + (hash(seed ^ 0x40a2) % 60) as u32 } else { gold };
+        let gold = self.more_gold(gold);
+        // Now and then a jewel, likelier the luckier the chest
+        let jewel_roll = (hash(seed ^ 0x9e3e1) >> 8) as f64 / 16_777_216.0;
+        let jewel = (jewel_roll < (CHEST_JEWEL + CHEST_JEWEL_LUCK * chest.luck).min(CHEST_JEWEL_MOST)).then(|| chest.luck);
         self.opened.insert(key);
+        self.milestone = true;
         self.target = None;
+        // Now and then a tool, a hoard's always, see tools.rs
+        let tool = if hoard || hash(seed ^ 0x7001) % 5 == 0 { self.roll_tool(1.5 + chest_luck * self.scaling.luck) } else { None };
         let rarity = &self.library.rarities[weapon.grade];
         let family = &self.library.families[weapon.family];
         // Half of them have a bundle of special ammo in too
@@ -2789,12 +4724,31 @@ impl Game {
             (k, self.library.ammo[k].bundle)
         });
         let extra = ammo.map_or(String::new(), |(k, n)| format!(", {n} {}", self.library.ammo[k].display_name.to_lowercase()));
+        // Now and then, wings, likelier the luckier the chest, the rarer kinds rarer, and never a
+        // kind the player has already
+        let luck = chest_luck * self.scaling.luck;
+        let chance = (CHEST_WINGS + CHEST_WINGS_LUCK * luck).min(CHEST_WINGS_MOST);
+        let pair = (((hash(seed ^ 0x3175) >> 8) as f64 / 16_777_216.0) < chance).then(|| (hash(seed ^ 0x3176) >> 8) as f64 / 16_777_216.0).and_then(|roll| wings::pick(roll, luck, |k| self.carries(Item::Wings(k))));
+        let extra = match pair {
+            Some(k) => format!("{extra}, the {}", wings::KINDS[k as usize].name),
+            None => extra,
+        };
+        let extra = match tool {
+            Some(Item::Weapon(t)) => {
+                let w = &self.weapons[t];
+                format!("{extra}, {} {}", self.library.rarities[w.grade].display_name.to_lowercase(), w.name)
+            }
+            _ => extra,
+        };
         let found = if hoard { "In the bandits' hoard you find" } else { "You found" };
         let grade = rarity.display_name.to_lowercase();
         let a = if grade.starts_with(['a', 'e', 'i', 'o', 'u']) { "an" } else { "a" };
         let message = format!("{found} {}, {a} {grade} {}{extra}, and {gold} gold!", weapon.name, family.display_name.to_lowercase());
         self.weapons.push(weapon);
         self.slots.push((Item::Weapon(self.weapons.len() - 1), 1));
+        if let Some(tool) = tool {
+            self.slots.push((tool, 1));
+        }
         if let Some((k, n)) = ammo {
             self.add_item(Item::Ammo(k, n), 1);
         }
@@ -2802,15 +4756,56 @@ impl Game {
         self.models_version += 1;
         self.cues.push(Cue::here(Sound::Chest, 0.8));
         self.say(message);
+        if let Some(luck) = jewel {
+            let found = self.roll_jewel(luck);
+            self.find_jewels(vec![found]);
+        }
+        // Said after, how to wear them
+        if let Some(k) = pair {
+            self.gain_wings(k);
+        }
     }
 
-    /// Whether the player's trading with a merchant
+    /// A tool found, of a tier as good as how far on the player is and a rarity rolled with `luck`,
+    /// see tools::loot(): made, and the item it is
+    fn roll_tool(&mut self, luck: f64) -> Option<Item> {
+        let roll = hash(self.rng ^ 0x7001_7001);
+        self.rng = hash(self.rng.wrapping_add(0x9e37_79b9));
+        let depth = self.area_level() as f64 / levels::ITEM_CAP as f64;
+        let tool = tools::loot(&self.library, roll, depth, luck)?;
+        self.weapons.push(tool);
+        self.models_version += 1;
+        Some(Item::Weapon(self.weapons.len() - 1))
+    }
+
+    /// Wings of kind `k` come to the player: put on at once if they wear none, else into the pack,
+    /// and told which and how to glide on them, or to wear them
+    fn gain_wings(&mut self, k: u8) {
+        let worn = self.worn.is_none();
+        if worn {
+            self.worn = Some(k);
+        } else {
+            self.slots.push((Item::Wings(k), 1));
+        }
+        self.cues.push(Cue::here(Sound::Equip, 0.9));
+        self.milestone = true;
+        self.wings_told = true;
+        let name = wings::KINDS[k as usize].name;
+        self.say(if worn {
+            format!("You put on the {name}: {}.", wings_tip(k))
+        } else {
+            format!("The {name} are in your pack: press {} and Wear them to change wings.", crate::bindings::key(crate::bindings::Action::Inventory))
+        });
+    }
+
+    /// Whether the player's trading with a merchant, or talking to one
     pub fn shopping(&self) -> bool {
-        self.shop.is_some()
+        self.shop.is_some() || self.talking_to().is_some()
     }
 
     pub fn close_shop(&mut self) {
         self.shop = None;
+        self.stop_talking();
     }
 
     /// The merchants' spots in the piece of the world just built, in its voxels: one turns up at
@@ -2822,6 +4817,11 @@ impl Game {
                 continue;
             }
             let seed = hash(stall.key[0] as u32 ^ hash(stall.key[1] as u32 ^ 0x5a1e));
+            // A specialist's, unless they've moved to the base, see game\specialists.rs
+            if let Some((trade, heading)) = stall.trade {
+                self.keep_stall(world, water, stall.key, stall.position, trade, heading, seed);
+                continue;
+            }
             let keeper = match stall.royal {
                 Some(heading) => animals::spawn_royal(world, water, Look::Princess, stall.position, heading, seed),
                 None => animals::spawn_merchant(world, water, stall.position, stall.within, seed),
@@ -2856,7 +4856,8 @@ impl Game {
     fn royal_stock(&mut self, key: [i64; 3]) {
         let seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x9e11))));
         let mut wares = Vec::new();
-        for weapon in royal_weapons(&self.library, seed) {
+        for (k, weapon) in royal_weapons(&self.library, seed).into_iter().enumerate() {
+            let weapon = self.levelled_by(weapon, self.level, Source::Merchant, seed ^ k as u32);
             self.weapons.push(weapon);
             wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
@@ -2866,6 +4867,9 @@ impl Game {
             Ware::Food(..) => 0,
         });
         wares.push(Ware::Food(Item::Potion, 5));
+        // And royal wings, and the cinder wings, for those who can pay
+        wares.push(Ware::Food(Item::Wings(wings::AURELIAN), 1));
+        wares.push(Ware::Food(Item::Wings(wings::CINDERWING), 1));
         self.stocks.insert(key, wares);
     }
 
@@ -2895,6 +4899,8 @@ impl Game {
         let vpm = world.voxels_per_meter as f64;
         let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
         let at = near + flat * distance * vpm;
+        // On the ground there, whether `near` is the player's feet or the camera over them
+        let at = Vector3::new(at.x, at.y, animals::ground_under(world, water, at).unwrap_or(at.z));
         let key = [at.x as i64, at.y as i64, -3];
         if let Some(merchant) = animals::spawn_merchant(world, water, at, 1.0, self.rng) {
             self.merchants.push((merchant.id, key));
@@ -2911,9 +4917,27 @@ impl Game {
         let origin = Vector3::new(world.origin[0] as f64, world.origin[1] as f64, 0.0);
         for (look, by) in [(Look::Villager, -0.6), (Look::Townswoman, 0.6)] {
             let at = near + (flat * distance + side * by) * vpm;
+            // On the ground there, whether `near` is the player's feet or the camera over them
+            let at = Vector3::new(at.x, at.y, animals::ground_under(world, water, at).unwrap_or(at.z));
             if let Some(villager) = animals::spawn_villager(world, water, look, at, 0.1, (at + origin, 6.0), self.rng ^ by.to_bits() as u32) {
                 self.animals.push(villager);
             }
+        }
+    }
+
+    /// For trying them out: every villager about set off strolling along `heading`, radians round
+    /// from +x, for `seconds`, turning back once they've gone as far from home as they go
+    pub fn walk_villagers(&mut self, heading: f64, seconds: f64) {
+        for villager in self.animals.iter_mut().filter(|a| a.look.is_villager()) {
+            villager.stroll_off(heading, seconds);
+        }
+    }
+
+    /// For trying them out: every villager about turned `by` radians round to its left, coming
+    /// round as it would of itself
+    pub fn turn_villagers(&mut self, by: f64) {
+        for villager in self.animals.iter_mut().filter(|a| a.look.is_villager()) {
+            villager.turn_by(by);
         }
     }
 
@@ -2929,17 +4953,54 @@ impl Game {
     /// What merchant `key` has to sell, rolled from where it stands the first time it's looked at:
     /// weapons, a few of them rare, and food and potions
     fn stock(&mut self, key: [i64; 3]) {
-        if self.stocks.contains_key(&key) {
+        if !self.stocks.contains_key(&key) {
+            self.roll_stock(key);
+        }
+        if self.royals.contains(&key) || self.is_specialist(key) {
             return;
         }
+        // Every travelling merchant has a pair of wings the player hasn't, the plainest there's
+        // left, even on a stall rolled before they sold any or once its pair's been bought
+        let has = |k: u8| self.carries(Item::Wings(k));
+        let sells_new = self.stocks.get(&key).is_some_and(|wares| wares.iter().any(|w| matches!(*w, Ware::Food(Item::Wings(k), _) if !has(k))));
+        let plain = (!sells_new).then(|| wings::plainest(has)).flatten();
+        // And once the way to the sky isles is open, a hook for whoever hasn't found theirs
+        let hook = (self.sky_wares && !self.carries(Item::Hook)).then_some(Item::Hook);
+        if let Some(wares) = self.stocks.get_mut(&key) {
+            for item in plain.map(Item::Wings).into_iter().chain(hook) {
+                if !wares.iter().any(|w| matches!(w, Ware::Food(i, _) if *i == item)) {
+                    wares.insert(goods_start(wares), Ware::Food(item, 1));
+                }
+            }
+        }
+    }
+
+    /// Whether merchant `key` has wings for sale
+    fn sells_wings(&self, key: [i64; 3]) -> bool {
+        self.stocks.get(&key).is_some_and(|wares| wares.iter().any(|w| matches!(w, Ware::Food(Item::Wings(_), _))))
+    }
+
+    /// What merchant `key` has to sell the first time it's looked at, see stock()
+    fn roll_stock(&mut self, key: [i64; 3]) {
         if self.royals.contains(&key) {
             return self.royal_stock(key);
         }
+        if let Some((trade, seed)) = self.specialist_of(key) {
+            return self.specialist_stock(key, trade, seed);
+        }
         let mut seed = hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ hash(key[2] as u32 ^ 0x5709))));
         let mut wares = Vec::new();
-        for k in 0..5 {
+        for luck in MERCHANT_LUCKS {
             seed = hash(seed);
-            self.weapons.push(self.library.generate(seed, None, 1.0 + 0.6 * k as f64));
+            // Of about the player's own level
+            let weapon = self.library.generate(seed, None, luck * loot_scaling(self.scaling));
+            let weapon = self.levelled_by(weapon, self.level, Source::Merchant, seed);
+            self.weapons.push(weapon);
+            wares.push(Ware::Weapon(self.weapons.len() - 1));
+        }
+        // And a couple of tools, copper or iron, for gathering with, see tools.rs
+        for made in tools::merchant_stock(&self.library, hash(seed ^ 0x7001), 2) {
+            self.weapons.push(made);
             wares.push(Ware::Weapon(self.weapons.len() - 1));
         }
         self.models_version += 1;
@@ -2948,6 +5009,16 @@ impl Game {
             Ware::Food(..) => 0,
         });
         wares.extend([Ware::Food(Item::Potion, 4), Ware::Food(Item::Bread, 6), Ware::Food(Item::Meat, 5), Ware::Food(Item::Apple, 10)]);
+        // Two kinds of jewel, common or uncommon, a few of each
+        for k in 0..2u32 {
+            let roll = hash(seed ^ 0x7e3e1 ^ k);
+            let category = crate::jewels::Category::ALL[roll as usize % 3];
+            let tier = ((roll >> 8) % 3 == 0) as usize;
+            let j = crate::jewels::jewel(category, tier);
+            if !wares.iter().any(|w| matches!(w, Ware::Food(Item::Jewel(o), _) if *o == j)) {
+                wares.push(Ware::Food(Item::Jewel(j), 2 + (roll >> 12) % 3));
+            }
+        }
         // A few kinds of special ammo, a bundle at a time
         let mut kinds: Vec<usize> = Vec::new();
         for _ in 0..4 {
@@ -2958,6 +5029,16 @@ impl Game {
                 wares.push(Ware::Food(Item::Ammo(k, self.library.ammo[k].bundle), 3));
             }
         }
+        // A pair of wings, the plainest the player hasn't, priced for early gold, and now and then
+        // a rarer pair besides, see stock()
+        let has = |k: u8| self.carries(Item::Wings(k));
+        let plain = wings::plainest(has);
+        seed = hash(seed ^ 0x3177);
+        let rarer = ((seed >> 8) as f64 / 16_777_216.0 < MERCHANT_RARE_WINGS)
+            .then(|| (hash(seed) >> 8) as f64 / 16_777_216.0)
+            .and_then(|roll| wings::pick(roll, MERCHANT_WING_LUCK * loot_scaling(self.scaling), |k| has(k) || Some(k) == plain || wings::KINDS[k as usize].rarity < 2));
+        let at = goods_start(&wares);
+        wares.splice(at..at, plain.into_iter().chain(rarer).map(|k| Ware::Food(Item::Wings(k), 1)));
         self.stocks.insert(key, wares);
     }
 
@@ -2974,6 +5055,10 @@ impl Game {
             Ware::Food(item, _) => item,
         };
         let cost = self.price(item);
+        if matches!(item, Item::Hook | Item::Wings(_)) && self.carries(item) {
+            self.say(format!("You have {} already.", item.name().to_lowercase()));
+            return;
+        }
         if cost > self.gold {
             self.say(format!("You need {} more gold for that.", cost - self.gold));
             return;
@@ -2986,12 +5071,15 @@ impl Game {
                 stock.remove(k);
             }
         }
+        self.cues.push(Cue::here(Sound::Coins, 0.8));
+        self.milestone = true;
+        self.say(format!("Bought {} for {cost} gold.", self.item_name(item)));
         match item {
             Item::Weapon(_) => self.slots.push((item, 1)),
+            // Put on at once if none are worn, and told how to glide on them
+            Item::Wings(k) => self.gain_wings(k),
             _ => self.add_item(item, 1),
         }
-        self.cues.push(Cue::here(Sound::Coins, 0.8));
-        self.say(format!("Bought {} for {cost} gold.", self.item_name(item)));
     }
 
     /// Sells one of what's in slot `slot` to the merchant being traded with. A weapon goes on
@@ -3003,7 +5091,7 @@ impl Game {
         let Some(&(item, count)) = self.slots.get(slot) else {
             return;
         };
-        if item == Item::Bucket {
+        if item.kept() {
             return;
         }
         let paid = self.sell_price(item);
@@ -3017,6 +5105,7 @@ impl Game {
             self.stocks.entry(key).or_default().insert(0, Ware::Weapon(w));
         }
         self.cues.push(Cue::here(Sound::Coins, 0.8).pitched(0.9));
+        self.milestone = true;
         self.say(format!("Sold {} for {paid} gold.", self.item_name(item)));
     }
 
@@ -3035,7 +5124,7 @@ impl Game {
         let (Some(&(item, count)), Some(feet)) = (self.slots.get(slot), self.feet) else {
             return;
         };
-        if item == Item::Bucket {
+        if item.kept() {
             return;
         }
         self.remove_slot(slot);
@@ -3043,7 +5132,7 @@ impl Game {
         for k in 0..count {
             let angle = random(&mut self.rng) * TAU;
             let at = feet + Vector3::new(angle.cos(), angle.sin(), 0.0) * (0.5 + 0.2 * k as f64) * vpm;
-            self.pickups.push(Pickup { item, position: at, heading: angle, from: feet + Vector3::new(0.0, 0.0, 1.2 * vpm), flying: DROP_SECONDS, seen: false, beacon: false });
+            self.pickups.push(Pickup::thrown(item, at, angle, feet + Vector3::new(0.0, 0.0, 1.2 * vpm), DROP_SECONDS));
         }
         self.say(format!("You drop {}.", self.item_name(item)));
     }
@@ -3054,9 +5143,13 @@ impl Game {
         if slot >= self.slots.len() {
             return;
         }
-        // Ammo isn't held, it's loaded into what shoots it
+        // Ammo isn't held, it's loaded into what shoots it, and wings are worn
         if let Item::Ammo(k, _) = self.slots[slot].0 {
             self.load_ammo(k);
+            return;
+        }
+        if let Item::Wings(_) = self.slots[slot].0 {
+            self.wear(slot);
             return;
         }
         let to = if slot < HOTBAR {
@@ -3093,6 +5186,11 @@ impl Game {
 
     /// Right click without a weapon: eats or drinks one of what's selected in the quick bar
     pub fn eat_selected(&mut self) {
+        // Wings picked on the quick bar are put on
+        if let Some(&(Item::Wings(_), _)) = self.slots.get(self.selected) {
+            self.wear(self.selected);
+            return;
+        }
         if !self.slots.iter().any(|(item, _)| item.consumable()) {
             self.say("You have nothing to eat. Look for apples under leafy trees, or buy some bread.");
             return;
@@ -3204,6 +5302,36 @@ impl Game {
         (middle, longest)
     }
 
+    /// For looking at pools, `--script pools`: one of each element and one of churned earth laid
+    /// out over the ground `ahead` of `eye`, three by three, hurting nothing
+    pub fn lay_pools(&mut self, world: &World, water: WaterLevel, eye: Vector3<f64>, ahead: Vector3<f64>) -> Vector3<f64> {
+        let profile = match self.held() {
+            Some((_, w)) => w.profile.clone(),
+            None => self.library.generate(hash(self.seed ^ 0x9001), None, 1.0).profile.clone(),
+        };
+        self.combat.lay_pools(world, water, &profile, eye, ahead)
+    }
+
+    /// For screenshot runs, `--script shore`: a pool of `element` on the ground at `ground`, as a
+    /// shot of it leaves one, hurting nothing
+    pub fn lay_pool(&mut self, ground: Vector3<f64>, element: Option<Element>) {
+        let profile = self.library.generate(hash(self.seed ^ 0x9001), None, 1.0).profile.clone();
+        self.combat.lay_pool(ground, element, &profile);
+    }
+
+    /// For screenshot runs, `--script far`: every animal within `meters` of `near` gone, so a
+    /// spell cast out over the land has nothing to home in on
+    pub fn shoo_animals(&mut self, near: Vector3<f64>, meters: f64) {
+        let vpm = self.combat.vpm();
+        self.animals.retain(|a| a.look.is_boss() || (a.position - near).norm() > meters * vpm);
+    }
+
+    /// What's in flight, and how far off the furthest of it is, for screenshot runs
+    pub fn in_flight(&self, eye: Vector3<f64>) -> String {
+        let (count, furthest) = self.combat.in_flight(eye);
+        format!("{count} in flight, the furthest {furthest:.0} m off")
+    }
+
     /// Takes the first weapon of family `id` carried in hand, or for trying it out, one rolled if
     /// none is carried
     pub fn select_family(&mut self, id: &str) {
@@ -3229,6 +5357,1239 @@ impl Game {
         }
     }
 
+    /// Whether something's happened since last asked that's worth saving the game for straight
+    /// away: a boss beaten, a camp cleared, a chest opened, something bought or sold
+    pub fn take_milestone(&mut self) -> bool {
+        std::mem::take(&mut self.milestone)
+    }
+
+    /// Weapon `w` as it's saved, by what it's made of: each part by its id, and where a few parts
+    /// share an id, as some do in assets\weapons.json, which of them it is after a #, as
+    /// `earthshaker_head#1` for the second
+    fn weapon_save(&self, w: usize) -> save::WeaponSave {
+        let weapon = &self.weapons[w];
+        let components = &self.library.components;
+        let part = |p: usize| {
+            let id = &components[p].id;
+            match components[..p].iter().filter(|c| c.id == *id).count() {
+                0 => id.clone(),
+                twin => format!("{id}#{twin}"),
+            }
+        };
+        // The Coil Unending's fang keeps its own name
+        let name = (weapon.name == serpents::FANG).then(|| weapon.name.clone());
+        save::WeaponSave { family: self.library.families[weapon.family].id.clone(), parts: weapon.parts.iter().map(|&p| part(p)).collect(), seed: weapon.seed, name, level: Some(weapon.level), jewels: weapon.jewels }
+    }
+
+    /// Makes a saved weapon again, kept among Game::weapons: None if the parts it was made of are
+    /// no more, or don't fit its family any more. One of a family since taken out of the game, a
+    /// bell, comes back as one of another as rare, see Library::retired().
+    fn weapon_from(&mut self, saved: &save::WeaponSave) -> Option<usize> {
+        let components = &self.library.components;
+        let part = |name: &String| {
+            let (id, twin) = name.split_once('#').map_or((name.as_str(), 0), |(id, n)| (id, n.parse().unwrap_or(0)));
+            components.iter().enumerate().filter(|(_, c)| c.id == id).nth(twin).map(|(p, _)| p)
+        };
+        let parts: Vec<usize> = saved.parts.iter().map(part).collect::<Option<_>>()?;
+        let (family, parts) = match self.library.family(&saved.family) {
+            Some(family) => (family, parts),
+            None => self.library.retired(&saved.family, &parts, saved.seed)?,
+        };
+        let slots = &self.library.families[family].slots;
+        if parts.len() != slots.len() || parts.iter().zip(slots).any(|(&p, slot)| self.library.components[p].slot_type != *slot) {
+            return None;
+        }
+        let mut weapon = Weapon::assemble(&self.library, family, parts, saved.seed);
+        if let Some(name) = &saved.name {
+            weapon.name = name.clone();
+        }
+        // A weapon from a save from before there were levels is of the level of where the player's
+        // got to, see set_legacy_level()
+        weapon.set_level(saved.level.unwrap_or(self.legacy_level), saved.jewels.min(crate::jewels::sockets(weapon.grade)));
+        self.weapons.push(weapon);
+        Some(self.weapons.len() - 1)
+    }
+
+    /// `item` as it's saved
+    fn item_save(&self, item: Item) -> save::ItemSave {
+        use save::ItemSave as S;
+        match item {
+            Item::Bucket => S::Bucket,
+            Item::Apple => S::Apple,
+            Item::Meat => S::Meat,
+            Item::RoastMeat => S::RoastMeat,
+            Item::RawFish => S::RawFish,
+            Item::CookedFish => S::CookedFish,
+            Item::SharkTooth => S::SharkTooth,
+            Item::Bread => S::Bread,
+            Item::Potion => S::Potion,
+            Item::Gold(amount) => S::Gold { amount },
+            Item::Weapon(w) => S::Weapon(self.weapon_save(w)),
+            Item::Ammo(k, rounds) => S::Ammo { id: self.library.ammo[k].id.clone(), rounds },
+            Item::InnertBlock(realm) => S::InnertBlock { realm },
+            Item::Hook => S::Hook,
+            Item::Wings(k) => S::Wings { of: Some(wings::KINDS[k as usize].id.to_owned()) },
+            Item::Jewel(j) => S::Jewel { of: crate::jewels::id(j) },
+        }
+    }
+
+    /// A saved item made again: None for what's no more, like ammo since taken out of the game
+    fn item_from(&mut self, saved: &save::ItemSave) -> Option<Item> {
+        use save::ItemSave as S;
+        Some(match saved {
+            S::Bucket => Item::Bucket,
+            S::Apple => Item::Apple,
+            S::Meat => Item::Meat,
+            S::RoastMeat => Item::RoastMeat,
+            S::RawFish => Item::RawFish,
+            S::CookedFish => Item::CookedFish,
+            S::SharkTooth => Item::SharkTooth,
+            S::Bread => Item::Bread,
+            S::Potion => Item::Potion,
+            S::Gold { amount } => Item::Gold(*amount),
+            S::Weapon(w) => Item::Weapon(self.weapon_from(w)?),
+            S::Ammo { id, rounds } => Item::Ammo(self.library.ammo.iter().position(|a| a.id == *id)?, *rounds),
+            S::InnertBlock { realm } if (*realm as usize) < realms::REALMS.len() => Item::InnertBlock(*realm),
+            S::Hook => Item::Hook,
+            // From before wings were worn: the plain ones
+            S::Wings { of } => Item::Wings(of.as_deref().map_or(Some(wings::GULL), wings::by_id)?),
+            S::Jewel { of } => Item::Jewel(crate::jewels::by_id(of)?),
+            S::InnertBlock { .. } | S::Unknown => return None,
+        })
+    }
+
+    /// What the player carries, as it's saved
+    pub fn carried_save(&self) -> save::CarriedSave {
+        save::CarriedSave {
+            gold: self.gold,
+            selected: self.selected.min(self.slots.len().saturating_sub(1)),
+            bucket: self.bucket,
+            slots: self.slots.iter().map(|&(item, count)| save::SlotSave { item: self.item_save(item), count }).collect(),
+            worn: self.worn.map(|k| wings::KINDS[k as usize].id.to_owned()),
+            glided: self.glided,
+            wings_told: self.wings_told,
+            level: Some(self.level),
+            experience: self.experience,
+            skills: (0..self.taken.len()).filter(|&k| self.taken[k] && k != self.web.start).map(|k| self.web.nodes[k].id.clone()).collect(),
+            bonus_points: self.bonus_points,
+            claimed: {
+                let mut c: Vec<String> = self.claimed.iter().cloned().collect();
+                c.sort();
+                c
+            },
+        }
+    }
+
+    /// What's been done in this world that stays done, as it's saved: chests opened, bosses beaten,
+    /// dens cleared and what's left on the merchants' stalls
+    pub fn world_save(&self) -> save::WorldSave {
+        let sorted = |set: &HashSet<[i64; 3]>| {
+            let mut keys: Vec<[i64; 3]> = set.iter().copied().collect();
+            keys.sort_unstable();
+            keys
+        };
+        let mut stocks: Vec<save::StockSave> = self
+            .stocks
+            .iter()
+            .map(|(&key, wares)| save::StockSave {
+                key,
+                wares: wares
+                    .iter()
+                    .map(|ware| match *ware {
+                        Ware::Weapon(w) => save::WareSave::Weapon(self.weapon_save(w)),
+                        Ware::Food(item, left) => save::WareSave::Goods { item: self.item_save(item), left },
+                    })
+                    .collect(),
+            })
+            .collect();
+        stocks.sort_by_key(|s| s.key);
+        let mut done = save::WorldSave { opened: sorted(&self.opened), defeated: sorted(&self.defeated), cleared: sorted(&self.cleared), stocks, ..Default::default() };
+        // What's known of the dragons' lairs, see game\dragonfire.rs
+        done.set_section(crate::dragons::WORLD_SECTION, &self.dragonfire.lore);
+        // The demi-bosses' lairs come near, for the map, see game\demi.rs
+        done.set_section(demi::SEEN_SECTION, &sorted(&self.demis_seen));
+        done
+    }
+
+    /// Health, hunger and mana
+    pub fn vitals(&self) -> (f64, f64, f64) {
+        (self.health, self.hunger, self.combat.mana)
+    }
+
+    /// The player going through a gate or a portal to another world, landscape `seed`: everything
+    /// of the one left let go of, as leave_world() does, but the dead they've raised come along,
+    /// climbing up out of the ground beside them there
+    pub fn travel(&mut self, seed: u32) {
+        let raised = self.combat.take_raised();
+        self.leave_world(seed);
+        self.combat.bring_raised(raised);
+    }
+
+    /// Lets go of everything of the world the player was in: its animals, bosses, monsters,
+    /// merchants and what lies about, for another to be built round them, landscape `seed`. What
+    /// they carry stays, and so does what's been done there, till restore() or new_character().
+    pub fn leave_world(&mut self, seed: u32) {
+        self.animals.clear();
+        self.pickups.clear();
+        self.props.clear();
+        self.chests.clear();
+        self.lairs.clear();
+        self.dens.clear();
+        self.cave_camps = Default::default();
+        self.boss_chests.clear();
+        self.hoards.clear();
+        self.beams.clear();
+        self.merchants.clear();
+        self.royals.clear();
+        self.shop = None;
+        self.trades.leave_world();
+        self.target = None;
+        self.combat.clear();
+        self.leaves.clear();
+        self.roots.clear();
+        self.webs.clear();
+        self.fumes.clear();
+        self.brine.clear();
+        self.rest = None;
+        self.safe_for = 0.0;
+        self.knockback = Vector3::zeros();
+        self.thrown = Vector3::zeros();
+        self.raid_lairs.clear();
+        self.shrines.clear();
+        self.shrine_used = false;
+        self.omens.clear();
+        self.aeries.clear();
+        self.gloom = 0.0;
+        self.seed = seed;
+    }
+
+    /// Someone setting out afresh: what the player starts with, at full health, and nothing yet
+    /// done anywhere
+    pub fn new_character(&mut self, seed: u32) {
+        self.slots.clear();
+        (self.level, self.experience, self.levelled) = (1, 0.0, f64::INFINITY);
+        self.bonus_points = 0;
+        self.claimed.clear();
+        self.forget_skills();
+        self.worn = None;
+        self.glided = false;
+        self.wings_told = false;
+        self.arm_anew(seed);
+        self.gold = STARTING_GOLD;
+        self.bucket = 0.0;
+        self.opened.clear();
+        self.defeated.clear();
+        self.cleared.clear();
+        self.stocks.clear();
+        self.ammo_choice.clear();
+        self.dragonfire.lore = Default::default();
+        self.set_vitals(MAX_HEALTH, 80.0, MAX_MANA);
+    }
+
+    /// The player as saved: what they carry, how they are, and what's been done in the world
+    /// they're in. What can't be made again, like a weapon whose parts are no more, is left out.
+    pub fn restore(&mut self, carried: &save::CarriedSave, world: &save::WorldSave, (health, hunger, mana): (f64, f64, f64)) {
+        self.weapons.clear();
+        self.combat.renumber(|_| None);
+        self.loaded = None;
+        self.ammo_choice.clear();
+        self.slots.clear();
+        for slot in &carried.slots {
+            if let Some(item) = self.item_from(&slot.item) {
+                self.slots.push((item, slot.count.max(1)));
+            }
+        }
+        // Wings saved before they were worn are put on, as all wings now are
+        self.worn = carried.worn.as_deref().and_then(wings::by_id);
+        if self.worn.is_none()
+            && carried.slots.iter().any(|s| s.item == save::ItemSave::Wings { of: None })
+            && let Some(at) = self.slots.iter().position(|&(i, _)| i == Item::Wings(wings::GULL))
+        {
+            self.slots.remove(at);
+            self.worn = Some(wings::GULL);
+        }
+        (self.glided, self.wings_told) = (carried.glided, carried.wings_told);
+        // A save from before there were levels starts at the floor of the furthest realm reached
+        self.level = carried.level.unwrap_or(self.legacy_level).clamp(1, levels::LEVEL_CAP);
+        self.experience = if self.level >= levels::LEVEL_CAP { 0.0 } else { carried.experience.clamp(0.0, levels::needed(self.level)) };
+        self.levelled = f64::INFINITY;
+        self.selected = carried.selected.min(self.slots.len().saturating_sub(1));
+        self.gold = carried.gold;
+        self.bucket = carried.bucket.clamp(0.0, BUCKET_CAPACITY);
+        // The skill web as it was, what's no longer on it left out, and only what still hangs
+        // together from the start; a save from before it has every point to spend
+        self.bonus_points = carried.bonus_points;
+        self.claimed = carried.claimed.iter().cloned().collect();
+        self.forget_skills();
+        let mut wanted: Vec<usize> = carried.skills.iter().filter_map(|id| self.web.index(id)).collect();
+        while let Some(at) = wanted.iter().position(|&k| self.web.can_take(&self.taken, k)) {
+            let k = wanted.remove(at);
+            self.taken[k] = true;
+        }
+        self.retotal();
+        self.restore_world(world);
+        self.set_vitals(health, hunger, mana);
+        self.models_version += 1;
+    }
+
+    /// What's been done in the world the player's in, as saved
+    pub fn restore_world(&mut self, world: &save::WorldSave) {
+        self.opened = world.opened.iter().copied().collect();
+        self.defeated = world.defeated.iter().copied().collect();
+        self.cleared = world.cleared.iter().copied().collect();
+        self.dragonfire.lore = world.section(crate::dragons::WORLD_SECTION).unwrap_or_default();
+        self.demis_seen = world.section::<Vec<[i64; 3]>>(demi::SEEN_SECTION).unwrap_or_default().into_iter().collect();
+        self.stocks.clear();
+        for stock in &world.stocks {
+            let mut wares = Vec::new();
+            for ware in &stock.wares {
+                match ware {
+                    save::WareSave::Weapon(w) => wares.extend(self.weapon_from(w).map(Ware::Weapon)),
+                    save::WareSave::Goods { item, left } => wares.extend(self.item_from(item).map(|i| Ware::Food(i, *left))),
+                    save::WareSave::Unknown => {}
+                }
+            }
+            self.stocks.insert(stock.key, wares);
+        }
+        self.models_version += 1;
+    }
+
+    fn set_vitals(&mut self, health: f64, hunger: f64, mana: f64) {
+        self.health = health.clamp(1.0, self.max_health());
+        self.hunger = hunger.clamp(0.0, 100.0);
+        self.combat.mana = mana.clamp(0.0, MAX_MANA);
+        self.dead = None;
+        self.died = false;
+        self.down = DOWN_SECONDS;
+        self.since_hurt = 100.0;
+        self.hurt_flash = 0.0;
+        self.splats.clear();
+        self.burning = 0.0;
+        self.poisoned = 0.0;
+        self.chilled = 0.0;
+        self.snared = 0.0;
+    }
+
+    /// Animals about `near`, a merchant not far off and apples under the trees, in a world just
+    /// come to, keeping what's been done there
+    pub fn spawn_wildlife(&mut self, world: &World, water: WaterLevel, near: Vector3<f64>) {
+        let seed = self.seed;
+        self.animals.extend(animals::spawn(world, water, seed, near));
+        let mut rng = hash(seed ^ 0x5e4);
+        self.animals.extend(animals::spawn_serpents(world, water, &mut rng, near, worldgen::land_of(seed), animals::SERPENT_PACKS));
+        let away = hash(seed ^ 0x3e7) as f64 / u32::MAX as f64 * TAU;
+        let stall = near + Vector3::new(away.cos(), away.sin(), 0.0) * 9.0 * world.voxels_per_meter as f64;
+        if let Some(merchant) = animals::spawn_merchant(world, water, stall, 4.0, seed ^ 0x3e7) {
+            self.merchants.push((merchant.id, [near.x as i64, near.y as i64, -2 - seed as i64]));
+            self.animals.push(merchant);
+        }
+        for _ in 0..4000 {
+            if self.apple_count() >= APPLES {
+                break;
+            }
+            self.grow_apple(world, water, near);
+        }
+    }
+
+    /// For trying out saving: the player carrying `gold`
+    pub fn set_gold(&mut self, gold: u32) {
+        self.gold = gold;
+    }
+
+    /// How much harder the realm the player's in is, see realms::Scaling: its bosses' and
+    /// monsters' health, how hard they hit and how lucky what's found is
+    pub fn set_scaling(&mut self, scaling: Scaling) {
+        self.scaling = scaling;
+    }
+
+    /// The band of levels the monsters of the realm the player's in keep to, see levels::band_in()
+    pub fn set_band(&mut self, band: levels::Band) {
+        self.band = band;
+    }
+
+    /// The level weapons and the player are given from a save from before there were levels: the
+    /// floor of the furthest realm reached, see levels::legacy_level(). Before restore().
+    pub fn set_legacy_level(&mut self, level: u32) {
+        self.legacy_level = level.clamp(1, levels::LEVEL_CAP);
+    }
+
+    /// The player's level, and how far they are to the next, 0-1
+    pub fn level(&self) -> (u32, f64) {
+        let toward = if self.level >= levels::LEVEL_CAP { 1.0 } else { self.experience / levels::needed(self.level) };
+        (self.level, toward)
+    }
+
+    /// The level of the monsters about with the player at theirs, before each's own roll, see
+    /// levels::foe_level()
+    pub fn area_level(&self) -> u32 {
+        self.band.level_for(self.level)
+    }
+
+    /// How many times their own health the monsters about have, and how much harder they hit, by
+    /// the level of what's about
+    fn foe_toughness(&self) -> f64 {
+        levels::toughness(self.area_level()) * self.scaling.toughness * self.character.difficulty.foe_health()
+    }
+    fn foe_damage(&self) -> f64 {
+        levels::damage(self.area_level()) * self.scaling.damage * self.character.difficulty.foe_damage()
+    }
+
+    /// The player's health at full, which their level raises, see levels::max_health()
+    pub fn max_health(&self) -> f64 {
+        ((levels::max_health(self.level) + self.totals.get(Stat::MaxHealth)) * (1.0 + self.totals.share(Stat::MaxHealthPct))).max(10.0)
+    }
+
+    /// The level a monster or boss of `look` comes at with the player at theirs, by `roll`, 0-1,
+    /// wherever it's from, as for night raiders from realms further on
+    pub fn foe_level_of(&self, look: Look, roll: f64) -> u32 {
+        let slain = if look.is_raid() { Slain::Raid } else if look.is_boss() { Slain::Boss } else { Slain::Monster };
+        levels::foe_level(self.band, self.level, slain, roll)
+    }
+
+    /// `amount` of experience gained, shown floating up from `at` if it's given: as many levels
+    /// gone up as it makes, each giving back a little health and said, see levelled
+    pub fn gain_experience(&mut self, amount: f64, at: Option<Vector3<f64>>) {
+        if amount <= 0.0 || self.level >= levels::LEVEL_CAP {
+            return;
+        }
+        if let Some(position) = at {
+            self.combat.popups.push(crate::combat::Popup { position, text: format!("+{amount:.0} xp"), color: [170, 225, 255], size: 15.0, age: 0.0 });
+        }
+        self.experience += amount;
+        while self.level < levels::LEVEL_CAP && self.experience >= levels::needed(self.level) {
+            self.experience -= levels::needed(self.level);
+            let before = self.max_health();
+            self.level += 1;
+            // What it adds to their health at full, and a fifth of that again, healed straight away
+            let more = self.max_health() - before;
+            if self.health > 0.0 {
+                self.health = (self.health + more + 0.2 * self.max_health()).min(self.max_health());
+            }
+            self.levelled = 0.0;
+            self.milestone = true;
+            self.cues.push(Cue::here(Sound::Fanfare, 0.9).pitched(1.25));
+            self.say(format!("You reached level {}! Health at full {:.0}.", self.level, self.max_health()));
+        }
+        if self.level >= levels::LEVEL_CAP {
+            self.experience = 0.0;
+        }
+    }
+
+    /// What the skill web makes of the player, each next to usual: how much of a blow gets through
+    /// armour, how much is pricked back by thorns, worn or learnt, how quickly health comes back,
+    /// how much a potion heals, how much experience and how much health back for a kill, and how
+    /// quickly the special attack charges
+    fn armoured(&self) -> f64 {
+        1.0 - self.totals.share(Stat::Armour).clamp(0.0, ARMOUR_MOST)
+    }
+    fn thorns(&self) -> f64 {
+        (if self.worn_perk() == Some(wings::Perk::Thorns) { wings::THORNS } else { 0.0 }) + self.totals.share(Stat::Thorns).max(0.0)
+    }
+    fn regen(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::Regen)).max(0.0)
+    }
+    fn potion_boost(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::Potion)).max(0.0)
+    }
+    fn experience_boost(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::Experience)).max(0.0)
+    }
+    fn leech(&self) -> f64 {
+        self.totals.get(Stat::Leech).max(0.0)
+    }
+    fn charge_rate(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::SpecialRecharge)).max(0.1)
+    }
+
+    /// How long an affliction of what `stat` resists lasts next to usual
+    fn resisted(&self, stat: Stat) -> f64 {
+        (1.0 - self.totals.share(stat)).clamp(0.1, 1.0)
+    }
+
+    /// `n` gold found, made more by the skill web
+    fn more_gold(&self, n: u32) -> u32 {
+        (n as f64 * (1.0 + self.totals.share(Stat::GoldFind)).max(0.0)).round() as u32
+    }
+
+    /// How much quicker the player gathers, glides and throws the grappling hook than usual, from
+    /// the skill web
+    pub fn gather_speed(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::GatherSpeed)).max(0.1)
+    }
+    pub fn glide_boost(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::Glide)).max(0.1)
+    }
+    pub fn hook_reach(&self) -> f64 {
+        (1.0 + self.totals.share(Stat::HookReach)).max(0.1)
+    }
+
+    /// Every weapon worked out again as the skill web has it, those not yet as it is now, see
+    /// Weapon::set_boost()
+    fn boost_weapons(&mut self) {
+        let mut changed = false;
+        for weapon in &mut self.weapons {
+            if weapon.boosted != self.boost_version {
+                let tool = self.library.families[weapon.family].tool.is_some();
+                let boost = self.totals.boost(weapon.kind(), tool);
+                weapon.set_boost(boost, self.boost_version);
+                changed = true;
+            }
+        }
+        if changed {
+            self.loaded = None;
+        }
+    }
+
+    /// Skill points for a realm's raid boss of `look` slain, or its finale, `slain`: two for a
+    /// finale, and one once all three of a realm's raid bosses are, each claimed once whatever
+    /// journeys are made
+    fn claim_bonus(&mut self, look: Look, slain: Slain) {
+        let name = format!("{look:?}");
+        if slain == Slain::Finale {
+            if self.claimed.insert(format!("finale:{name}")) {
+                self.bonus_points += FINALE_POINTS;
+                self.say(format!("+{FINALE_POINTS} skill points for slaying the {}! (P)", look.name()));
+            }
+            return;
+        }
+        self.claimed.insert(format!("raid:{name}"));
+        for realm in &realms::REALMS {
+            let all = realm.raid_bosses.iter().all(|(l, _)| self.claimed.contains(&format!("raid:{l:?}")));
+            if realm.raid_bosses.iter().any(|(l, _)| *l == look) && all && self.claimed.insert(format!("realm:{}", realm.id)) {
+                self.bonus_points += REALM_POINTS;
+                self.say(format!("+{REALM_POINTS} skill point: every raid boss of {} is slain! (P)", realm.name));
+            }
+        }
+    }
+
+    /// Skill points to spend
+    pub fn skill_points(&self) -> i64 {
+        skills::points_free(self.level, self.bonus_points, &self.taken, self.web.start)
+    }
+
+    /// Every node of the skill web given back, the start taken
+    fn forget_skills(&mut self) {
+        self.taken = vec![false; self.web.nodes.len()];
+        self.taken[self.web.start] = true;
+        self.retotal();
+    }
+
+    /// What's taken on the skill web added up again, and every weapon to be worked out again
+    fn retotal(&mut self) {
+        self.totals = self.web.totals(&self.taken);
+        // And what the player's class leans towards, as if it were a few nodes more
+        for &(stat, value) in self.character.class.lean() {
+            self.totals.0[stat as usize] += value;
+        }
+        self.combat.set_backstab(self.totals.0[Stat::Backstab as usize]);
+        self.boost_version = self.boost_version.wrapping_add(1).max(1);
+        if self.health > 0.0 {
+            self.health = self.health.min(self.max_health());
+        }
+    }
+
+    /// Takes node `id` of the skill web, if it can be: for trying it out and for the window
+    pub fn take_skill(&mut self, k: usize) -> bool {
+        if k >= self.taken.len() || !self.web.can_take(&self.taken, k) || self.skill_points() <= 0 {
+            return false;
+        }
+        self.taken[k] = true;
+        self.retotal();
+        self.cues.push(Cue::here(Sound::Pickup, 0.7).pitched(1.3));
+        true
+    }
+
+    pub fn refund_skill(&mut self, k: usize) -> bool {
+        if k >= self.taken.len() || !self.web.can_refund(&self.taken, k) {
+            return false;
+        }
+        self.taken[k] = false;
+        self.retotal();
+        self.cues.push(Cue::here(Sound::Pickup, 0.5).pitched(0.8));
+        true
+    }
+
+    /// What forgetting the whole skill web costs here, if it can be: only by a merchant
+    fn forget_price(&self) -> Option<u32> {
+        let spent = self.taken.iter().filter(|t| **t).count().saturating_sub(1);
+        let feet = self.feet?;
+        let vpm = self.combat.vpm();
+        let near = self.merchants.iter().any(|&(id, _)| self.animals.iter().any(|a| a.id == id && (a.position - feet).norm() < SHOP_REACH * vpm));
+        (near && spent > 0).then(|| skills::refund_price(spent))
+    }
+
+    /// For trying it out: `count` nodes of the skill web taken, in a walk out from the start along
+    /// the branches in turn, as many as there are points for
+    pub fn take_skills(&mut self, count: usize) {
+        let order = ["melee", "defence", "mobility", "magic", "ranged", "bridge"];
+        let mut done = 0;
+        while done < count {
+            let next = order.iter().find_map(|b| (0..self.taken.len()).find(|&k| self.web.nodes[k].branch == *b && self.web.can_take(&self.taken, k)));
+            match next.or_else(|| (0..self.taken.len()).find(|&k| self.web.can_take(&self.taken, k))) {
+                Some(k) if self.take_skill(k) => done += 1,
+                _ => break,
+            }
+        }
+    }
+
+    /// The skill web's window, while it's open, see skills::window(): false once it's to close
+    pub fn skill_window(&mut self, ctx: &egui::Context) -> bool {
+        let web = self.web.clone();
+        let free = self.skill_points();
+        let forget = self.forget_price();
+        let mut view = std::mem::take(&mut self.skill_view);
+        let action = skills::window(ctx, &web, &mut view, &self.taken, free, self.level, forget);
+        self.skill_view = view;
+        match action {
+            Some(skills::Action::Take(k)) => {
+                self.take_skill(k);
+            }
+            Some(skills::Action::Refund(k)) => {
+                self.refund_skill(k);
+            }
+            Some(skills::Action::Forget) => {
+                if let Some(price) = forget {
+                    if self.gold >= price {
+                        self.gold -= price;
+                        self.forget_skills();
+                        self.cues.push(Cue::here(Sound::Chest, 0.6));
+                        self.say(format!("The merchant's tea has you forget every path you'd taken, for {price} gold."));
+                    } else {
+                        self.say(format!("Forgetting them all costs {price} gold."));
+                    }
+                }
+            }
+            Some(skills::Action::Close) => return false,
+            None => {}
+        }
+        true
+    }
+
+    /// Whether jewel `j` can be set into weapon `w`, and why not if it can't, see jewels::fits()
+    fn jewel_fits(&self, j: u8, w: usize) -> Result<(), String> {
+        let weapon = &self.weapons[w];
+        crate::jewels::fits(j, weapon.kind(), weapon.grade, self.library.families[weapon.family].tool.is_some(), weapon.jewels, weapon.item_level())
+    }
+
+    /// Sets the jewel in slot `jewel` into the weapon in slot `weapon`, if it fits: one of the
+    /// stack used up, the weapon an item level higher for good. Whether it was.
+    pub fn socket(&mut self, jewel: usize, weapon: usize) -> bool {
+        let (Some(&(Item::Jewel(j), _)), Some(&(Item::Weapon(w), _))) = (self.slots.get(jewel), self.slots.get(weapon)) else {
+            return false;
+        };
+        if let Err(why) = self.jewel_fits(j, w) {
+            self.say(why);
+            return false;
+        }
+        let (level, jewels) = (self.weapons[w].level, self.weapons[w].jewels + 1);
+        self.weapons[w].set_level(level, jewels);
+        self.loaded = None;
+        if self.slots[jewel].1 > 1 {
+            self.slots[jewel].1 -= 1;
+        } else {
+            self.remove_slot(jewel);
+        }
+        self.cues.push(Cue::here(Sound::Chest, 0.7).pitched(1.6));
+        self.milestone = true;
+        self.say(format!("The {} sinks into the {}, glowing: item level {} now.", crate::jewels::name(j), self.weapons[w].name, self.weapons[w].item_level()));
+        true
+    }
+
+    /// A jewel rolled with `luck`, as for Library::odds() but rarer than a weapon so lucky, see
+    /// JEWEL_LUCK, of a kind of weapon picked at random
+    fn roll_jewel(&mut self, luck: f64) -> Item {
+        let odds = self.library.odds(luck * JEWEL_LUCK * loot_scaling(self.scaling));
+        let total: f64 = odds.iter().sum();
+        let mut left = random(&mut self.rng) * total;
+        let mut tier = 0;
+        for (k, w) in odds.iter().enumerate() {
+            if left < *w {
+                tier = k;
+                break;
+            }
+            left -= w;
+            tier = k;
+        }
+        let category = crate::jewels::Category::ALL[(random(&mut self.rng) * 3.0) as usize % 3];
+        Item::Jewel(crate::jewels::jewel(category, tier.min(crate::jewels::TIERS - 1)))
+    }
+
+    /// Jewels found, straight into the player's hands and said, as they're too small to see lying
+    /// about
+    fn find_jewels(&mut self, found: Vec<Item>) {
+        for item in found {
+            if let Item::Jewel(j) = item {
+                self.add_item(item, 1);
+                self.say(format!("A {} glints among it, into your pack.", crate::jewels::name(j)));
+            }
+        }
+    }
+
+    /// For trying it out: one of each kind of jewel carried set into the first weapon carried it fits
+    pub fn socket_some(&mut self) {
+        for j in 0..crate::jewels::KINDS as u8 {
+            let Some(jewel) = self.slots.iter().position(|(i, _)| *i == Item::Jewel(j)) else { continue };
+            let weapon = (0..self.slots.len()).find(|&s| matches!(self.slots[s].0, Item::Weapon(w) if self.jewel_fits(j, w).is_ok()));
+            if let Some(weapon) = weapon {
+                self.socket(jewel, weapon);
+            }
+        }
+    }
+
+    /// For trying it out: `n` jewels of kind `id`, see jewels::id()
+    pub fn give_jewels(&mut self, id: &str, n: u32) {
+        if let Some(j) = crate::jewels::by_id(id) {
+            self.add_item(Item::Jewel(j), n);
+        }
+    }
+
+    /// For trying it out: the card of slot `slot` showing in the inventory
+    pub fn inspect(&mut self, slot: usize) {
+        self.inspected = Some(slot);
+    }
+
+    /// For trying it out: the player gone up a level straight away, as killing something would
+    pub fn level_up_now(&mut self) {
+        let left = levels::needed(self.level) - self.experience;
+        self.gain_experience(left.max(1.0), None);
+    }
+
+    /// For trying it out: every monster about down to `fraction` of its health, its bar showing
+    pub fn hurt_monsters(&mut self, fraction: f64) {
+        for animal in self.animals.iter_mut().filter(|a| a.look.is_monster()) {
+            animal.health = animal.max_health * fraction.clamp(0.01, 1.0);
+            animal.status.shown = 1e9;
+        }
+    }
+
+    /// For trying it out: the player at level `level`
+    pub fn set_level(&mut self, level: u32) {
+        self.level = level.clamp(1, levels::LEVEL_CAP);
+        self.experience = 0.0;
+        self.health = self.health.min(self.max_health());
+    }
+
+    /// And how many more monsters than usual go about together there, see realms::crowd()
+    pub fn set_crowd(&mut self, extra: usize) {
+        self.crowd = extra;
+    }
+
+    /// Whether the boss whose lair's at `key` has been beaten in the world the player's in
+    pub fn is_defeated(&self, key: &[i64; 3]) -> bool {
+        self.defeated.contains(key)
+    }
+
+    /// The Innert Gate or the realm's portal home, if it's in this piece of the world, standing on
+    /// the ground where it is
+    pub fn set_shrines(&mut self, world: &World, shrines: Vec<Shrine>) {
+        self.shrines = shrines
+            .into_iter()
+            .map(|mut s| {
+                s.position.z = ground_top(world, s.position.x, s.position.y);
+                s
+            })
+            .collect();
+    }
+
+    /// Whether the player pressed E at the gate or the portal since last asked
+    pub fn take_shrine(&mut self) -> bool {
+        std::mem::take(&mut self.shrine_used)
+    }
+
+    /// The gate or portal near enough `eye`, in voxels, to use
+    fn shrine_near(&self, eye: Vector3<f64>) -> Option<&Shrine> {
+        let vpm = self.combat.vpm();
+        self.shrines.iter().find(|s| (s.position - eye).xy().norm() < SHRINE_REACH * vpm && (eye.z - s.position.z).abs() < 8.0 * vpm)
+    }
+
+    /// How many Innert blocks of realm `realm` are carried
+    pub fn innert_blocks(&self, realm: u8) -> u32 {
+        self.slots.iter().filter(|(item, _)| *item == Item::InnertBlock(realm)).map(|&(_, n)| n).sum()
+    }
+
+    /// Takes as many as `most` of realm `realm`'s Innert blocks out of what's carried, to set in
+    /// the gate: how many were taken
+    pub fn take_innert_blocks(&mut self, realm: u8, most: u32) -> u32 {
+        let Some(slot) = self.slots.iter().position(|(item, _)| *item == Item::InnertBlock(realm)) else {
+            return 0;
+        };
+        let taken = self.slots[slot].1.min(most);
+        if taken >= self.slots[slot].1 {
+            self.remove_slot(slot);
+        } else {
+            self.slots[slot].1 -= taken;
+        }
+        if taken > 0 {
+            self.milestone = true;
+            self.cues.push(Cue::here(Sound::Chest, 1.0).pitched(0.5));
+            self.cues.push(Cue::here(Sound::Fanfare, 0.6));
+        }
+        taken
+    }
+
+    /// Whether the grappling hook's in hand, to throw with a click
+    pub fn holding_hook(&self) -> bool {
+        self.dead.is_none() && self.slots.get(self.selected).is_some_and(|(item, _)| *item == Item::Hook)
+    }
+
+    /// Whether `item` is carried
+    pub fn carries(&self, item: Item) -> bool {
+        self.slots.iter().any(|(i, _)| *i == item) || matches!(item, Item::Wings(k) if self.worn == Some(k))
+    }
+
+    /// The kind of wings worn on the back, see wings::KINDS
+    pub fn worn_wings(&self) -> Option<u8> {
+        self.worn.filter(|_| self.dead.is_none())
+    }
+
+    /// The wing shrines in the piece of the world just built, by their keys, see
+    /// worldgen::SHRINE_KEY, and where the tops of their platforms are, in voxels: in each one's nest
+    /// not yet claimed lies a pair of wings, a kind the player hasn't, the likelier rare the further
+    /// on the realm, shining so it's seen from afar. `vpm` is the world's voxels per meter.
+    pub fn set_aeries(&mut self, aeries: Vec<([i64; 3], Vector3<f64>)>, vpm: f64) {
+        let old = std::mem::take(&mut self.aeries);
+        for (key, at) in aeries {
+            if self.opened.contains(&key) {
+                continue;
+            }
+            let roll = (hash(self.seed ^ hash(key[0] as u32 ^ hash(key[1] as u32 ^ 0xae21))) >> 8) as f64 / 16_777_216.0;
+            let offered = old.iter().find(|a| a.0 == key).map(|a| a.1).or_else(|| wings::pick(roll, SHRINE_WING_LUCK * self.scaling.luck, |k| self.carries(Item::Wings(k))));
+            let Some(k) = offered else {
+                continue;
+            };
+            let lying = at + Vector3::new(0.0, 0.0, 0.1 * vpm);
+            if !self.pickups.iter().any(|p| p.item == Item::Wings(k) && (p.position - lying).norm() < 2.0 * vpm) {
+                let heading = (key[0] ^ key[1]) as f64 * 0.37;
+                self.pickups.push(Pickup { beacon: true, ..Pickup::lying(Item::Wings(k), lying, heading) });
+            }
+            self.aeries.push((key, k, at));
+        }
+    }
+
+    /// The first time the player at `feet` comes within sight of a wing shrine not yet claimed,
+    /// they're told what's on it
+    fn watch_for_shrines(&mut self, feet: Option<Vector3<f64>>) {
+        let vpm = self.combat.vpm();
+        let Some(feet) = feet.filter(|_| vpm > 0.0) else {
+            return;
+        };
+        if let Some(&(key, k, _)) = self.aeries.iter().find(|a| !self.shrines_seen.contains(&a.0) && (a.2 - feet).xy().norm() < SHRINE_SEEN * vpm) {
+            self.shrines_seen.insert(key);
+            self.cues.push(Cue::here(Sound::Summon, 0.5).pitched(0.8));
+            self.say(format!("A wing shrine stands on the heights, the {} in its nest for whoever climbs to it. It's on your compass.", wings::KINDS[k as usize].name));
+        }
+    }
+
+    /// The nearest wing shrine not yet claimed within `within` meters of `feet`, both in meters of
+    /// the landscape, for the compass and the map
+    pub fn wing_shrine_near(&self, feet: [f64; 2], within: f64) -> Option<[f64; 2]> {
+        self.aeries
+            .iter()
+            .map(|(key, ..)| [key[0] as f64 / 10.0, key[1] as f64 / 10.0])
+            .filter(|s| (s[0] - feet[0]).hypot(s[1] - feet[1]) < within)
+            .min_by(|a, b| (a[0] - feet[0]).hypot(a[1] - feet[1]).total_cmp(&(b[0] - feet[0]).hypot(b[1] - feet[1])))
+    }
+
+    /// What the wings worn do besides gliding, see wings::Perk
+    pub fn worn_perk(&self) -> Option<wings::Perk> {
+        self.worn_wings().map(|k| wings::KINDS[k as usize].perk)
+    }
+
+    /// A little mana back, as the prism wings give while gliding
+    pub fn fill_mana(&mut self, mana: f64) {
+        if self.dead.is_none() {
+            self.combat.mana = (self.combat.mana + mana).min(MAX_MANA);
+        }
+    }
+
+    /// A blow of the wings worn round `at`, in voxels, `reach` meters round: a gargoyle's landing
+    /// like falling stone if `slam`, shaking the ground and throwing up dust, or else a seraph's
+    /// ring of holy light. Every monster and boss within it's hurt, `damage` as hard as the realm
+    /// makes them tough, but none warded by its guardians: how many were.
+    pub fn wing_blast(&mut self, at: Vector3<f64>, reach: f64, damage: f64, slam: bool) -> usize {
+        let vpm = self.combat.vpm();
+        let damage = damage * self.foe_toughness();
+        let color = if slam { [225, 205, 165] } else { [255, 236, 150] };
+        let mut hit = 0;
+        for animal in &mut self.animals {
+            let look = animal.look;
+            if animal.health <= 0.0 || look.build().is_none() || look.is_pet() || animal.status.warded.is_some() {
+                continue;
+            }
+            let middle = animal.center(vpm as u32);
+            if (middle - at).norm() > (reach + look.body().1) * vpm {
+                continue;
+            }
+            animal.damage(damage, at);
+            animal.status.shown = 2.0;
+            self.combat.popups.push(crate::combat::Popup { position: middle + Vector3::new(0.0, 0.0, 0.6 * vpm), text: format!("{damage:.0}"), color, size: 20.0, age: 0.0 });
+            hit += 1;
+        }
+        if slam {
+            self.combat.stir(at, reach * 0.5, 0.4, DROP_MUD);
+            self.cues.push(Cue::here(Sound::Quake, 0.55).pitched(1.4));
+            self.shake = self.shake.max(0.6);
+        } else {
+            self.cues.push(Cue::here(Sound::Summon, 0.8).pitched(1.3));
+        }
+        hit
+    }
+
+    /// Whether a camera following behind sees the player, see App::chase_camera()
+    pub fn set_seen_from_behind(&mut self, seen: bool) {
+        self.seen_from_behind = seen;
+    }
+
+    pub fn seen_from_behind(&self) -> bool {
+        self.seen_from_behind
+    }
+
+    /// Coming down hard on the ground at `feet`, in voxels, after the wings folded high up, hurt
+    /// `damage` of it, see wings::fall_damage(), as a fall from a roc's talons is
+    pub fn fell(&mut self, damage: f64, feet: Vector3<f64>, world: &World) {
+        let vpm = world.voxels_per_meter as f64;
+        self.hurt(damage, feet - Vector3::new(0.0, 0.0, 1.0 * vpm), feet, world, "a fall");
+        self.cues.push(Cue::at(Sound::Step(Ground::Stone), feet, 1.0).pitched(0.5));
+        self.shake = self.shake.max(0.6);
+    }
+
+    /// What struck the player from `from`, in voxels, pricked back by thorned wings, `damage` of
+    /// it, if it's near enough to have struck in close
+    fn prick(&mut self, from: Vector3<f64>, damage: f64) {
+        let vpm = self.combat.vpm();
+        let near = self
+            .animals
+            .iter_mut()
+            .filter(|a| a.health > 0.0 && a.look.build().is_some() && a.status.warded.is_none())
+            .map(|a| ((a.center(vpm as u32) - from).norm() - a.look.body().1 * vpm, a))
+            .filter(|(d, _)| *d < 2.0 * vpm)
+            .min_by(|a, b| a.0.total_cmp(&b.0));
+        if let Some((_, animal)) = near {
+            let middle = animal.center(vpm as u32);
+            animal.damage(damage, from);
+            animal.status.shown = 2.0;
+            self.combat.popups.push(crate::combat::Popup { position: middle + Vector3::new(0.0, 0.0, 0.6 * vpm), text: format!("Thorns {damage:.0}"), color: [150, 220, 90], size: 18.0, age: 0.0 });
+        }
+    }
+
+    /// The colour of the rarity of wings of kind `k`
+    fn wings_color(&self, k: u8) -> Color32 {
+        let rarity = wings::KINDS[k as usize % wings::KINDS.len()].rarity;
+        color(self.library.rarities[rarity.min(self.library.rarities.len() - 1)].color)
+    }
+
+    /// How the wings worn are flying, for the HUD, see App::update_wings(): once the player's
+    /// glided a moment, how to glide isn't shown by them any more
+    pub fn set_aloft(&mut self, aloft: Option<Aloft>) {
+        if aloft.is_some_and(|a| a.glided) && !self.glided {
+            self.glided = true;
+            self.milestone = true;
+        }
+        self.aloft = aloft;
+    }
+
+    /// Puts on the wings in slot `slot`, those worn till now going into their place
+    fn wear(&mut self, slot: usize) {
+        let Some(&(Item::Wings(k), _)) = self.slots.get(slot) else {
+            return;
+        };
+        match self.worn.replace(k) {
+            Some(old) => self.slots[slot] = (Item::Wings(old), 1),
+            None => {
+                self.slots.remove(slot);
+                if self.selected > slot || self.selected >= self.slots.len() {
+                    self.selected = self.selected.saturating_sub(1);
+                }
+            }
+        }
+        self.inspected = None;
+        self.cues.push(Cue::here(Sound::Equip, 0.8));
+        self.say(format!("You put on the {}: {}.", wings::KINDS[k as usize].name, wings_tip(k)));
+    }
+
+    /// Takes off the wings worn, into the pack
+    fn take_off(&mut self) {
+        if let Some(k) = self.worn.take() {
+            self.slots.push((Item::Wings(k), 1));
+            self.cues.push(Cue::here(Sound::Equip, 0.6));
+            self.say(format!("You take off the {}.", wings::KINDS[k as usize].name));
+        }
+    }
+
+    /// Standing in lava, as in the Cinder Crown: set burning, see afflict()
+    pub fn scorch(&mut self) {
+        self.afflict(Some(Element::Fire));
+    }
+
+    /// A little health back, as the wings that mend do while gliding
+    pub fn mend(&mut self, health: f64) {
+        if self.dead.is_none() {
+            self.health = (self.health + health).min(self.max_health());
+        }
+    }
+
+    /// The models of every kind of wings, and where the first is among model_words(), see wings.rs
+    pub fn wing_models(&self) -> &[(Model, Vector3<f64>)] {
+        &self.wing_models
+    }
+
+    pub fn wing_model(&self, k: usize) -> u32 {
+        self.leaf_model() + (self.leaves.models.len() + k) as u32
+    }
+
+    /// The models as model_words() packs them, for the model files to be read again away from
+    /// the game, see assets::Reloader
+    pub fn model_lists(&self) -> crate::assets::Lists {
+        let copy = crate::assets::copy;
+        crate::assets::Lists {
+            base: self.models.clone(),
+            between: self.combat.models.iter().map(|(m, _)| copy(m)).chain(self.leaves.models.iter().map(copy)).collect(),
+            effects: self.combat.models.len(),
+            effect_anchors: self.combat.models.iter().map(|(_, a)| *a).collect(),
+            ward_anchors: self.ward_models.iter().map(|(_, a)| *a).collect(),
+            wings: self.wing_models.iter().map(|(m, a)| (copy(m), *a)).collect(),
+            after: self.ward_models.iter().map(|(m, _)| copy(m)).chain(self.stage_models.iter().map(copy)).chain(self.drop_models.iter().map(|(m, _)| copy(m))).collect(),
+            weapons: self.weapons.iter().map(|w| (w.family, w.parts.clone(), w.seed)).collect(),
+        }
+    }
+
+    /// The model editor's floor, see editor.rs
+    pub fn stage_model(&self) -> u32 {
+        self.ward_model(self.ward_models.len())
+    }
+
+    /// What the model editor shows of a weapon, its frames or one part, see editor.rs: drawn
+    /// with the weapons
+    pub fn set_preview(&mut self, frames: Vec<(Model, Vector3<f64>)>) {
+        self.preview = frames;
+        self.models_version += 1;
+    }
+
+    /// One-off model `packed` put in slot `slot`, as a tree coming down, see felling.rs: packed
+    /// already by pack_models() as the only model, on a thread of its own, so it's only copied in
+    /// with the weapons' models as they're sent to the GPU with the next frame
+    pub fn set_one_off(&mut self, slot: usize, packed: Vec<u32>) {
+        if self.one_offs.len() <= slot {
+            self.one_offs.resize_with(slot + 1, || pack_models(&[&Model { size: [1, 1, 1], voxels: vec![AIR] }]));
+        }
+        self.one_offs[slot] = packed;
+        self.models_version += 1;
+        self.one_off_changes += 1;
+    }
+
+    /// Where the one-off model in slot `slot` is among all models
+    pub fn one_off_model(&self, slot: usize) -> u32 {
+        self.weapon_model(self.weapons.len()) + (self.preview.len() + self.body_models.len() + slot) as u32
+    }
+
+    /// The model of frame `k` of what set_preview() was given, and where its anchor is
+    pub fn preview_model(&self, k: usize) -> Option<(u32, Vector3<f64>, [u32; 3])> {
+        let (m, a) = self.preview.get(k)?;
+        Some((self.weapon_model(self.weapons.len()) + k as u32, *a, m.size))
+    }
+
+    /// One of the models model_words() starts with, the animals' and the rest, see model_lists()
+    pub fn base_model(&self, i: usize) -> &Model {
+        &self.models[i]
+    }
+
+    /// The wings' models read again from their files, see assets::Reloader
+    pub fn set_wing_models(&mut self, models: Vec<(Model, Vector3<f64>)>) {
+        if models.len() == self.wing_models.len() {
+            self.wing_models = models;
+        }
+    }
+
+    /// The weapons' looks made again, from their parts' files, see assets::Reloader: for the
+    /// weapons model_lists() gave
+    pub fn set_weapon_looks(&mut self, looks: Vec<(usize, Vec<usize>, u32, crate::weapons::WeaponLook)>) {
+        for (w, (family, parts, seed, look)) in self.weapons.iter_mut().zip(looks) {
+            if w.family == family && w.parts == parts && w.seed == seed {
+                w.look = look;
+            }
+        }
+        // The weapon in hand's fine look made again from them too, see game\fine.rs
+        self.fine.version += 1;
+        self.models_version += 1;
+    }
+
+    /// The models of the wards round raid bosses, and where the first is among model_words(), see
+    /// guardians.rs
+    pub fn ward_models(&self) -> &[(Model, Vector3<f64>)] {
+        &self.ward_models
+    }
+
+    pub fn ward_model(&self, k: usize) -> u32 {
+        self.wing_model(self.wing_models.len() + k)
+    }
+
+    /// Gives the player `item`, a hook or wings, if they haven't one already, telling them how it
+    /// came to them: whether it was given. It goes on the quick bar's last slot, to take in hand
+    /// with a number key, what was there moving along into the pack.
+    pub fn find_once(&mut self, item: Item, how: &str) -> bool {
+        if self.carries(item) {
+            return false;
+        }
+        // The first wings found are put on at once, the rest kept in the pack
+        if let Item::Wings(k) = item {
+            self.cues.push(Cue::here(Sound::Fanfare, 0.5));
+            self.say(how);
+            self.gain_wings(k);
+            return true;
+        }
+        let at = self.slots.len().min(HOTBAR - 1);
+        self.slots.insert(at, (item, 1));
+        if self.selected >= at && self.selected < self.slots.len() - 1 {
+            self.selected += 1;
+        }
+        self.cues.push(Cue::here(Sound::Equip, 0.9));
+        self.cues.push(Cue::here(Sound::Fanfare, 0.5));
+        self.milestone = true;
+        self.say(how);
+        true
+    }
+
+    /// Whether the merchants sell the grappling hook, see Game::sky_wares
+    pub fn set_sky_wares(&mut self, sold: bool) {
+        self.sky_wares = sold;
+    }
+
+    /// Takes `item` in hand if it's carried, on the quick bar or not: whether it is now
+    pub fn hold_item(&mut self, item: Item) -> bool {
+        let Some(slot) = self.slots.iter().position(|(i, _)| *i == item) else {
+            return false;
+        };
+        self.hold(slot);
+        self.slots.get(self.selected).is_some_and(|(i, _)| *i == item)
+    }
+
+    /// A rope from `from` to `to`, in voxels, sagging `sag` of its length in the middle, `thick`
+    /// meters thick, see Combat::rope_instances()
+    pub fn rope_instances(&self, from: Vector3<f64>, to: Vector3<f64>, sag: f64, thick: f64) -> Vec<AnimalInstance> {
+        self.combat.rope_instances(from, to, sag, thick)
+    }
+
+    /// The player's arm holding something that isn't a weapon, see Combat::held_arm()
+    pub fn held_arm(&self, which: usize, grip: Vector3<f64>, axis: Vector3<f64>, elbow: Vector3<f64>) -> AnimalInstance {
+        self.painted_arm(self.combat.held_arm(which, grip, axis, elbow))
+    }
+
+    /// `instance`, if it's an arm held before the eye, drawn with the paint of the forearms when
+    /// they're painted, see set_character()
+    fn painted_arm(&self, instance: AnimalInstance) -> AnimalInstance {
+        let pieces = crate::character::body::PIECES;
+        if self.body_models.len() < pieces + 2 {
+            return instance;
+        }
+        let first = self.weapon_model(self.weapons.len()) + (self.preview.len() + pieces) as u32;
+        match (0..2).find(|&k| instance.model() == self.combat.arm_model(k)) {
+            Some(k) => instance.remodeled(first + k as u32),
+            None => instance,
+        }
+    }
+
+    /// Whether the map, the inventory, the Gate's window or a merchant's is open over the middle of
+    /// the view, so what's in hand and the messages aren't shown under the quick bar, half hidden
+    /// behind it. The messages wait meanwhile, to be read once it's closed.
+    pub fn set_covered(&mut self, covered: bool) {
+        self.covered = covered;
+        if covered {
+            let now = Instant::now();
+            self.messages.iter_mut().for_each(|(_, at)| *at = now);
+        }
+    }
+
+    /// For trying out the way through the realms: `count` of realm `realm`'s Innert blocks carried
+    pub fn give_innert_blocks(&mut self, realm: u8, count: u32) {
+        if count > 0 {
+            self.add_item(Item::InnertBlock(realm), count);
+        }
+    }
+
+    /// For trying it out: the realm's raid boss nearest `near`, in voxels, beaten as if by the
+    /// player, so it leaves its block. Whether there was one.
+    pub fn slay_raid_boss(&mut self, world: &World, near: Vector3<f64>) -> bool {
+        let raid = self
+            .animals
+            .iter_mut()
+            .filter(|a| a.health > 0.0 && a.boss.as_ref().is_some_and(|b| self.raid_lairs.contains_key(&b.key)))
+            .min_by(|a, b| (a.position - near).norm().total_cmp(&(b.position - near).norm()));
+        let Some(raid) = raid else {
+            return false;
+        };
+        raid.health = 0.0;
+        self.reap(world);
+        true
+    }
+
+    /// Whether the realm's raid bosses are warded, and if they are how many of its guardians are
+    /// slain and how many there are, see guardians.rs: every one of them about, but not its finale
+    pub fn set_wards(&mut self, ward: Option<(u8, u8)>) {
+        for animal in &mut self.animals {
+            if animal.boss.as_ref().is_some_and(|b| self.raid_lairs.contains_key(&b.key) && !realms::is_finale_key(&b.key)) {
+                animal.status.warded = ward;
+            }
+        }
+    }
+
+    /// The warded raid bosses about: the middle of each, in voxels, and who it is
+    pub fn warded_bosses(&self) -> Vec<(Vector3<f64>, Look)> {
+        let vpm = self.combat.vpm() as u32;
+        self.animals.iter().filter(|a| a.health > 0.0 && a.status.warded.is_some()).map(|a| (a.center(vpm), a.look)).collect()
+    }
+
+    /// Where the realm's raid bosses' lairs in the world are, in voxels, on the ground
+    pub fn raid_lair_spots(&self) -> Vec<Vector3<f64>> {
+        self.lairs.iter().filter(|l| self.raid_lairs.contains_key(&l.key) && !realms::is_finale_key(&l.key)).map(|l| l.position).collect()
+    }
+
+    /// The boss of the lair `key` counted as beaten without being fought, as a realm's guardians
+    /// are in a game saved before there were any, see realms::guardians_owed()
+    pub fn count_as_defeated(&mut self, key: [i64; 3]) {
+        self.defeated.insert(key);
+    }
+
+    /// For trying it out: the boss of the lair `key` falls dead if it's about, as if beaten.
+    /// Returns whether it was.
+    pub fn slay_boss_of(&mut self, world: &World, key: [i64; 3]) -> bool {
+        let Some(boss) = self.animals.iter_mut().find(|a| a.health > 0.0 && a.look.is_boss() && a.boss.as_ref().is_some_and(|b| b.key == key)) else {
+            return false;
+        };
+        boss.health = 0.0;
+        self.reap(world);
+        true
+    }
+
+    /// Where each of the realm's raid bosses about is, in voxels, and which: for screenshot runs
+    pub fn raid_bosses(&self) -> Vec<(Look, Vector3<f64>, f64)> {
+        self.animals.iter().filter(|a| a.boss.as_ref().is_some_and(|b| self.raid_lairs.contains_key(&b.key))).map(|a| (a.look, a.position, a.max_health)).collect()
+    }
+
+    /// For checking a game saved comes back the same: the player's state in a line
+    pub fn summary(&self) -> String {
+        let weapons: Vec<String> = self.slots.iter().filter_map(|(item, _)| match item {
+            Item::Weapon(w) => Some(format!("{}#{}", self.weapons[*w].name, self.weapons[*w].seed)),
+            _ => None,
+        }).collect();
+        let others: Vec<String> = self.slots.iter().filter(|(item, _)| !matches!(item, Item::Weapon(_))).map(|&(item, n)| format!("{}x{n}", self.item_name(item))).collect();
+        format!(
+            "health={:.1} hunger={:.1} mana={:.1} gold={} bucket={:.2} selected={} slots={} weapons=[{}] items=[{}] opened={} defeated={} cleared={} stocks={}",
+            self.health,
+            self.hunger,
+            self.combat.mana,
+            self.gold,
+            self.bucket,
+            self.selected,
+            self.slots.len(),
+            weapons.join(", "),
+            others.join(", "),
+            self.opened.len(),
+            self.defeated.len(),
+            self.cleared.len(),
+            self.stocks.len()
+        )
+    }
+
     fn eat(&mut self, slot: usize) {
         let Some(&(item, count)) = self.slots.get(slot) else {
             return;
@@ -3236,24 +6597,31 @@ impl Game {
         if !item.consumable() {
             return;
         }
-        if item.heal() > 0.0 && self.health >= MAX_HEALTH {
+        if item.heal() > 0.0 && item.food() <= 0.0 && self.health >= self.max_health() {
             self.say("You're not hurt.");
             return;
         }
-        if item.food() > 0.0 && self.hunger >= 99.5 && self.health >= MAX_HEALTH {
+        if item.food() > 0.0 && self.hunger >= 99.5 && self.health >= self.max_health() {
             self.say("You're full.");
             return;
         }
         // Food heals a little too
         self.hunger = (self.hunger + item.food()).min(100.0);
-        self.health = (self.health + item.food() * 0.6 + item.heal()).min(MAX_HEALTH);
-        self.cues.push(Cue::here(Sound::Eat, 0.7).pitched(if item.heal() > 0.0 { 1.5 } else { 1.0 }));
+        self.health = (self.health + item.food() * 0.6 + item.heal() * self.potion_boost()).min(self.max_health());
+        let drink = item == Item::Potion;
+        self.cues.push(Cue::here(Sound::Eat, 0.7).pitched(if drink { 1.5 } else { 1.0 }));
         if count > 1 {
             self.slots[slot].1 -= 1;
         } else {
             self.remove_slot(slot);
         }
-        self.say(if item.heal() > 0.0 { format!("You drink the potion. +{:.0} health", item.heal()) } else { format!("You ate the {}.", item.name().to_lowercase()) });
+        self.say(if drink {
+            format!("You drink the potion. +{:.0} health", item.heal())
+        } else if item.heal() > 0.0 {
+            format!("You ate the {}. +{:.0} health", item.name().to_lowercase(), item.food() * 0.6 + item.heal() * self.potion_boost())
+        } else {
+            format!("You ate the {}.", item.name().to_lowercase())
+        });
     }
 
     /// What to draw for the shader: the weapon in hand first, then the nearest animals, food,
@@ -3262,45 +6630,190 @@ impl Game {
         let vpm = world.voxels_per_meter as f64;
         let camera = view.eye;
         // Nothing in hand while lying dead
-        let held = self.held().filter(|_| self.dead.is_none()).map(|(i, w)| (w, self.weapon_model(i)));
-        let mut out = self.combat.held_instances(held, view);
+        // Drawn finer once it's been made so, see game\fine.rs
+        let held = self.held().filter(|_| self.dead.is_none()).map(|(i, w)| {
+            let (look, model) = self.held_look(w, self.weapon_model(i));
+            (w, look, model)
+        });
+        let holding = held.is_some();
+        // Nothing held before the eye seen by a camera following behind, see App::chase_camera()
+        let mut out: Vec<AnimalInstance> = if self.seen_from_behind { Vec::new() } else { self.combat.held_instances(held, view).into_iter().map(|i| self.painted_arm(i)).collect() };
+        // The player's own body where they stand, for its shadow and reflections, among the first
+        // so it's always in them, see character::body. Not while lying dead, nor flying.
+        // Flying, the feet are taken to be at the eye, and there's no body
+        if let Some(feet) = self.feet.filter(|f| self.dead.is_none() && !self.body_models.is_empty() && camera.z - f.z > vpm) {
+            let forward = view.forward();
+            let stance = crate::character::body::Stance {
+                yaw: forward.y.atan2(forward.x) - FRAC_PI_2,
+                pitch: forward.z.clamp(-1.0, 1.0).asin(),
+                walked: view.stride,
+                speed: view.speed,
+                holding,
+                time: self.combat.time(),
+            };
+            let first = self.weapon_model(self.weapons.len()) + self.preview.len() as u32;
+            let how = if self.seen_from_behind { animals::MOVING } else { animals::BODY };
+            out.extend(crate::character::body::instances(&self.body_models, &self.body_colours, first, &self.character.looks, &stance, feet, vpm, how));
+        }
+        // The Innert Gate or a portal home, seen from afar, its veil of light once it's open and
+        // the blocks set in it up close
+        for shrine in &self.shrines {
+            // Its foundation down in the ground, see animals::GATE_SINK
+            let (at, facing) = (shrine.position - Vector3::new(0.0, 0.0, animals::GATE_SINK * vpm), shrine.facing);
+            out.push(animals::still_instance(if shrine.gate { Look::Teleporter } else { Look::RealmPortal }, at, facing, world.voxels_per_meter));
+            if shrine.open {
+                out.push(animals::still_instance(Look::PortalVeil, at, facing, world.voxels_per_meter));
+            }
+            if shrine.gate && (at - camera).norm() < 60.0 * vpm {
+                let (c, s) = (facing.cos(), facing.sin());
+                for (realm, &placed) in shrine.placed.iter().enumerate() {
+                    for slot in 0..(placed as usize).min(realms::RAIDS) {
+                        let [x, y, z] = animals::socket(realm, slot);
+                        let block = at + Vector3::new(x * c - y * s, x * s + y * c, z) * vpm;
+                        out.push(animals::still_instance(Look::InnertBlock, block, facing, world.voxels_per_meter));
+                    }
+                }
+            }
+        }
         // Animals come before anything else, bosses most of all, so however much is flying
         // about they're always drawn
         let mut creatures: Vec<(f64, AnimalInstance)> = Vec::new();
-        for animal in &self.animals {
+        // Those among `creatures` near enough to be posed live, and which animal each is
+        let mut live: Vec<(usize, usize)> = Vec::new();
+        let mut pieces = Vec::new();
+        // A dragon's drawn in pieces, all of them or none, see dragons::instances(), as one creature
+        // among the rest, by how near it is
+        let mut dragons: Vec<(f64, usize)> = Vec::new();
+        for (k, animal) in self.animals.iter().enumerate() {
             let d = (animal.position - camera).norm();
-            if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
-                creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
+            // Bosses come first, but only one near enough to fight or after the player: those lying
+            // in their lairs further off come by how near they are like the rest, or their many
+            // pieces would leave no room for what's right in front of the player
+            let first = animal.look.is_boss() && (d < BOSS_FIRST * vpm || animal.boss.as_ref().is_some_and(|b| b.sighted()));
+            let rank = |d: f64, k: f64| if first { d * k } else { d };
+            // A great serpent's head, jaw and every piece of its long body, see serpents::Coils,
+            // before any but other bosses, the nearest of them first, so however many are about
+            // the one being fought is drawn whole
+            if let Some(coils) = animal.coils() {
+                pieces.clear();
+                coils.instances(vpm, animal.status.tint(), &mut pieces);
+                creatures.extend(pieces.drain(..).map(|i| (rank((i.sphere_center() - camera).norm(), 0.05), i)));
+            } else if let Some(body) = animal.kraken() {
+                // A kraken's mantle, head and every piece of its arms, the same way, see
+                // bosses::kraken::Body
+                pieces.clear();
+                body.instances(vpm, animal.status.tint(), &mut pieces);
+                creatures.extend(pieces.drain(..).map(|i| (rank((i.sphere_center() - camera).norm(), 0.05), i)));
+            } else if animal.dragon.is_some() || animal.winged.is_some() || crate::rig::rigged(animal.look) {
+                // A jointed boss, avian or gargoyle too, see rig::instances() and avians::instances()
+                if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
+                    dragons.push((rank(d, 0.0), k));
+                }
+            } else if crate::animals::sealife::is_fish(animal.look) && d > FISH_RANGE * vpm {
+                // A fish is small, and the water's murky: only drawn near
+            } else if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
+                creatures.push((rank(d, 0.0), animal.instance(world.voxels_per_meter)));
+                // Near enough, posed live from its pieces, or easing into it or out of it, see
+                // choose_live() and below
+                if animal.live > 0.0 && animal.posable() {
+                    live.push((creatures.len() - 1, k));
+                }
+                // A serpent's tongue flicking, near enough to be seen
+                if d < TONGUE_RANGE * vpm
+                    && let Some(tongue) = animal.tongue_instance(world.voxels_per_meter)
+                {
+                    creatures.push((d, tongue));
+                }
             }
         }
-        creatures.sort_by(|a, b| a.0.total_cmp(&b.0));
-        out.extend(creatures.into_iter().take(MAX_INSTANCES / 2).map(|(_, i)| i));
+        // The dead the player's raised, among the rest, posed live as they are, see
+        // combat::raised.rs: by RAISED_AT on from the animals. They're fighting alongside the
+        // player, so they come before the rest as if a hundredth as far off, and are never left out.
+        let raised = self.combat.raised_bodies(view);
+        for (k, body) in raised.iter().enumerate() {
+            if body.distance < ANIMAL_RANGE * vpm {
+                creatures.push((body.distance * 0.01, body.frame));
+                if body.live > 0.0 {
+                    live.push((creatures.len() - 1, RAISED_AT + k));
+                }
+            }
+        }
+        // Which animal each creature's frame is, if it's one to be posed live
+        let mut live_of = vec![None; creatures.len()];
+        for &(c, k) in &live {
+            live_of[c] = Some(k);
+        }
+        let mut order: Vec<(f64, Option<AnimalInstance>, usize, Option<usize>)> =
+            creatures.into_iter().zip(live_of).map(|((d, i), l)| (d, Some(i), 0, l)).chain(dragons.into_iter().map(|(d, k)| (d, None, k, None))).collect();
+        order.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut room = MAX_INSTANCES / 2;
+        // Where the frames of those to be posed live are among what's drawn, nearest first
+        let mut stand_ins: Vec<(usize, usize)> = Vec::new();
+        for (_, one, k, l) in order {
+            match one {
+                Some(instance) if room > 0 => {
+                    room -= 1;
+                    if let Some(l) = l {
+                        stand_ins.push((out.len(), l));
+                    }
+                    out.push(instance);
+                }
+                Some(_) => {}
+                None => {
+                    let animal = &self.animals[k];
+                    pieces.clear();
+                    if let Some(dragon) = &animal.dragon {
+                        crate::dragons::instances(animal, dragon, vpm, &mut pieces);
+                    } else if let Some(winged) = &animal.winged {
+                        crate::avians::instances(animal, winged, vpm, &mut pieces);
+                    } else {
+                        animal.rig_instances(world.voxels_per_meter, &mut pieces);
+                    }
+                    if pieces.len() <= room {
+                        room -= pieces.len();
+                        out.extend(pieces.iter().copied());
+                    }
+                }
+            }
+        }
         let mut near: Vec<(f64, AnimalInstance)> = self.combat.flying_instances(view);
-        let time = self.combat.time();
+        near.extend(self.dragonfire_instances(view));
+        near.extend(self.aerie_instances(view));
+        // What's dropped, each as itself, see game\drops.rs: the nearest DROP_ROOM of them always
+        // have room, however much else is about, the rest drawn along with everything else; the
+        // apples on the trees only along with the rest
+        let mut drops: Vec<(f64, usize, usize)> = Vec::new();
+        let mut dropped = Vec::new();
         for pickup in &self.pickups {
             let at = pickup.at(vpm);
             let d = (at - camera).norm();
             if d >= FOOD_RANGE * vpm {
                 continue;
             }
-            match (pickup.item, pickup.item.look()) {
-                (_, Some(look)) => near.push((d, animals::still_instance(look, at, pickup.heading, world.voxels_per_meter))),
-                // A weapon lies on its side a hand over the ground, turning slowly and bobbing, its
-                // middle over where it lies, tumbling as it flies out
-                (Item::Weapon(w), None) => {
-                    let look = &self.weapons[w].look;
-                    let tumble = pickup.flying / DROP_SECONDS * 9.0;
-                    let rotation = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), pickup.heading + time * 0.7) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), FRAC_PI_2 + tumble);
-                    let hover = (0.22 + 0.05 * (time * 2.2 + pickup.heading).sin()) * vpm;
-                    let middle = (look.grip + look.tip) * 0.5;
-                    near.push((d, placed(self.weapon_model(w), &look.frames[0], look.res, middle, at + Vector3::new(0.0, 0.0, hover), rotation, vpm)));
-                }
-                // A few arrows or bolts lying side by side, or a little pile of shot
-                (Item::Ammo(k, _), None) => {
-                    let def = &self.library.ammo[k];
-                    near.extend(self.combat.bundle_instances(def.shot(), def.head.unwrap_or(0), def.element, at, pickup.heading).into_iter().map(|i| (d, i)));
-                }
-                _ => {}
+            let first = dropped.len();
+            self.drop_instances(pickup, at, vpm, &mut dropped);
+            if pickup.item == Item::Apple {
+                near.extend(dropped.drain(first..).map(|i| (d, i)));
+            } else {
+                drops.push((d, first, dropped.len()));
+            }
+        }
+        drops.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut room = DROP_ROOM;
+        for &(d, from, to) in &drops {
+            if to - from <= room && out.len() + to - from <= MAX_INSTANCES {
+                room -= to - from;
+                out.extend_from_slice(&dropped[from..to]);
+            } else {
+                room = 0;
+                near.extend(dropped[from..to].iter().map(|&i| (d, i)));
+            }
+        }
+        // The Coil Unending's omens, from further off, as they're there to be seen
+        for &(look, position, heading) in &self.omens {
+            let d = (position - camera).norm();
+            if d < 90.0 * vpm {
+                near.push((d, animals::still_instance(look, position, heading, world.voxels_per_meter)));
             }
         }
         // Props are small, so they're only drawn up close
@@ -3308,6 +6821,13 @@ impl Game {
             let d = (position - camera).norm();
             if d < PROP_RANGE * vpm {
                 near.push((d, animals::still_instance(look, position, heading, world.voxels_per_meter)));
+            }
+        }
+        // The stands of the merchants living at the base, see game\specialists.rs
+        for &(position, heading) in self.trades.stands() {
+            let d = (position - camera).norm();
+            if d < ANIMAL_RANGE * vpm {
+                near.push((d, animals::still_instance(Look::TradeStall, position, heading, world.voxels_per_meter)));
             }
         }
         for chest in &self.chests {
@@ -3326,38 +6846,385 @@ impl Game {
         let taken = near.len().min(budget - leaves.len().min(budget / 3));
         out.extend(near.into_iter().take(taken).map(|(_, i)| i));
         out.extend(leaves.into_iter().take(budget - taken));
+        // Townsfolk, merchants, monsters and animals near the camera posed afresh from their pieces
+        // every frame, see baked::Rig::live(), nearest first, as many as there's room for. Their
+        // pieces come last, seen only from the camera; each one's frame stays where it was among the
+        // rest, standing in for it in its shadow and reflections, see animals::SEEN.
+        pose_live(&mut out, &stand_ins, &mut |k, pieces| match k.checked_sub(RAISED_AT) {
+            Some(r) => raised[r].live_instances(pieces),
+            None => self.animals[k].live_instances(world.voxels_per_meter, pieces),
+        });
         out
     }
 
-    /// Lights from the fighting, in the form main.rs keeps the world's lights in
-    pub fn lights(&self, view: &View) -> Vec<[f32; 8]> {
-        self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view)
+    /// Which of the townsfolk, merchants, monsters, animals and dead raised near the camera,
+    /// `view`, are posed live from their pieces, see baked::Rig::live(): the nearest within
+    /// baked::live_range(), as many as LIVE_PIECES pieces between them, each easing into it from
+    /// its baked frame and out of it again over a moment, see baked::fade_live(), rather than
+    /// snapping as it comes near enough or goes too far, or nearer ones crowd it out. Those already
+    /// posed live, or still easing out of it, keep their room till they're out of it, so one newly
+    /// come near only starts to ease in once there's room for it: never more than LIVE_PIECES
+    /// between them, so none is ever dropped all at once for want of room, see pose_live().
+    fn choose_live(&mut self, view: &View, dt: f64) {
+        let vpm = view.vpm;
+        let range = crate::baked::live_range() * vpm;
+        // How near each is, how many pieces it's drawn in, how much it's posed live now, and which
+        // it is: an animal, or by RAISED_AT on one of the dead raised
+        let mut near: Vec<(f64, usize, f64, usize)> = Vec::new();
+        for (k, a) in self.animals.iter().enumerate() {
+            if a.posable() {
+                near.push(((a.position - view.eye).norm(), crate::baked::live_pieces(a.look), a.live, k));
+            }
+        }
+        for body in self.combat.raised_bodies(view) {
+            if let Some(slot) = body.slot {
+                near.push((body.distance, crate::baked::live_pieces(body.look), body.live, RAISED_AT + slot));
+            }
+        }
+        let wanted: std::collections::HashSet<usize> = choose_near(&mut near, range).into_iter().collect();
+        let mut raised = Vec::new();
+        for &(_, _, _, k) in &near {
+            match k.checked_sub(RAISED_AT) {
+                Some(slot) if wanted.contains(&k) => raised.push(slot),
+                Some(_) => {}
+                None => self.animals[k].live = crate::baked::fade_live(self.animals[k].live, wanted.contains(&k), dt),
+            }
+        }
+        // Those that can't be posed live, as a merchant turned into something else, never are
+        for a in self.animals.iter_mut().filter(|a| a.live > 0.0 && !a.posable()) {
+            a.live = 0.0;
+        }
+        self.combat.pose_raised_live(&raised, dt);
+    }
+
+    /// Lights from the fighting, in the form main.rs keeps the world's lights in: brighter and
+    /// reaching further the darker the night, `night` 0 by day to 1, see combat::NIGHT_BRIGHTER
+    pub fn lights(&self, view: &View, night: f64) -> Vec<[f32; 8]> {
+        let mut lights = self.combat.lights(self.held().map(|(_, w)| w), &self.animals, view, night);
+        let mut fire = Vec::new();
+        self.dragonfire_lights(view, &mut fire);
+        self.aerie_lights(view, &mut fire);
+        // What bosses and monsters are gathering or pouring out of their element: a drake's throat
+        // glowing as it breathes, a caster's staff as it calls the sky down, the nearest few
+        let vpm = view.vpm;
+        let mut casting: Vec<[f32; 8]> = self
+            .animals
+            .iter()
+            .filter(|a| a.health > 0.0 && (a.position - view.eye).norm() < 60.0 * vpm)
+            .filter_map(|a| {
+                let (at, element, strength) = bosses::glow(a, vpm).or_else(|| crate::dragons::glow(a))?;
+                let c = element.light();
+                let s = strength as f32;
+                Some([at.x as f32, at.y as f32, at.z as f32, ((4.0 + 4.0 * strength) * vpm) as f32, c[0] * s, c[1] * s, c[2] * s, 1.0])
+            })
+            .collect();
+        casting.sort_by(|a, b| combat::light_rank(a, view.eye).total_cmp(&combat::light_rank(b, view.eye)));
+        fire.extend(casting.into_iter().take(3));
+        for mut l in fire {
+            combat::night_boost(&mut l, night);
+            lights.push(l);
+        }
+        // The veil of the gate or a portal glows, breathing slowly
+        let breath = 1.0 + 0.15 * (self.combat.time() * 1.3).sin();
+        for shrine in self.shrines.iter().filter(|s| s.open) {
+            let p = shrine.position + Vector3::new(0.0, 0.0, 2.8 * vpm);
+            let strength = (1.5 * breath) as f32;
+            lights.push([p.x as f32, p.y as f32, p.z as f32, (14.0 * vpm) as f32, 0.72 * strength, 0.5 * strength, 1.0 * strength, 1.0]);
+        }
+        lights
     }
 
     /// What to do with what the crosshair is on. What's lying about has a card of its own instead.
     fn target_hint(&self) -> Option<String> {
-        match self.target? {
+        // Said with the keys as they're bound, see bindings.rs
+        let e = crate::bindings::key(crate::bindings::Action::Interact);
+        let click = crate::bindings::key(crate::bindings::Action::Attack);
+        let Some(target) = self.target else {
+            let shrine = self.feet.and_then(|feet| self.shrine_near(feet))?;
+            return Some(if shrine.gate { format!("{e}  the Innert Gate") } else { format!("{e}  the portal home") });
+        };
+        match target {
             Target::Pickup(_) => None,
-            Target::Chest(i) => Some(if self.chests[i].hoard { "E  open the bandits' hoard" } else { "E  open the chest" }.into()),
+            Target::Chest(i) => Some(if self.chests[i].hoard { format!("{e}  open the bandits' hoard") } else { format!("{e}  open the chest") }),
             Target::Animal(i) => {
                 let look = self.animals[i].look;
-                Some(if look == Look::Merchant {
-                    "E  trade with the merchant".to_owned()
+                Some(if let Some(trade) = crate::merchants::Trade::of_look(look) {
+                    format!("{e}  talk to the {}", trade.title().to_lowercase())
+                } else if look == Look::Merchant {
+                    format!("{e}  trade with the merchant")
                 } else if look == Look::Princess {
-                    "E  trade with the princess".to_owned()
+                    format!("{e}  trade with the princess")
                 } else if look == Look::RoyalGuard {
-                    "E  talk to the guard".to_owned()
+                    format!("{e}  talk to the guard")
                 } else if look.is_villager() {
-                    "E  talk to the villager".to_owned()
+                    format!("{e}  talk to the villager")
                 } else if look.is_pet() {
-                    format!("E  pet the {}", look.name())
+                    format!("{e}  pet the {}", look.name())
+                } else if crate::animals::sealife::is_fish(look) && !self.holding_weapon() {
+                    format!("{click}  catch the {}", look.name())
                 } else if self.holding_weapon() {
                     format!("Attack the {}", look.name())
                 } else {
-                    format!("Click  hunt the {}", look.name())
+                    format!("{click}  hunt the {}", look.name())
                 })
             }
         }
+    }
+
+    /// The wings worn, in a slot of their own left of the quick bar's panel `panel`, of slots
+    /// `slot` across: in the colour of their rarity, lit up while gliding, how ready their move in
+    /// the air is under it and what their perk's doing, and till the player's first glided, how to.
+    /// Spare wings in the pack and none worn, how to put them on.
+    /// The player's level, right of the panel across the top, ringed by how far they are to the
+    /// next, and that again as a thin bar along the panel's foot; and for a few seconds after going
+    /// up a level, the moment it's done: a burst of rings out from it, light round the edges of the
+    /// view and the new level across the top
+    fn level_hud(&self, painter: &egui::Painter, panel: Rect, pad: f32) {
+        let (level, toward) = self.level();
+        let shadow = Color32::from_black_alpha(160);
+        // The white of how far they are to the next level
+        let xp = Color32::from_gray(236);
+        let middle = pos2(panel.right() + 12.0 + 27.0, panel.center().y);
+        let outer = 27.0 + pad * 0.4;
+        painter.circle_filled(middle, outer, theme::hud_fill());
+        painter.circle_stroke(middle, outer, Stroke::new(1.0f32, theme::EDGE.gamma_multiply(0.75)));
+        painter.circle_filled(middle, 22.0, Color32::from_rgba_unmultiplied(22, 22, 22, 228));
+        painter.circle_stroke(middle, 22.0, Stroke::new(1.0f32, theme::EDGE));
+        // How far to the next, round it from the top
+        painter.circle_stroke(middle, 25.0, Stroke::new(3.0f32, Color32::from_white_alpha(24)));
+        if toward > 0.0 {
+            let points: Vec<Pos2> = (0..=40).map(|k| k as f32 / 40.0 * toward as f32 * std::f32::consts::TAU).map(|a| middle + vec2(a.sin(), -a.cos()) * 25.0).collect();
+            painter.add(egui::Shape::line(points, Stroke::new(3.0f32, xp)));
+        }
+        let number = level.to_string();
+        painter.text(middle + vec2(1.0, 5.0), Align2::CENTER_CENTER, &number, theme::display(20.0), shadow);
+        painter.text(middle + vec2(0.0, 4.0), Align2::CENTER_CENTER, &number, theme::display(20.0), Color32::WHITE);
+        painter.text(middle - vec2(0.0, 12.0), Align2::CENTER_CENTER, "LV", theme::display(8.5), theme::HEADING.gamma_multiply(0.85));
+        // Who's playing, and as what, beside it
+        let name = &self.character.name;
+        let at = pos2(middle.x + 33.0, middle.y - 8.0);
+        theme::shadowed(painter, at, Align2::LEFT_CENTER, name, theme::display(15.0), theme::HEADING);
+        let [r, g, b] = self.character.class.color();
+        let class = format!("{} · {}", self.character.class.name(), self.character.difficulty.name());
+        painter.text(at + vec2(1.0, 17.0), Align2::LEFT_CENTER, &class, FontId::proportional(12.0), shadow);
+        painter.text(at + vec2(0.0, 16.0), Align2::LEFT_CENTER, &class, FontId::proportional(12.0), Color32::from_rgb(r, g, b));
+        // Skill points to spend, under it
+        let free = self.skill_points();
+        if free > 0 {
+            let pulse = 0.75 + 0.25 * (self.combat.time() * 3.0).sin() as f32;
+            let text = if free == 1 { "1 point to spend · P".to_owned() } else { format!("{free} points to spend · P") };
+            // From the badge's left on, clear of the gold under the panel's right end
+            let at = pos2(middle.x - 26.0, middle.y + 34.0);
+            painter.text(at + vec2(1.0, 1.0), Align2::LEFT_TOP, &text, FontId::proportional(13.0), shadow);
+            painter.text(at, Align2::LEFT_TOP, &text, FontId::proportional(13.0), theme::INFO.gamma_multiply(pulse));
+        }
+        // And along the foot of the panel
+        let bar = Rect::from_min_size(pos2(panel.left() + 12.0, panel.bottom() - 5.0), vec2(panel.width() - 24.0, 3.0));
+        painter.rect_filled(bar, 1.5, Color32::from_black_alpha(90));
+        theme::gradient(painter, Rect::from_min_size(bar.min, vec2(bar.width() * toward as f32, bar.height())), theme::lighter(xp, 0.3), theme::darker(xp, 0.75));
+
+        // Just gone up a level
+        let t = self.levelled as f32;
+        if t < LEVEL_UP_SECONDS {
+            let light = Color32::from_gray(246);
+            for k in 0..3 {
+                let r = (t - k as f32 * 0.18) / 0.9;
+                if (0.0..1.0).contains(&r) {
+                    let fade = (1.0 - r) * (1.0 - r);
+                    painter.circle_stroke(middle, 26.0 + r * 140.0, Stroke::new(4.0 * (1.0 - r) + 1.0, light.gamma_multiply(fade)));
+                }
+            }
+            let screen = painter.clip_rect();
+            let glow = (1.0 - t / 1.2).max(0.0);
+            if glow > 0.01 {
+                for k in 0..8 {
+                    let fade = 1.0 - k as f32 / 8.0;
+                    painter.rect_stroke(screen.shrink(k as f32 * 8.0), 0.0, Stroke::new(8.0f32, Color32::from_white_alpha((glow * fade * fade * 90.0) as u8)), StrokeKind::Inside);
+                }
+            }
+            // The words, popping in and fading out at the end
+            let pop = (t / 0.22).min(1.0);
+            let size = 44.0 * (0.6 + 0.4 * pop + 0.12 * (1.0 - pop) * pop * 4.0);
+            let alpha = ((LEVEL_UP_SECONDS - t) / 0.8).clamp(0.0, 1.0) * pop;
+            let at = pos2(screen.center().x, panel.bottom() + 120.0);
+            painter.text(at + vec2(2.0, 2.0), Align2::CENTER_CENTER, "LEVEL UP", FontId::proportional(size), Color32::from_black_alpha((alpha * 200.0) as u8));
+            painter.text(at, Align2::CENTER_CENTER, "LEVEL UP", FontId::proportional(size), light.gamma_multiply(alpha));
+            let below = format!("Level {level}  ·  health {:.0}", self.max_health());
+            painter.text(at + vec2(1.0, 37.0), Align2::CENTER_CENTER, &below, FontId::proportional(19.0), Color32::from_black_alpha((alpha * 180.0) as u8));
+            painter.text(at + vec2(0.0, 36.0), Align2::CENTER_CENTER, &below, FontId::proportional(19.0), Color32::WHITE.gamma_multiply(alpha));
+        }
+    }
+
+    fn wings_hud(&self, painter: &egui::Painter, panel: Rect, slot: f32, pad: f32) {
+        let faint = Color32::from_white_alpha(150);
+        let shadow = Color32::from_black_alpha(160);
+        let rect = Rect::from_min_size(pos2(panel.left() - slot - 2.0 * pad - 8.0, panel.top() + pad), vec2(slot, slot));
+        let pulse = 0.7 + 0.3 * (self.combat.time() * 3.0).sin() as f32;
+        // Said under the slot, clear of the screen's left edge
+        let say = |y: f32, text: &str, size: f32, tint: Color32| {
+            let x = rect.right().max(painter.clip_rect().left() + galley_width(painter, text, size) + 10.0);
+            painter.text(pos2(x, y) + vec2(1.0, 1.0), Align2::RIGHT_TOP, text, FontId::proportional(size), shadow);
+            painter.text(pos2(x, y), Align2::RIGHT_TOP, text, FontId::proportional(size), tint);
+        };
+        let Some(k) = self.worn_wings() else {
+            if self.dead.is_none() && self.slots.iter().any(|(i, _)| matches!(i, Item::Wings(_))) {
+                say(panel.bottom() + 6.0, &format!("Wings in your pack: {}, then Wear", crate::bindings::key(crate::bindings::Action::Inventory)), 13.0, theme::HEADING.gamma_multiply(pulse));
+            }
+            return;
+        };
+        let aloft = self.aloft.unwrap_or_default();
+        let tint = self.wings_color(k);
+        theme::hud_panel(painter, rect.expand(pad), 5.0);
+        theme::slot(painter, rect, Some(tint), false);
+        if aloft.gliding {
+            painter.rect_filled(rect, theme::SLOT_RADIUS, tint.gamma_multiply(0.35));
+            painter.rect_stroke(rect, theme::SLOT_RADIUS, Stroke::new(2.5f32, tint), StrokeKind::Inside);
+        }
+        self.draw_icon(painter, Item::Wings(k), rect.center() + vec2(0.0, 2.0), slot * 0.62);
+        painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, "Back", FontId::proportional(10.0), faint);
+        let mut under = rect.bottom() + pad + 5.0;
+        // How ready a flap or a dash is, filling, and how it's done
+        if let Some((ready, how)) = aloft.ready {
+            let back = Rect::from_min_size(pos2(rect.left(), under), vec2(slot, 4.0));
+            painter.rect_filled(back, 2.0, Color32::from_white_alpha(30));
+            painter.rect_filled(Rect::from_min_size(back.min, vec2(slot * ready, 4.0)), 2.0, if ready >= 1.0 { tint } else { faint });
+            // Named by the key it's on now, see bindings.rs
+            let how = match how.split_once("  ") {
+                Some(("Shift", what)) => format!("{}  {what}", crate::bindings::key(crate::bindings::Action::Run)),
+                Some(("Space", what)) => format!("{}  {what}", crate::bindings::key(crate::bindings::Action::Jump)),
+                _ => how.to_owned(),
+            };
+            say(under + 7.0, &how, 11.0, if ready >= 1.0 { Color32::WHITE } else { faint });
+            under += 22.0;
+        }
+        // Wings that truly fly: how much wind's left in them, as the bars by the quick bar are, and
+        // once they've tired, how to come down
+        if let Some((wind, tired)) = aloft.wind {
+            let back = Rect::from_min_size(pos2(rect.left() - pad + 3.0, under), vec2(slot + 2.0 * pad - 6.0, 9.0));
+            let fill = if tired {
+                Color32::from_rgb(230, 120, 70).gamma_multiply(pulse)
+            } else if wind < 0.25 {
+                Color32::from_rgb(235, 190, 90)
+            } else {
+                Color32::from_rgb(190, 222, 245)
+            };
+            painter.text(pos2(back.left() - 5.0, back.center().y), Align2::RIGHT_CENTER, "Wind", FontId::proportional(11.0), theme::TEXT.gamma_multiply(0.75));
+            theme::bar(painter, back, wind, fill, None);
+            under += 15.0;
+            if tired {
+                say(under, &format!("Wings tired · hold {} to glide", crate::bindings::key(crate::bindings::Action::Jump)), 12.0, Color32::from_rgb(240, 170, 120));
+                under += 16.0;
+            }
+        }
+        if let Some(note) = aloft.note {
+            say(under, note, 12.0, tint);
+            under += 16.0;
+        }
+        // Till they've glided once, how to
+        if !self.glided && !self.covered {
+            let tip = wings_tip(k);
+            say(under, &(tip[..1].to_uppercase() + &tip[1..]), 14.0, theme::HEADING.gamma_multiply(pulse));
+        }
+    }
+
+    /// Health bars over what's just been hurt, bosses aside, which have theirs along the top: a bar
+    /// over each, narrower the further off it is, and for a monster its level on a badge stuck to
+    /// the bar's left end, so it goes with its own bar. Both fade as the bar does, and with
+    /// distance, see BAR_FADE. Where bars bunch up, the bar of what the crosshair's on or what was hit
+    /// last is laid down first, see focus_bars(), then the rest nearest first, and one that'd come
+    /// over one laid down already is lifted clear of it or left out, see place_bars().
+    fn health_bars(&self, painter: &egui::Painter, view: &View, on_screen: &dyn Fn(Vector3<f64>) -> Option<Pos2>) {
+        let vpm = view.vpm;
+        struct Plate {
+            id: u32,
+            distance: f32,
+            bar: Rect,
+            badge: Option<(Rect, std::sync::Arc<egui::Galley>, Color32)>,
+            vitality: f32,
+            alpha: f32,
+            shown: f64,
+        }
+        let mut plates = Vec::new();
+        // What the crosshair's on, of those with bars, however far off
+        let (eye, look) = (view.eye, view.forward());
+        let mut aimed: Option<(u32, f64)> = None;
+        for animal in &self.animals {
+            if animal.status.shown <= 0.0 || animal.health <= 0.0 || animal.look.is_boss() || animal.demi.is_some() {
+                continue;
+            }
+            let top = animal.position + Vector3::new(0.0, 0.0, (animal.look.body().0 + animal.look.body().1 + 0.25) * vpm);
+            let Some(at) = on_screen(top) else {
+                continue;
+            };
+            let distance = ((top - view.eye).norm() / vpm).max(1.0) as f32;
+            let width = (70.0 / distance.sqrt()).clamp(24.0, 70.0);
+            let fade = 1.0 - (1.0 - BAR_FADE[2]) * ((distance - BAR_FADE[0]) / (BAR_FADE[1] - BAR_FADE[0])).clamp(0.0, 1.0);
+            let alpha = animal.status.shown.min(1.0) as f32 * fade;
+            let bar = Rect::from_center_size(at, vec2(width, 5.0));
+            // Its level, in how it stands to the player's, a little smaller the further off, never
+            // too small to read
+            let badge = (animal.level > 0 && (animal.look.is_monster() || animal.look.build().is_some())).then(|| {
+                let size = 11.5 + 1.5 * ((width - 24.0) / 46.0).clamp(0.0, 1.0);
+                let galley = painter.layout_no_wrap(animal.level.to_string(), FontId::proportional(size), Color32::PLACEHOLDER);
+                let room = vec2(galley.size().x + 7.0, galley.size().y.max(bar.height() + 7.0));
+                let badge = Rect::from_min_size(pos2(bar.left() + 2.0 - room.x, bar.center().y - room.y * 0.5), room);
+                (badge, galley, foe_level_tint(animal.level, self.level))
+            });
+            let (height, radius) = animal.look.body();
+            let to = animal.position + Vector3::new(0.0, 0.0, height * vpm) - eye;
+            let along = to.dot(&look);
+            if along > 0.0 && (to - look * along).norm() < radius * vpm && aimed.is_none_or(|(_, best)| along < best) {
+                aimed = Some((animal.id, along));
+            }
+            plates.push(Plate { id: animal.id, distance, bar, badge, vitality: animal.vitality() as f32, alpha, shown: animal.status.shown });
+        }
+        if plates.is_empty() {
+            self.bar_lifts.borrow_mut().clear();
+            *self.bar_focus.borrow_mut() = BarFocus::default();
+            return;
+        }
+        // What was hit last, within BAR_HIT, and when: the first of them by id if several were at once
+        let now = self.bar_clock.elapsed().as_secs_f64();
+        let hit = plates
+            .iter()
+            .filter(|p| p.shown > BAR_SHOWN - BAR_HIT)
+            .max_by(|a, b| a.shown.min(BAR_SHOWN).total_cmp(&b.shown.min(BAR_SHOWN)).then(b.id.cmp(&a.id)))
+            .map(|p| (p.id, now - (BAR_SHOWN - p.shown.min(BAR_SHOWN))));
+        let focus = focus_bars(*self.bar_focus.borrow(), now, aimed.map(|a| a.0), hit, |id| plates.iter().any(|p| p.id == id));
+        *self.bar_focus.borrow_mut() = focus;
+        let focus = focus.on.map(|f| f.0);
+        // Nearest first; one that wasn't lifted last frame counts as a little nearer, so two about as
+        // far off don't take turns at being lifted
+        let last = self.bar_lifts.borrow().clone();
+        let was = |id: u32| last.binary_search_by_key(&id, |e| e.0).ok().map(|k| last[k].1);
+        let rank = |p: &Plate| p.distance * if was(p.id) == Some(0) { BAR_KEEP } else { 1.0 };
+        plates.sort_by(|a, b| rank(a).total_cmp(&rank(b)).then(a.id.cmp(&b.id)));
+        let whole = |p: &Plate| p.badge.as_ref().map_or(p.bar.expand(1.5), |(b, _, _)| b.union(p.bar.expand(1.5)));
+        let lifts = place_bars(&plates.iter().map(|p| (p.id, whole(p))).collect::<Vec<_>>(), &last, focus);
+        // Furthest first, so the nearer are drawn over them, and the one laid down first last
+        let order = plates.iter().rev().filter(|p| Some(p.id) != focus).chain(plates.iter().filter(|p| Some(p.id) == focus));
+        for p in order {
+            let Ok(k) = lifts.binary_search_by_key(&p.id, |e| e.0) else {
+                continue;
+            };
+            let lift = lifts[k].1;
+            if lift == BAR_HIDDEN {
+                continue;
+            }
+            let up = vec2(0.0, -(whole(p).height() + BAR_GAP) * lift as f32);
+            let bar = p.bar.translate(up);
+            let a = p.alpha;
+            painter.rect_filled(bar.expand(1.5), 3.0, Color32::from_black_alpha((128.0 * a) as u8));
+            let fill = Rect::from_min_size(bar.min, vec2(bar.width() * p.vitality, bar.height()));
+            painter.rect_filled(fill, 2.0, Color32::from_rgba_unmultiplied(220, 60, 50, (255.0 * a) as u8));
+            if let Some((badge, galley, tint)) = &p.badge {
+                let badge = badge.translate(up);
+                painter.rect_filled(badge, 3.0, Color32::from_black_alpha((190.0 * a) as u8));
+                painter.rect_stroke(badge, 3.0, Stroke::new(1.0f32, tint.gamma_multiply(0.75 * a)), StrokeKind::Inside);
+                painter.galley(badge.center() - galley.size() * 0.5, galley.clone(), tint.gamma_multiply(a));
+            }
+        }
+        *self.bar_lifts.borrow_mut() = lifts;
     }
 
     /// Crosshair, and along the top the quick bar, hunger, mana and messages, drawn over the game.
@@ -3370,28 +7237,40 @@ impl Game {
         let faint = Color32::from_white_alpha(140);
         let on_screen = |p: Vector3<f64>| view.project(p).map(|[x, y]| pos2(screen.left() + x as f32 * screen.width(), screen.top() + y as f32 * screen.height()));
 
+        // Blinded by a kraken's ink, see game\brine.rs
+        self.ink_veil(&painter, screen);
+        // The sky darkening over the Coil Unending's lair, a bruised gloom closing in from above
+        if self.gloom > 0.01 {
+            let g = self.gloom as f32;
+            let mut mesh = egui::Mesh::default();
+            let bands = [(0.0, 0.62), (0.32, 0.38), (0.62, 0.0)];
+            for pair in bands.windows(2) {
+                let (top, bottom) = (screen.top() + pair[0].0 * screen.height(), screen.top() + pair[1].0 * screen.height());
+                let first = mesh.vertices.len() as u32;
+                let shade = |a: f32| Color32::from_rgba_unmultiplied(18, 10, 28, (a * g * 255.0) as u8);
+                mesh.colored_vertex(pos2(screen.left(), top), shade(pair[0].1));
+                mesh.colored_vertex(pos2(screen.right(), top), shade(pair[0].1));
+                mesh.colored_vertex(pos2(screen.right(), bottom), shade(pair[1].1));
+                mesh.colored_vertex(pos2(screen.left(), bottom), shade(pair[1].1));
+                mesh.add_triangle(first, first + 1, first + 2);
+                mesh.add_triangle(first, first + 2, first + 3);
+            }
+            painter.add(egui::Shape::mesh(mesh));
+        }
+
+        // A beam of light up from what's dropped in sight, under the names and numbers over the
+        // view, see game\drops.rs
+        self.draw_beams(&painter, view, screen);
         // Health bars over animals that were just hurt
         let vpm = view.vpm;
-        for animal in &self.animals {
-            if animal.status.shown <= 0.0 || animal.health <= 0.0 || animal.look.is_boss() {
-                continue;
-            }
-            let top = animal.position + Vector3::new(0.0, 0.0, (animal.look.body().0 + animal.look.body().1 + 0.25) * vpm);
-            let Some(at) = on_screen(top) else {
-                continue;
-            };
-            let distance = ((top - view.eye).norm() / vpm).max(1.0) as f32;
-            let width = (70.0 / distance.sqrt()).clamp(24.0, 70.0);
-            let alpha = (animal.status.shown.min(1.0) * 255.0) as u8;
-            let bar = Rect::from_center_size(at, vec2(width, 5.0));
-            painter.rect_filled(bar.expand(1.5), 3.0, Color32::from_black_alpha(alpha / 2));
-            let fill = Rect::from_min_size(bar.min, vec2(width * animal.vitality() as f32, 5.0));
-            painter.rect_filled(fill, 2.0, Color32::from_rgba_unmultiplied(220, 60, 50, alpha));
-        }
+        self.health_bars(&painter, view, &on_screen);
         // Merchants' names over their heads, so they're easy to find, and smaller ones over the
         // villagers' when near
-        for npc in self.animals.iter().filter(|a| a.look == Look::Merchant || a.look.is_villager() || a.look.is_royal()) {
-            let (name, color, height, range, size) = if npc.look == Look::Merchant {
+        for npc in self.animals.iter().filter(|a| a.look.is_merchant() || a.look.is_villager() || a.look.is_royal()) {
+            let (name, color, height, range, size) = if let Some(trade) = crate::merchants::Trade::of_look(npc.look) {
+                let [r, g, b] = trade.color();
+                (trade.title(), Color32::from_rgb(r, g, b), 2.25, 28.0, 15.0)
+            } else if npc.look == Look::Merchant {
                 ("Merchant", GOLD, 2.15, 28.0, 15.0)
             } else if npc.look == Look::Princess {
                 ("Princess", Color32::from_rgb(255, 170, 215), 2.05, 28.0, 15.0)
@@ -3419,39 +7298,6 @@ impl Game {
             let font = FontId::proportional(popup.size);
             painter.text(at + vec2(1.5, 1.5), Align2::CENTER_CENTER, &popup.text, font.clone(), Color32::from_black_alpha((160.0 * alpha) as u8));
             painter.text(at, Align2::CENTER_CENTER, &popup.text, font, Color32::from_rgba_unmultiplied(r, g, b, (255.0 * alpha) as u8));
-        }
-
-        // A beam of light up from each weapon lying about in sight, in the color of its rarity,
-        // taller and brighter the rarer it is, fading up and further off
-        // The gold the player lost when they died shines as bright as an epic weapon, and the hoard
-        // of a camp cleared, up from its lid, as a legendary one
-        let gold = [GOLD.r(), GOLD.g(), GOLD.b()];
-        let lying = self.pickups.iter().filter(|p| p.seen && p.flying <= 0.0 && p.shines()).map(|pickup| match pickup.item {
-            Item::Weapon(w) => (pickup.position, self.weapons[w].grade, self.library.rarities[self.weapons[w].grade].color, w),
-            _ => (pickup.position, 3, gold, 0),
-        });
-        let hoards = self.beams.iter().enumerate().map(|(k, &at)| (at + Vector3::new(0.0, 0.0, 0.25 * vpm), 4, gold, 7 + k));
-        for (position, grade, [r, g, b], w) in lying.chain(hoards) {
-            let base = position + Vector3::new(0.0, 0.0, 0.2 * vpm);
-            let distance = ((base - view.eye).norm() / vpm).max(1.0);
-            let top = base + Vector3::new(0.0, 0.0, (2.2 + 0.9 * grade as f64) * vpm);
-            let (Some(foot), Some(top)) = (on_screen(base), on_screen(top)) else {
-                continue;
-            };
-            let fade = ((1.0 - distance / BEAM_RANGE) * 1.5).clamp(0.0, 1.0) as f32 * (0.55 + 0.09 * grade as f32);
-            let width = ((26.0 / distance.sqrt()) as f32).clamp(2.5, 12.0) * (0.8 + 0.1 * grade as f32);
-            let pulse = 0.85 + 0.15 * (self.combat.time() * 3.0 + w as f64).sin() as f32;
-            let tint = |alpha: f32| Color32::from_rgba_unmultiplied(r, g, b, (alpha * fade * pulse * 255.0).clamp(0.0, 255.0) as u8);
-            painter.circle_filled(foot, width * 2.2, tint(0.18));
-            painter.circle_filled(foot, width * 0.9, tint(0.45));
-            for k in 0..14 {
-                let (a, z) = (k as f32 / 14.0, (k + 1) as f32 / 14.0);
-                let strength = (1.0 - a).powf(1.6);
-                let segment = [foot.lerp(top, a), foot.lerp(top, z)];
-                painter.line_segment(segment, Stroke::new(width * 2.4, tint(0.16 * strength)));
-                painter.line_segment(segment, Stroke::new(width * 0.9, tint(0.55 * strength)));
-                painter.line_segment(segment, Stroke::new(width * 0.3, Color32::from_white_alpha((strength * fade * 200.0) as u8)));
-            }
         }
 
         painter.circle_filled(center, 3.5, shadow);
@@ -3503,7 +7349,8 @@ impl Game {
                     ui.set_width(290.0);
                     self.item_card(ui, item, 1);
                     ui.add_space(4.0);
-                    ui.label(RichText::new(if matches!(item, Item::Weapon(_)) { "E  take it" } else { "E  pick it up" }).strong().color(Color32::WHITE));
+                    let e = crate::bindings::key(crate::bindings::Action::Interact);
+                    ui.label(RichText::new(if matches!(item, Item::Weapon(_)) { format!("{e}  take it") } else { format!("{e}  pick it up") }).strong().color(Color32::WHITE));
                 });
             });
         }
@@ -3517,39 +7364,30 @@ impl Game {
         let bars_width = 170.0;
         let width = pad + slots_width + 20.0 + bars_width + pad;
         let panel = Rect::from_min_size(pos2(center.x - width / 2.0, screen.top() + 14.0), vec2(width, slot + 2.0 * pad));
-        painter.rect_filled(panel, 12.0, Color32::from_black_alpha(120));
+        theme::hud_panel(&painter, panel, 5.0);
 
         let left = panel.left() + pad;
         if self.slots.is_empty() {
             painter.text(pos2(left + slots_width / 2.0, panel.center().y), Align2::CENTER_CENTER, "Nothing yet", FontId::proportional(14.0), faint);
         }
+        // Each in its slot, edged in the colour of its rarity, the one in hand ringed in white, with
+        // the key that picks it and how many there are
         for (i, &(item, count)) in self.slots.iter().enumerate().take(HOTBAR) {
             let rect = Rect::from_min_size(pos2(left + i as f32 * (slot + gap), panel.top() + pad), vec2(slot, slot));
-            let selected = i == self.selected;
-            let fill = match item {
-                Item::Weapon(w) => {
-                    let [r, g, b] = self.library.rarities[self.weapons[w].grade].color;
-                    Color32::from_rgba_unmultiplied(r, g, b, if selected { 70 } else { 34 })
-                }
-                _ => Color32::from_white_alpha(if selected { 40 } else { 14 }),
-            };
-            painter.rect_filled(rect, 8.0, fill);
-            if selected {
-                painter.rect_stroke(rect, 8.0, Stroke::new(2.0f32, Color32::WHITE), StrokeKind::Inside);
-            }
+            theme::slot(&painter, rect, self.slot_tint(item), i == self.selected);
             self.draw_icon(&painter, item, rect.center() - vec2(0.0, 2.0), slot * 0.58);
             if let Some(n) = item.shown(count) {
-                painter.text(rect.right_bottom() - vec2(5.0, 2.0), Align2::RIGHT_BOTTOM, n.to_string(), FontId::proportional(13.0), Color32::WHITE);
+                theme::shadowed(&painter, rect.right_bottom() - vec2(5.0, 4.0), Align2::RIGHT_BOTTOM, &n.to_string(), FontId::proportional(13.0), Color32::WHITE);
             }
-            painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::proportional(10.0), faint);
+            theme::key_number(&painter, rect, &crate::bindings::hotbar_tab(i));
         }
 
+        // Each bar framed, with how much there is on it
         let bars_left = left + slots_width + 20.0;
-        let bar = |y: f32, label: &str, fraction: f64, fill: Color32| {
-            painter.text(pos2(bars_left, y), Align2::LEFT_TOP, label, FontId::proportional(11.0), faint);
-            let back = Rect::from_min_size(pos2(bars_left + 52.0, y + 2.0), vec2(bars_width - 52.0, 9.0));
-            painter.rect_filled(back, 4.5, Color32::from_white_alpha(25));
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(back.width() * fraction.clamp(0.0, 1.0) as f32, 9.0)), 4.5, fill);
+        let bar = |y: f32, label: &str, fraction: f64, fill: Color32, value: String| {
+            painter.text(pos2(bars_left, y + 6.5), Align2::LEFT_CENTER, label, FontId::proportional(11.0), theme::TEXT.gamma_multiply(0.75));
+            let back = Rect::from_min_size(pos2(bars_left + 52.0, y + 1.0), vec2(bars_width - 52.0, 11.0));
+            theme::bar(&painter, back, fraction as f32, fill, Some(&value));
         };
         let hunger = if self.hunger > 25.0 { Color32::from_rgb(232, 160, 60) } else { Color32::from_rgb(200, 90, 40) };
         // Health turns green while poisoned and orange while burning, saying so
@@ -3564,21 +7402,27 @@ impl Game {
         } else {
             ("Health", Color32::from_rgb(225, 55, 60))
         };
-        bar(panel.top() + pad - 4.0, label, self.health / MAX_HEALTH, fill);
-        bar(panel.top() + pad + 13.0, "Hunger", self.hunger / 100.0, hunger);
-        bar(panel.top() + pad + 30.0, "Mana", self.combat.mana / MAX_MANA, Color32::from_rgb(80, 140, 255));
+        let of = |now: f64, most: f64| format!("{:.0} / {:.0}", now.max(0.0).ceil(), most);
+        bar(panel.top() + pad - 4.0, label, self.health / self.max_health(), fill, of(self.health, self.max_health()));
+        bar(panel.top() + pad + 13.0, "Hunger", self.hunger / 100.0, hunger, format!("{:.0}", self.hunger.max(0.0).ceil()));
+        bar(panel.top() + pad + 30.0, "Mana", self.combat.mana / MAX_MANA, Color32::from_rgb(80, 140, 255), of(self.combat.mana, MAX_MANA));
         // Gold under the bars, and how much more there is in the pack under the quick bar
         let purse = pos2(panel.right() - 12.0, panel.bottom() + 5.0);
-        painter.circle_filled(purse + vec2(-galley_width(&painter, &self.gold.to_string(), 15.0) - 10.0, 8.5), 6.0, GOLD);
+        let coin = purse + vec2(-galley_width(&painter, &self.gold.to_string(), 15.0) - 10.0, 8.5);
+        painter.circle_filled(coin, 6.0, GOLD);
+        painter.circle_stroke(coin, 6.0, Stroke::new(1.0f32, theme::darker(GOLD, 0.55)));
+        painter.circle_filled(coin - vec2(1.5, 1.5), 1.8, Color32::from_rgb(255, 240, 190));
         painter.text(purse + vec2(1.0, 1.0), Align2::RIGHT_TOP, self.gold.to_string(), FontId::proportional(15.0), shadow);
         painter.text(purse, Align2::RIGHT_TOP, self.gold.to_string(), FontId::proportional(15.0), GOLD);
         if self.slots.len() > HOTBAR {
-            let more = format!("+{} in the pack  ·  I", self.slots.len() - HOTBAR);
+            let more = format!("+{} in the pack  ·  {}", self.slots.len() - HOTBAR, crate::bindings::key(crate::bindings::Action::Inventory));
             painter.text(pos2(panel.left() + 12.0, panel.bottom() + 6.0), Align2::LEFT_TOP, more, FontId::proportional(12.0), faint);
         }
+        self.wings_hud(&painter, panel, slot, pad);
+        self.level_hud(&painter, panel, pad);
 
         // The boss being fought, its name over a long bar along the bottom
-        if let Some((foe, vitality, enraged, middle)) = self.foe(view.eye) {
+        if let Some((foe, vitality, enraged, middle, ward, level, title)) = self.foe(view.eye) {
             // Off the edge of the screen or behind, an arrow round the edge points the way to it,
             // with how far
             let inner = screen.shrink(50.0);
@@ -3597,31 +7441,89 @@ impl Game {
                 painter.text(label + vec2(1.0, 1.0), Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), shadow);
                 painter.text(label, Align2::CENTER_CENTER, &meters, FontId::proportional(14.0), Color32::WHITE);
             }
-            let name = if foe.is_raid() { format!("RAID  ·  {}", foe.name()) } else { foe.name().to_string() };
-            // A raid boss's bar is longer
-            let width = (screen.width() * if foe.is_raid() { 0.6 } else { 0.42 }).clamp(260.0, 900.0);
+            // An ultra's bar is the biggest of all, across most of the view: the Coil Unending's in
+            // the color of the element its body's taken on, its stages marked across it, and the
+            // Worldpyre Ancient's with its phases
+            let ultra = foe.is_ultra() || foe == crate::dragons::ULTRA;
+            // What it is before its name, as an ultra or a raid boss
+            let (kind, name) = if foe == Look::Ysveth {
+                ("Ultra", "Ysveth, the Coil Unending".to_owned())
+            } else if ultra {
+                ("Ultra", foe.name().to_string())
+            } else if foe.is_raid() {
+                ("Raid", foe.name().to_string())
+            } else {
+                ("", title.to_string())
+            };
+            // A raid boss's bar is longer, a demi-boss's shorter
+            let demi = foe.is_monster();
+            let width = (screen.width() * if ultra { 0.78 } else if foe.is_raid() { 0.6 } else if demi { 0.32 } else { 0.42 }).clamp(260.0, if ultra { 1400.0 } else { 900.0 });
+            let tall = if ultra { 18.0 } else { 12.0 };
             // Jolting on a big hit, flashing white, the health it's just lost showing pale behind
             let (_, _, trail, _, flash) = self.boss_bar;
             let flash = flash as f32;
             let jolt = (self.combat.time() * 90.0).sin() as f32 * 4.0 * flash;
-            let back = Rect::from_center_size(pos2(center.x + jolt, screen.bottom() - 54.0), vec2(width, 12.0));
-            let title = if enraged { format!("{name}  —  enraged") } else { name.to_string() };
+            let back = Rect::from_center_size(pos2(center.x + jolt, screen.bottom() - if ultra { 58.0 } else { 54.0 }), vec2(width, tall));
+            // Warded by its realm's guardians, see guardians.rs: its bar ringed in the ward's light
+            let warded = Color32::from_rgb(205, 165, 255);
+            let note = match ward {
+                Some((slain, of)) => format!("warded: slay the guardians ({slain}/{of})"),
+                // A gargoyle turned to stone, shrugging off blows, see src\gargoyles.rs
+                None if self.foe_hardened(foe) => "turned to stone".to_owned(),
+                None if enraged => "enraged".to_owned(),
+                None => String::new(),
+            };
             let at = pos2(center.x, back.top() - 6.0);
-            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_BOTTOM, &title, FontId::proportional(19.0), shadow);
-            painter.text(at, Align2::CENTER_BOTTOM, &title, FontId::proportional(19.0), if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE });
-            painter.rect_filled(back.expand(2.0), 6.0, Color32::from_black_alpha(150));
+            let size = if ultra { 23.0 } else { 19.0 };
+            // Its level at the left end of the bar, in how it stands to the player's
+            if level > 0 {
+                let tag = format!("Lv {level}");
+                let left = pos2(back.left(), back.top() - 6.0);
+                painter.text(left + vec2(1.0, 1.0), Align2::LEFT_BOTTOM, &tag, FontId::proportional(size - 2.0), shadow);
+                painter.text(left, Align2::LEFT_BOTTOM, &tag, FontId::proportional(size - 2.0), foe_level_tint(level, self.level));
+            }
+            // Its name in blackletter, what it is and how it stands in the headings' font either
+            // side, over a bar framed in grey with a white diamond at either end
+            let tint = if ward.is_some() { warded } else if enraged { Color32::from_rgb(255, 170, 120) } else { Color32::WHITE };
+            let words = |color: Color32| boss_title(kind, &name, &note, size, color);
+            let shown = painter.layout_job(words(shadow));
+            let from = at - vec2(shown.size().x * 0.5, shown.size().y);
+            painter.galley(from + vec2(1.0, 1.0), shown, shadow);
+            painter.galley(from, painter.layout_job(words(tint)), tint);
+            painter.rect(back.expand(2.0), 2.0, Color32::from_black_alpha(170), Stroke::new(1.0f32, theme::EDGE), StrokeKind::Outside);
+            for end in [back.left() - 9.0, back.right() + 9.0] {
+                theme::diamond(&painter, pos2(end, back.center().y), 4.5, theme::ACCENT);
+            }
+            if ward.is_some() {
+                let pulse = 0.6 + 0.4 * (self.combat.time() * 3.0).sin() as f32;
+                painter.rect_stroke(back.expand(4.0), 7.0, Stroke::new(2.0f32, warded.gamma_multiply(pulse)), StrokeKind::Outside);
+            }
             if flash > 0.0 {
                 painter.rect_stroke(back.expand(2.0 + 3.0 * flash), 6.0, Stroke::new(2.0f32, Color32::from_white_alpha((flash * 200.0) as u8)), StrokeKind::Outside);
             }
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 5.0, Color32::from_rgb(255, 225, 150));
+            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * trail.max(vitality) as f32, back.height())), 2.0, Color32::from_gray(232));
             let red = |c: u8| (c as f32 + (255.0 - c as f32) * 0.8 * flash) as u8;
-            painter.rect_filled(Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height())), 5.0, Color32::from_rgb(red(190), red(40), red(35)));
+            let element = self.animals.iter().find(|a| a.look.is_ultra() && a.health > 0.0).and_then(serpents::element_now).filter(|_| ultra);
+            // A demi-boss's bar the colour of dusk, so it's not taken for a boss's
+            let [r, g, b] = element.map_or(if demi { [150, 60, 190] } else { [190, 40, 35] }, |e| e.color().map(|c| (c as f32 * 0.85) as u8));
+            // Shaded light to dark down it, a glint along its top
+            let fill = Color32::from_rgb(red(r), red(g), red(b));
+            let left = Rect::from_min_size(back.min, vec2(width * vitality as f32, back.height()));
+            theme::gradient(&painter, left, theme::lighter(fill, 0.2), theme::darker(fill, 0.62));
+            painter.line_segment([left.left_top() + vec2(0.0, 0.5), left.right_top() + vec2(0.0, 0.5)], Stroke::new(1.0f32, Color32::from_white_alpha(70)));
             // Where a raid boss goes into its next phases, marked across the bar
-            if foe.is_raid() {
-                for mark in [0.66, 0.33] {
-                    let x = back.left() + width * mark;
-                    painter.line_segment([pos2(x, back.top() - 3.0), pos2(x, back.bottom() + 3.0)], Stroke::new(2.0f32, Color32::from_rgb(255, 215, 120)));
-                }
+            let marks: &[f64] = if foe.is_dragon() && foe.is_raid() {
+                crate::dragons::phases(foe)
+            } else if ultra {
+                &serpents::ULTRA_STAGES
+            } else if foe.is_raid() {
+                &[0.66, 0.33]
+            } else {
+                &[]
+            };
+            for &mark in marks {
+                let x = back.left() + width * mark as f32;
+                painter.line_segment([pos2(x, back.top() - 3.0), pos2(x, back.bottom() + 3.0)], Stroke::new(2.0f32, Color32::from_gray(240)));
             }
         }
 
@@ -3659,17 +7561,18 @@ impl Game {
             }
             let words = ((*since - 0.5) / 1.3).clamp(0.0, 1.0) as f32;
             let at = pos2(center.x, screen.center().y - 34.0);
-            let title = FontId::proportional(64.0);
+            let title = theme::blackletter(88.0);
             painter.text(at + vec2(3.0, 3.0), Align2::CENTER_CENTER, "Slain", title.clone(), Color32::from_black_alpha((words * 220.0) as u8));
             painter.text(at, Align2::CENTER_CENTER, "Slain", title, Color32::from_rgba_unmultiplied(196, 30, 28, (words * 255.0) as u8));
-            let below = Color32::from_rgba_unmultiplied(225, 212, 200, (words * 230.0) as u8);
+            let below = Color32::from_rgba_unmultiplied(220, 220, 220, (words * 230.0) as u8);
             painter.text(at + vec2(0.0, 50.0), Align2::CENTER_CENTER, format!("by the {by}"), FontId::proportional(20.0), below);
             if self.lost > 0 {
                 painter.text(at + vec2(0.0, 76.0), Align2::CENTER_CENTER, format!("{} gold lies where you fell", self.lost), FontId::proportional(16.0), GOLD.gamma_multiply(words * 0.9));
             }
             if self.can_rise() {
                 let pulse = 0.65 + 0.35 * (self.combat.time() * 3.0).sin() as f32;
-                let prompt = if self.rest.is_some() { "Space  rise again where you last stood safe" } else { "Space  rise again" };
+                let jump = crate::bindings::key(crate::bindings::Action::Jump);
+                let prompt = if self.rest.is_some() { format!("{jump}  rise again where you last stood safe") } else { format!("{jump}  rise again") };
                 painter.text(pos2(center.x, band.bottom() + 40.0), Align2::CENTER_CENTER, prompt, FontId::proportional(18.0), Color32::from_white_alpha((pulse * 220.0) as u8));
             }
         } else if self.down < DOWN_SECONDS {
@@ -3702,16 +7605,20 @@ impl Game {
 
         // The weapon in hand's name, in the color of its rarity, under the panel
         let mut below = panel.bottom() + 8.0;
-        if let Some((_, weapon)) = self.held() {
+        // None of it, nor the messages, behind the map or another window, see set_covered()
+        if let Some((_, weapon)) = self.held().filter(|_| !self.covered) {
             let rarity = &self.library.rarities[weapon.grade];
             let at = pos2(center.x, below);
-            painter.text(at + vec2(1.0, 1.0), Align2::CENTER_TOP, &weapon.name, FontId::proportional(18.0), shadow);
-            painter.text(at, Align2::CENTER_TOP, &weapon.name, FontId::proportional(18.0), color(rarity.color));
             let kind = &self.library.families[weapon.family].display_name;
             let detail = match self.combat.frenzy() {
                 Some((bonus, left)) => format!("{} {}  ·  Frenzy +{:.0}% ({:.0} s)", rarity.display_name, kind, bonus * 100.0, left.ceil()),
                 None => format!("{} {}", rarity.display_name, kind),
             };
+            // On a soft dark backing, so it reads over snow and sky at noon
+            let name = painter.layout_no_wrap(weapon.name.clone(), theme::display(17.0), Color32::WHITE).size().x;
+            let wide = name.max(galley_width(&painter, &detail, 12.0)) + 40.0;
+            painter.rect_filled(Rect::from_center_size(at + vec2(0.0, 19.0), vec2(wide, 40.0)), 14.0, Color32::from_black_alpha(55));
+            theme::shadowed(&painter, at, Align2::CENTER_TOP, &weapon.name, theme::display(17.0), color(rarity.color));
             painter.text(at + vec2(0.0, 21.0), Align2::CENTER_TOP, detail, FontId::proportional(12.0), faint);
             below += 42.0;
             // What it's loaded with, how many are left, and how to switch
@@ -3720,11 +7627,11 @@ impl Game {
                 let (text, tint) = match self.chosen_ammo() {
                     Some(k) => {
                         let def = &self.library.ammo[k];
-                        (format!("{}  ×{}", def.display_name, self.ammo_count(k)), def.element.map_or(Color32::from_rgb(235, 225, 200), |e| color(e.color())))
+                        (format!("{}  ×{}", def.display_name, self.ammo_count(k)), def.element.map_or(Color32::from_gray(228), |e| color(e.color())))
                     }
                     None => (format!("Plain {}  ∞", shot.plural()), faint),
                 };
-                let text = if others { format!("{text}   ·   T") } else { text };
+                let text = if others { format!("{text}   ·   {}", crate::bindings::key(crate::bindings::Action::Ammo)) } else { text };
                 painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &text, FontId::proportional(14.0), shadow);
                 painter.text(pos2(center.x, below), Align2::CENTER_TOP, &text, FontId::proportional(14.0), tint);
                 below += 20.0;
@@ -3733,19 +7640,32 @@ impl Game {
             if let Some((special, _)) = &weapon.profile.special {
                 let charge = self.combat.charge as f32;
                 let ready = charge >= 1.0;
-                let label = if ready { format!("R — {} ready!", special.name()) } else { format!("R — {}", special.name()) };
+                let r = crate::bindings::key(crate::bindings::Action::Special);
+                let label = if ready { format!("{r} — {} ready!", special.name()) } else { format!("{r} — {}", special.name()) };
                 let tint = if ready { color(rarity.color) } else { faint };
                 painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &label, FontId::proportional(14.0), shadow);
                 painter.text(pos2(center.x, below), Align2::CENTER_TOP, &label, FontId::proportional(14.0), tint);
-                let back = Rect::from_center_size(pos2(center.x, below + 22.0), vec2(150.0, 5.0));
-                painter.rect_filled(back, 2.5, Color32::from_white_alpha(30));
-                painter.rect_filled(Rect::from_min_size(back.min, vec2(150.0 * charge, 5.0)), 2.5, color(rarity.color));
+                theme::bar(&painter, Rect::from_center_size(pos2(center.x, below + 22.0), vec2(150.0, 5.0)), charge, color(rarity.color), None);
                 below += 32.0;
+            }
+            // Its power on right click, filling as it comes ready again
+            if let Some(power) = weapon.profile.power {
+                let ready = (1.0 - self.combat.power_cooldown() / power.cooldown()).clamp(0.0, 1.0) as f32;
+                let name = power.name(weapon.profile.element);
+                let heavy = crate::bindings::key(crate::bindings::Action::Heavy);
+                let label = if ready >= 1.0 { format!("{heavy} — {name} ready") } else { format!("{heavy} — {name}") };
+                let tint = if ready >= 1.0 { weapon.profile.element.map_or(color(rarity.color), |e| color(e.color())) } else { faint };
+                painter.text(pos2(center.x, below) + vec2(1.0, 1.0), Align2::CENTER_TOP, &label, FontId::proportional(13.0), shadow);
+                painter.text(pos2(center.x, below), Align2::CENTER_TOP, &label, FontId::proportional(13.0), tint);
+                theme::bar(&painter, Rect::from_center_size(pos2(center.x, below + 20.0), vec2(150.0, 4.0)), ready, tint, None);
+                below += 28.0;
             }
         }
 
-        // Messages under that, newest first, fading out
-        for (k, (message, at)) in self.messages.iter().rev().enumerate() {
+        // Messages under that, newest first, fading out, and with no weapon in hand still under
+        // what's in the pack and the gold, either side under the panel
+        let below = below.max(panel.bottom() + 26.0);
+        for (k, (message, at)) in self.messages.iter().rev().enumerate().filter(|_| !self.covered) {
             let alpha = (1.0 - (at.elapsed().as_secs_f32() - 3.0).max(0.0)).clamp(0.0, 1.0);
             let pos = pos2(center.x, below + 4.0 + k as f32 * 24.0);
             painter.text(pos + vec2(1.0, 1.0), Align2::CENTER_TOP, message, FontId::proportional(17.0), Color32::from_black_alpha((150.0 * alpha) as u8));
@@ -3755,9 +7675,10 @@ impl Game {
 
     /// The inventory: everything carried as a grid of icons, the quick bar along the top, and the
     /// card of what's clicked on, with what can be done with it
-    pub fn inventory(&mut self, ctx: &egui::Context, open: &mut bool) {
+    pub fn inventory(&mut self, ctx: &egui::Context, open: &mut bool, crafting: &mut tools::Crafting) {
         let mut chosen = None;
         let mut deed = None;
+        let mut made = None;
         egui::Window::new("Inventory")
             .open(open)
             .collapsible(false)
@@ -3765,6 +7686,19 @@ impl Game {
             // Just under the quick bar
             .anchor(Align2::CENTER_TOP, [0.0, 100.0])
             .show(ctx, |ui| {
+                // What's carried, or making tools from what's been gathered, see tools.rs
+                if tools::tabs(ui, crafting) {
+                    made = tools::craft_tab(ui, crafting, &|tool| self.best_gear(tool));
+                    return;
+                }
+                // No taller than the window has room for under the quick bar, scrolling through
+                // the rest in a short one
+                let room = (ctx.screen_rect().height() - 190.0).max(200.0);
+                // Room to grow into, under the tabs: a window lays out what's in it within the size
+                // it had last
+                ui.scope(|ui| {
+                ui.set_max_height(room);
+                egui::ScrollArea::vertical().id_salt("pack").max_height(room).show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{} gold", self.gold)).color(GOLD).strong());
                     ui.separator();
@@ -3775,6 +7709,33 @@ impl Game {
                     }
                 });
                 ui.separator();
+                // What's worn on the back
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("On your back").weak());
+                    let (rect, response) = ui.allocate_exact_size(vec2(40.0, 40.0), egui::Sense::hover());
+                    let worn = self.worn.map(|k| color(self.library.rarities[wings::KINDS[k as usize].rarity.min(self.library.rarities.len() - 1)].color));
+                    theme::slot(ui.painter(), rect, worn, false);
+                    match self.worn {
+                        Some(k) => {
+                            let kind = &wings::KINDS[k as usize];
+                            let tint = color(self.library.rarities[kind.rarity.min(self.library.rarities.len() - 1)].color);
+                            self.draw_icon(ui.painter(), Item::Wings(k), rect.center(), 24.0);
+                            response.on_hover_ui(|ui| {
+                                ui.set_width(280.0);
+                                self.item_card(ui, Item::Wings(k), 1);
+                            });
+                            ui.label(RichText::new(kind.name).strong().color(tint));
+                            if ui.button("Take off").clicked() {
+                                deed = Some(Deal::TakeOff);
+                            }
+                        }
+                        None => {
+                            let spare = self.slots.iter().any(|(i, _)| matches!(i, Item::Wings(_)));
+                            ui.label(RichText::new(if spare { "Nothing: click your wings below and Wear them." } else { "No wings yet. Merchants sell them; bosses and chests leave them." }).weak().italics());
+                        }
+                    }
+                });
+                ui.separator();
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
                         ui.label(RichText::new("Quick bar, keys 1 to 9, then the pack").weak().small());
@@ -3782,7 +7743,11 @@ impl Game {
                             Some(SlotClick::Once(slot)) => chosen = Some(slot),
                             Some(SlotClick::Twice(slot)) => {
                                 chosen = Some(slot);
-                                deed = Some(if self.slots[slot].0.consumable() { Deal::Eat(slot) } else { Deal::Hold(slot) });
+                                deed = Some(match self.slots[slot].0 {
+                                    Item::Wings(_) => Deal::Wear(slot),
+                                    item if item.consumable() => Deal::Eat(slot),
+                                    _ => Deal::Hold(slot),
+                                });
                             }
                             Some(SlotClick::Moved(a, b)) => deed = Some(Deal::Move(a, b)),
                             None => {}
@@ -3798,7 +7763,11 @@ impl Game {
                         self.item_card(ui, item, count);
                         ui.add_space(6.0);
                         ui.horizontal(|ui| {
-                            if let Item::Ammo(..) = item {
+                            if let Item::Wings(_) = item {
+                                if ui.button(if self.worn.is_some() { "Wear instead" } else { "Wear" }).on_hover_text("Put them on your back, to glide on with jump held in the air").clicked() {
+                                    deed = Some(Deal::Wear(slot));
+                                }
+                            } else if let Item::Ammo(..) = item {
                                 if ui.button("Load").on_hover_text("Shoot these from now on. T switches ammo too.").clicked() {
                                     deed = Some(Deal::Hold(slot));
                                 }
@@ -3808,18 +7777,50 @@ impl Game {
                             if item.consumable() && ui.button(if item.heal() > 0.0 { "Drink" } else { "Eat" }).clicked() {
                                 deed = Some(Deal::Eat(slot));
                             }
-                            if item != Item::Bucket && ui.button("Drop").clicked() {
+                            if item != Item::Bucket && !matches!(item, Item::Jewel(_)) && ui.button("Drop").clicked() {
                                 deed = Some(Deal::Drop(slot));
                             }
                         });
+                        // Jewels that fit it, to set into a socket, see jewels.rs
+                        if let Item::Weapon(w) = item {
+                            for (s, &(other, n)) in self.slots.iter().enumerate() {
+                                if let Item::Jewel(j) = other
+                                    && self.jewel_fits(j, w).is_ok()
+                                    && ui.button(RichText::new(format!("Set the {} into it ({n} carried)", crate::jewels::name(j))).color({
+                                        let [r, g, b] = crate::jewels::colors(j).light;
+                                        Color32::from_rgb(r, g, b)
+                                    })).on_hover_text("Lifts it an item level for good. A jewel once set can't be taken out again.").clicked()
+                                {
+                                    deed = Some(Deal::Socket(s, slot));
+                                }
+                            }
+                        }
+                        if let Item::Jewel(j) = item {
+                            let fitting: Vec<usize> = (0..self.slots.len()).filter(|&s| matches!(self.slots[s].0, Item::Weapon(w) if self.jewel_fits(j, w).is_ok())).collect();
+                            if fitting.is_empty() {
+                                ui.label(RichText::new("Nothing you carry has a free socket it fits.").weak().italics());
+                            }
+                            for s in fitting {
+                                let Item::Weapon(w) = self.slots[s].0 else { continue };
+                                if ui.button(format!("Set it into {} (item level {})", self.weapons[w].name, self.weapons[w].item_level())).clicked() {
+                                    deed = Some(Deal::Socket(slot, s));
+                                }
+                            }
+                        }
                         if let Item::Weapon(w) = item {
                             egui::CollapsingHeader::new("What it's made of").id_salt(("parts", w)).show(ui, |ui| self.weapon_parts(ui, &self.weapons[w]));
                         }
                     });
                 });
                 ui.separator();
-                ui.label(RichText::new("Melee: click to swing, three in a row for a combo, right click for a heavy blow. Bow: hold right click to draw, click to shoot. Crossbow or gun: click to shoot, it reloads once empty, right click reloads early. T switches ammo. Staff, scepter or wand: click to cast. Orb: hold for a beam. Tome: click to conjure. Totem: click to hex. Bell: hold, let go to toll.").weak().small());
-                ui.label(RichText::new("R or the middle button: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.").weak().small());
+                // Said with the keys as they're bound, see bindings.rs
+                use crate::bindings::{Action as A, words};
+                let (click, right) = (words(A::Attack), words(A::Heavy));
+                ui.label(RichText::new(format!("Melee: {click} to swing, three in a row for a combo, {right} for a heavy blow. Bow: hold {right} to draw, {click} to shoot. Crossbow or gun: {click} to shoot, it reloads once empty, {right} or {} reloads early. {} switches ammo. Staff, scepter or wand: {click} to cast. Orb: hold for a beam. Tome: {click} to conjure. Totem: {click} to hex. Censer: hold to swing it, a cloud billowing out.", words(A::Reload), words(A::Ammo))).weak().small());
+                ui.label(RichText::new(format!("{}: a legendary or mythic part's special attack, once charged. Bosses drop loot, merchants buy and sell it.", words(A::Special))).weak().small());
+                ui.label(RichText::new(format!("Wings go on your back, above: {}; some flap with {}, some dash with {}, and the grandest truly fly. Every merchant sells a pair, and bosses and chests leave them.", glide_tip(), words(A::Jump), words(A::Run))).weak().small());
+                });
+                });
             });
         // The quick bar along the top takes what's dragged onto it too
         if let Some(SlotClick::Moved(a, b)) = self.quick_bar_targets(ctx) {
@@ -3832,9 +7833,32 @@ impl Game {
             Some(Deal::Hold(slot)) => self.hold(slot),
             Some(Deal::Eat(slot)) => self.eat(slot),
             Some(Deal::Drop(slot)) => self.drop_slot(slot),
+            // A jewel dragged onto a weapon it fits is set into it, see socket()
+            Some(Deal::Move(a, b)) if matches!((self.slots.get(a), self.slots.get(b)), (Some((Item::Jewel(_), _)), Some((Item::Weapon(_), _)))) => {
+                self.socket(a, b);
+            }
             Some(Deal::Move(a, b)) => self.move_slot(a, b),
             Some(Deal::Sort) => self.sort(),
+            Some(Deal::Wear(slot)) => self.wear(slot),
+            Some(Deal::TakeOff) => self.take_off(),
+            Some(Deal::Socket(jewel, weapon)) => {
+                self.socket(jewel, weapon);
+            }
             _ => {}
+        }
+        // A tool made, paid for with what's been gathered, its rarity rolled as it's made
+        let roll = hash(self.rng ^ 0xc4af);
+        if let Some((tool, tier)) = made
+            && let Some(weapon) = tools::craft(&self.library, tool, tier, roll)
+            && crafting.materials.take(tools::cost(tool, tier))
+        {
+            self.rng = hash(self.rng.wrapping_add(0x9e37_79b9));
+            let rarity = &self.library.rarities[weapon.grade];
+            let speed = tools::gear(&self.library, &weapon).map_or(1.0, |g| g.speed());
+            let lucky = if weapon.grade >= 2 { "! " } else { ": " };
+            self.say(format!("Crafted {} {} {}{lucky}G gathers {:.1}× faster with it now.", if weapon.grade == 1 { "an" } else { "a" }, rarity.display_name.to_lowercase(), weapon.name, speed / tools::BARE_HANDS));
+            self.give_weapon(weapon);
+            self.cues.push(Cue::here(Sound::Place, 0.8).pitched(1.2));
         }
     }
 
@@ -3853,43 +7877,44 @@ impl Game {
                     clicked = Some(action);
                 }
                 let painter = ui.painter();
-                let tint = match item {
-                    Item::Weapon(w) => Some(color(self.library.rarities[self.weapons[w].grade].color)),
-                    _ => None,
-                };
-                let fill = tint.map_or(Color32::from_white_alpha(if i < HOTBAR { 22 } else { 12 }), |c| c.gamma_multiply(if i < HOTBAR { 0.3 } else { 0.2 }));
-                painter.rect_filled(rect, 7.0, fill);
-                if let Some(c) = tint {
-                    painter.rect_stroke(rect, 7.0, Stroke::new(1.0f32, c.gamma_multiply(0.8)), StrokeKind::Inside);
+                // The quick bar's row a little lighter than the pack's
+                let inspected = self.inspected == Some(i);
+                theme::slot(painter, rect, self.slot_tint(item), self.selected == i && !inspected);
+                if i < HOTBAR && self.slot_tint(item).is_none() {
+                    painter.rect_filled(rect, theme::SLOT_RADIUS, Color32::from_white_alpha(8));
                 }
                 if response.hovered() {
-                    painter.rect_filled(rect, 7.0, Color32::from_white_alpha(18));
+                    painter.rect_filled(rect, theme::SLOT_RADIUS, Color32::from_white_alpha(18));
+                    painter.rect_stroke(rect, theme::SLOT_RADIUS, Stroke::new(1.0f32, theme::ACCENT.gamma_multiply(0.8)), StrokeKind::Inside);
                 }
-                if self.inspected == Some(i) {
-                    painter.rect_stroke(rect, 7.0, Stroke::new(2.0f32, GOLD), StrokeKind::Inside);
-                } else if self.selected == i {
-                    painter.rect_stroke(rect, 7.0, Stroke::new(2.0f32, Color32::WHITE), StrokeKind::Inside);
+                if inspected {
+                    theme::inspected(painter, rect);
                 }
                 self.draw_icon(painter, item, rect.center() - vec2(0.0, 1.0), cell * 0.56);
                 if let Some(n) = item.shown(count) {
-                    painter.text(rect.right_bottom() - vec2(4.0, 2.0), Align2::RIGHT_BOTTOM, n.to_string(), FontId::proportional(12.0), Color32::WHITE);
+                    theme::shadowed(painter, rect.right_bottom() - vec2(4.0, 4.0), Align2::RIGHT_BOTTOM, &n.to_string(), FontId::proportional(12.0), Color32::WHITE);
                 }
                 if i < HOTBAR {
-                    painter.text(rect.left_top() + vec2(4.0, 2.0), Align2::LEFT_TOP, (i + 1).to_string(), FontId::proportional(10.0), Color32::from_white_alpha(140));
+                    theme::key_number(painter, rect, &crate::bindings::hotbar_tab(i));
                 }
                 // No card while something's being dragged about, it'd only get in the way
+                let card = |ui: &mut egui::Ui| {
+                    ui.set_width(280.0);
+                    self.item_card(ui, item, count);
+                    if selling && item != Item::Bucket {
+                        ui.label(RichText::new(format!("Click to sell one for {} gold", self.sell_price(item))).strong().color(GOLD));
+                    } else {
+                        let (first, last) = (crate::bindings::key(crate::bindings::Action::Hotbar(0)), crate::bindings::key(crate::bindings::Action::Hotbar(HOTBAR as u8 - 1)));
+                        ui.label(RichText::new(format!("Drag it to another slot, or press {first} to {last} for the quick bar. Right click to hold it or eat it.")).weak().small());
+                    }
+                };
                 let response = if dragging {
                     response
+                } else if self.card_hover == Some(i) {
+                    response.show_tooltip_ui(card);
+                    response
                 } else {
-                    response.on_hover_ui(|ui| {
-                        ui.set_width(280.0);
-                        self.item_card(ui, item, count);
-                        if selling && item != Item::Bucket {
-                            ui.label(RichText::new(format!("Click to sell one for {} gold", self.sell_price(item))).strong().color(GOLD));
-                        } else {
-                            ui.label(RichText::new("Drag it to another slot, or press 1 to 9 for the quick bar. Right click to hold it or eat it.").weak().small());
-                        }
-                    })
+                    response.on_hover_ui(card)
                 };
                 if response.double_clicked() || response.secondary_clicked() {
                     clicked = Some(SlotClick::Twice(i));
@@ -3919,11 +7944,11 @@ impl Game {
             && let Some(at) = ui.ctx().pointer_interact_pos()
         {
             let painter = ui.ctx().layer_painter(egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("dragged item")));
-            painter.rect_filled(Rect::from_center_size(at, vec2(44.0, 44.0)), 7.0, Color32::from_black_alpha(140));
+            painter.rect_filled(Rect::from_center_size(at, vec2(44.0, 44.0)), theme::SLOT_RADIUS, Color32::from_black_alpha(140));
             self.draw_icon(&painter, self.slots[i].0, at, 26.0);
         }
         if response.dnd_hover_payload::<usize>().is_some_and(|from| *from != i) {
-            ui.painter().rect_stroke(rect.expand(2.0), 8.0, Stroke::new(2.5f32, GOLD), StrokeKind::Outside);
+            ui.painter().rect_stroke(rect.expand(2.0), theme::SLOT_RADIUS + 2.0, Stroke::new(2.5f32, Color32::WHITE), StrokeKind::Outside);
         }
         if let Some(from) = response.dnd_release_payload::<usize>()
             && *from != i
@@ -3931,8 +7956,9 @@ impl Game {
             return Some(SlotClick::Moved(*from, i));
         }
         if response.hovered() {
-            let keys = [egui::Key::Num1, egui::Key::Num2, egui::Key::Num3, egui::Key::Num4, egui::Key::Num5, egui::Key::Num6, egui::Key::Num7, egui::Key::Num8, egui::Key::Num9];
-            if let Some(k) = keys.iter().position(|&key| ui.input(|input| input.key_pressed(key))).filter(|&k| k != i) {
+            // The quick bar's keys, as they're bound, see bindings.rs
+            let keys = crate::bindings::hotbar_egui_keys();
+            if let Some(k) = keys.iter().position(|&key| key.is_some_and(|key| ui.input(|input| input.key_pressed(key)))).filter(|&k| k != i) {
                 return Some(SlotClick::Moved(i, k));
             }
         }
@@ -3985,14 +8011,29 @@ impl Game {
         self.cues.push(Cue::here(Sound::Equip, 0.5));
     }
 
-    /// The frame round an item's card: dark, edged in the color of a weapon's rarity
-    fn card_frame(&self, item: Item) -> egui::Frame {
-        let edge = match item {
-            Item::Weapon(w) => color(self.library.rarities[self.weapons[w].grade].color),
+    /// The colour a slot holding `item` is edged in: a weapon's rarity, wings' and a jewel's own,
+    /// and none for the rest
+    fn slot_tint(&self, item: Item) -> Option<Color32> {
+        match item {
+            Item::Weapon(w) => Some(color(self.library.rarities[self.weapons[w].grade].color)),
+            Item::Wings(k) => Some(self.wings_color(k)),
+            Item::Jewel(j) => Some(crate::jewels::tint(j)),
+            _ => None,
+        }
+    }
+
+    /// The colour an item's card is edged and ruled in: a weapon's rarity, gold's, wings' and a
+    /// jewel's own, bronze for the rest
+    fn card_edge(&self, item: Item) -> Color32 {
+        match item {
             Item::Gold(_) => GOLD,
-            _ => Color32::from_gray(150),
-        };
-        egui::Frame::new().fill(Color32::from_rgba_unmultiplied(14, 16, 22, 232)).stroke(Stroke::new(1.5f32, edge)).corner_radius(8.0).inner_margin(12.0)
+            _ => self.slot_tint(item).unwrap_or(theme::EDGE),
+        }
+    }
+
+    /// The frame round an item's card: deep, edged in the color of a weapon's rarity
+    fn card_frame(&self, item: Item) -> egui::Frame {
+        theme::panel(12.0, 4.0).stroke(Stroke::new(1.5f32, self.card_edge(item)))
     }
 
     /// Everything about `item`, `count` of them: what it is, what it does, and what it's worth. A
@@ -4002,12 +8043,14 @@ impl Game {
             self.weapon_card(ui, w);
             return;
         }
-        let good = Color32::from_rgb(120, 230, 110);
+        let good = theme::GOOD;
+        // Its name in the colour it's edged in, and a rule of that under what it is
+        let edge = self.card_edge(item);
         match item {
             Item::Ammo(k, n) => {
                 let def = &self.library.ammo[k];
                 let tint = def.element.map_or(Color32::WHITE, |e| color(e.color()));
-                ui.label(RichText::new(&def.display_name).size(19.0).strong().color(tint));
+                theme::card_title(ui, &def.display_name, tint);
                 let what = match def.shot() {
                     Shot::Arrow => "Arrows, for bows",
                     Shot::Quarrel => "Bolts, for crossbows",
@@ -4019,53 +8062,130 @@ impl Game {
                         ui.label(RichText::new(format!("·  {}", e.name())).color(color(e.color())));
                     }
                 });
-                ui.separator();
+                theme::rule(ui, if def.element.is_some() { tint } else { edge });
                 for &d in &def.effect_defs {
                     let effect = &self.library.effects[d];
-                    ui.label(RichText::new(format!("• {}: {}", effect.display_name, effect.description)).color(Color32::from_rgb(200, 220, 255)));
+                    theme::bullet(ui, "•", theme::ACCENT, &effect.display_name, Color32::from_rgb(200, 220, 255), &effect.description, theme::TEXT);
                 }
+                // What it adds to each shot, and what it multiplies, in rows
                 let (adds, times) = def.stats();
-                for (key, label, unit) in STATS {
-                    if let Some(&v) = adds.get(key) {
-                        let label = if key == "elementalDamage" { format!("{} damage", def.element.map_or("Elemental", Element::name)) } else { label.to_owned() };
-                        ui.label(RichText::new(format!("+{} {}", unit.show(v), label.to_lowercase())).color(good));
+                egui::Grid::new(("ammo card", k)).num_columns(2).spacing([14.0, 1.0]).show(ui, |ui| {
+                    for (key, label, unit) in STATS {
+                        if let Some(&v) = adds.get(key) {
+                            let label = if key == "elementalDamage" { format!("{} damage", def.element.map_or("Elemental", Element::name)) } else { label.to_owned() };
+                            theme::row(ui, &label, RichText::new(format!("+{}", unit.show(v))).color(good));
+                            ui.end_row();
+                        }
+                        if let Some(&v) = times.get(key) {
+                            let shown = if v <= 0.0 { "one".to_owned() } else { format!("×{v:.2}") };
+                            theme::row(ui, label, RichText::new(shown).color(if v >= 1.0 { good } else { Color32::from_rgb(240, 180, 120) }));
+                            ui.end_row();
+                        }
                     }
-                    if let Some(&v) = times.get(key) {
-                        let shown = if v <= 0.0 { "one".to_owned() } else { format!("×{v:.2}") };
-                        ui.label(RichText::new(format!("{shown} {}", label.to_lowercase())).color(if v >= 1.0 { good } else { Color32::from_rgb(240, 180, 120) }));
-                    }
-                }
+                });
                 ui.label(RichText::new(&def.description).weak().italics());
                 ui.separator();
                 ui.label(RichText::new(format!("{n} carried, used up a shot at a time. Plain {} never run out.", def.shot().plural())).weak());
                 ui.label(RichText::new(format!("Worth {} gold", self.price(item))).color(GOLD));
                 return;
             }
+            Item::Jewel(j) => {
+                let (category, tier) = crate::jewels::parts(j);
+                let rarity = &self.library.rarities[tier.min(self.library.rarities.len() - 1)];
+                theme::card_title(ui, &crate::jewels::name(j), crate::jewels::tint(j));
+                ui.label(RichText::new(format!("A jewel for {} {}", rarity.display_name.to_lowercase(), category.weapons())).weak());
+                theme::rule(ui, edge);
+                ui.label(RichText::new("Set into a socket of a weapon it fits, it lifts the weapon an item level, and its blows, its special and its power with it.").color(good));
+                ui.label(RichText::new(format!("Never past item level {}. Once set it can't be taken out.", levels::ITEM_CAP)).weak());
+                ui.label(RichText::new("Drag it onto the weapon, or pick the weapon and set it from its card.").weak());
+                ui.label(format!("{count} carried"));
+                ui.label(RichText::new(format!("Worth {} gold", self.price(item))).color(GOLD));
+                return;
+            }
             Item::Gold(n) => {
-                ui.label(RichText::new(format!("{n} gold")).size(19.0).strong().color(GOLD));
+                theme::card_title(ui, &format!("{n} gold"), GOLD);
                 ui.label(RichText::new("Coin, to spend at merchants").weak());
                 return;
             }
             Item::Bucket => {
-                ui.label(RichText::new("Bucket").size(19.0).strong().color(Color32::WHITE));
+                theme::card_title(ui, "Bucket", Color32::WHITE);
                 ui.label(RichText::new("A magic bucket").weak());
-                ui.separator();
+                theme::rule(ui, edge);
                 ui.label(format!("{:.1} of {:.0} m³ of water in it", self.bucket, BUCKET_CAPACITY));
                 ui.label(RichText::new("Click on water to fill it, right click to pour it out.").weak());
                 return;
             }
+            Item::InnertBlock(realm) => {
+                let r = &realms::REALMS[realm as usize % realms::REALMS.len()];
+                let [cr, cg, cb] = r.color;
+                theme::card_title(ui, &format!("Innert Block of {}", r.name.trim_start_matches("The ")), Color32::from_rgb(cr, cg, cb));
+                ui.label(RichText::new("Left by one of the realm's raid bosses").weak());
+                theme::rule(ui, Color32::from_rgb(cr, cg, cb));
+                ui.label(format!("{count} of {} carried", realms::RAIDS));
+                ui.label(RichText::new("Set all three into the Innert Gate in the normal world to open the way to the next realm.").weak());
+                ui.label(RichText::new("Never lost, sold or dropped.").weak().italics());
+                return;
+            }
+            Item::Wings(k) => {
+                let kind = &wings::KINDS[k as usize];
+                let rarity = &self.library.rarities[kind.rarity.min(self.library.rarities.len() - 1)];
+                theme::card_title(ui, kind.name, color(rarity.color));
+                ui.label(RichText::new(format!("{} wings, worn on the back", rarity.display_name)).weak());
+                theme::rule(ui, color(rarity.color));
+                ui.label(RichText::new(format!("Glides at {:.0} m/s, sinking {:.1} m/s at most", kind.speed, kind.sink)).color(good));
+                ui.label(format!("Turns {}", if kind.turn >= 5.5 { "quickly" } else if kind.turn >= 3.5 { "readily" } else { "slowly, steady" }));
+                match (kind.flight, kind.flap) {
+                    (Some(lift), _) => {
+                        let ([how, feel], [r, g, b]) = wings::flight_text(&lift);
+                        theme::bullet(ui, "★", theme::ACCENT, &how, Color32::from_rgb(r, g, b), "", theme::TEXT);
+                        ui.label(RichText::new(feel).color(good));
+                    }
+                    (None, Some((lift, wait))) => {
+                        ui.label(RichText::new(format!("Press {} in the air to flap: lifts {lift:.0} m/s, every {wait:.1} s", crate::bindings::words(crate::bindings::Action::Jump))).color(good));
+                    }
+                    _ => {}
+                }
+                if let Some((perk, [r, g, b])) = wings::perk_text(kind.perk) {
+                    theme::bullet(ui, "★", theme::ACCENT, &perk, Color32::from_rgb(r, g, b), "", theme::TEXT);
+                }
+                ui.label(RichText::new(kind.about).italics());
+                ui.separator();
+                let worn = self.worn == Some(k);
+                let tip = wings_tip(k);
+                ui.label(RichText::new(if worn { format!("Worn on your back. {}{}.", tip[..1].to_uppercase(), &tip[1..]) } else { format!("Worn on the back: {tip}. Kept for good once found.") }).weak());
+                ui.label(RichText::new(format!("Worth {} gold", self.price(item))).color(GOLD));
+                return;
+            }
+            Item::Hook => {
+                theme::card_title(ui, &item.name(), Color32::WHITE);
+                ui.label(RichText::new("For getting about the sky isles").weak());
+                theme::rule(ui, edge);
+                ui.label(if item == Item::Hook {
+                    format!("With it in hand, click to throw it up to {:.0} m. Where it bites into rock or earth, its rope hauls you there, up over the edge if it's an edge. Jump to let go.", realms::HOOK_REACH_M)
+                } else {
+                    "Hold jump in the air to spread them and glide, sinking slowly, going on ahead the way you look.".to_owned()
+                });
+                ui.label(RichText::new("Kept for good once found.").weak().italics());
+                return;
+            }
             _ => {}
         }
-        ui.label(RichText::new(item.name()).size(19.0).strong().color(Color32::WHITE));
+        theme::card_title(ui, &item.name(), Color32::WHITE);
         ui.label(RichText::new(if item.heal() > 0.0 { "Potion" } else { "Food" }).weak());
-        ui.separator();
-        if item.food() > 0.0 {
-            ui.label(RichText::new(format!("+{:.0} hunger", item.food())).color(good).size(16.0));
-            ui.label(RichText::new(format!("+{:.0} health", item.food() * 0.6)).color(good));
-        }
-        if item.heal() > 0.0 {
-            ui.label(RichText::new(format!("+{:.0} health, at once", item.heal())).color(good).size(16.0));
-        }
+        theme::rule(ui, edge);
+        // What it gives, in rows
+        egui::Grid::new(("food card", item.name())).num_columns(2).spacing([14.0, 1.0]).show(ui, |ui| {
+            if item.food() > 0.0 {
+                theme::row(ui, "Hunger", RichText::new(format!("+{:.0}", item.food())).color(good).size(16.0));
+                ui.end_row();
+                theme::row(ui, "Health", RichText::new(format!("+{:.0}", item.food() * 0.6)).color(good));
+                ui.end_row();
+            }
+            if item.heal() > 0.0 {
+                theme::row(ui, "Health, at once", RichText::new(format!("+{:.0}", item.heal())).color(good).size(16.0));
+                ui.end_row();
+            }
+        });
         if count > 1 {
             ui.label(RichText::new(format!("{count} carried")).weak());
         }
@@ -4083,7 +8203,7 @@ impl Game {
         let profile = &weapon.profile;
         // Compared with what's in hand if it's the same kind, and shoots the same kind of thing
         let other = self.held().filter(|&(i, held)| i != w && held.kind() == weapon.kind() && held.shot() == weapon.shot()).map(|(_, held)| held);
-        let (good, bad) = (Color32::from_rgb(120, 230, 110), Color32::from_rgb(240, 95, 85));
+        let (good, bad) = (theme::GOOD, theme::BAD);
         // How much better or worse it is than the one in hand, nothing if about the same
         let against = |ui: &mut egui::Ui, by: f64, unit: Unit, higher: bool| {
             let least = match unit {
@@ -4102,13 +8222,56 @@ impl Game {
             let better = (by > 0.0) == higher;
             ui.label(RichText::new(format!("{}{shown}", if by > 0.0 { "+" } else { "−" })).color(if better { good } else { bad }).strong());
         };
-        ui.label(RichText::new(&weapon.name).size(19.0).strong().color(color(rarity.color)));
+        theme::card_title(ui, &weapon.name, color(rarity.color));
         ui.horizontal(|ui| {
             ui.label(RichText::new(format!("{} {}", rarity.display_name, library.families[weapon.family].display_name)).color(color(rarity.color).gamma_multiply(0.8)));
             if let Some(element) = profile.element {
                 ui.label(RichText::new(format!("·  {}", element.name())).color(color(element.color())));
             }
         });
+        // A tool's tier, what it gathers and how quickly, and what its rarity does for it
+        if let Some(gear) = tools::gear(library, weapon) {
+            for (line, tint) in tools::card_lines(&gear) {
+                ui.label(RichText::new(line).color(tint));
+            }
+        }
+        // Its item level, in how it stands to the player's: above it better, below it worse
+        if library.families[weapon.family].tool.is_none() {
+            let level = weapon.item_level();
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(format!("Item level {level}")).strong().color(item_level_tint(level, self.level)));
+                let how = match level.cmp(&self.level) {
+                    std::cmp::Ordering::Greater => format!("{} over yours", level - self.level),
+                    std::cmp::Ordering::Equal => "your level".to_owned(),
+                    std::cmp::Ordering::Less => format!("{} under yours", self.level - level),
+                };
+                ui.label(RichText::new(format!("·  {how}  ·  {:+.0}% damage", (levels::weapon_power(level) - 1.0) * 100.0)).weak());
+            });
+            // Its sockets, filled and empty, in its jewels' colour
+            if let Some(category) = crate::jewels::category_of(weapon.kind()) {
+                let j = crate::jewels::jewel(category, weapon.grade);
+                let sockets = crate::jewels::sockets(weapon.grade);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Sockets").weak());
+                    for k in 0..sockets {
+                        let (rect, _) = ui.allocate_exact_size(vec2(16.0, 16.0), egui::Sense::hover());
+                        let c = rect.center();
+                        let gem = [c + vec2(0.0, -7.0), c + vec2(6.0, 0.0), c + vec2(0.0, 7.0), c + vec2(-6.0, 0.0)];
+                        if k < weapon.jewels {
+                            ui.painter().circle_filled(c, 8.0, crate::jewels::tint(j).gamma_multiply(0.35));
+                            ui.painter().add(egui::Shape::convex_polygon(gem.to_vec(), crate::jewels::tint(j), Stroke::new(1.0f32, Color32::WHITE)));
+                        } else {
+                            ui.painter().add(egui::Shape::closed_line(gem.to_vec(), Stroke::new(1.5f32, Color32::from_gray(130))));
+                        }
+                    }
+                    let left = sockets - weapon.jewels.min(sockets);
+                    let name = crate::jewels::name(j);
+                    let a = if name.starts_with(['A', 'E', 'I', 'O', 'U']) { "an" } else { "a" };
+                    let note = if left == 0 { "all filled".to_owned() } else { format!("{left} free, for {a} {name}") };
+                    ui.label(RichText::new(note).weak());
+                });
+            }
+        }
         // How well it came out of the forge, and what the rarity and weight of its parts make of
         // its blows, so two of the same can be told apart
         let percent = |by: f64| format!("{:+.0}%", (by - 1.0) * 100.0);
@@ -4122,10 +8285,10 @@ impl Game {
             ui.label(RichText::new(format!("{} {}", profile.make(), percent(profile.forged))).color(tint));
             ui.label(RichText::new(format!("·  parts {} damage, {} speed", percent(profile.quality), percent(profile.pace))).weak());
         });
-        ui.separator();
+        theme::rule(ui, color(rarity.color));
         let damage = |p: &Profile| ["physicalDamage", "elementalDamage", "spellDamage"].iter().map(|k| p.stat(k)).sum::<f64>();
         ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("{:.0}", damage(profile))).size(32.0).strong().color(Color32::WHITE));
+            ui.label(RichText::new(format!("{:.0}", damage(profile))).font(theme::display(30.0)).color(Color32::WHITE));
             ui.vertical(|ui| {
                 ui.add_space(4.0);
                 ui.label(RichText::new("damage").weak());
@@ -4149,8 +8312,7 @@ impl Game {
                     ui.label(RichText::new(format!("{} damage", profile.element.map_or("Elemental", Element::name))).color(tint));
                     ui.label(RichText::new(unit.show(value)).color(tint));
                 } else {
-                    ui.label(RichText::new(label).weak());
-                    ui.label(unit.show(value));
+                    theme::row(ui, label, RichText::new(unit.show(value)).color(theme::TEXT));
                 }
                 match other {
                     Some(other) => against(ui, value - other.profile.stat(key), unit, key != "manaCost"),
@@ -4166,30 +8328,40 @@ impl Game {
             ui.label(RichText::new(format!("R — {}", special.name())).color(color(rarity.color)).strong());
             ui.label(RichText::new(format!("{} From its {}.", special.description(), part)).weak());
         }
+        if let Some(power) = profile.power {
+            ui.add_space(4.0);
+            let tint = profile.element.map_or(color(rarity.color), |e| color(e.color()));
+            ui.label(RichText::new(format!("Right click — {}", power.name(profile.element))).color(tint).strong());
+            ui.label(RichText::new(format!("{}. {}", power.how(profile.build), power.description(profile.element))).weak());
+        }
         if !profile.effects.is_empty() {
             ui.add_space(4.0);
             for e in &profile.effects {
                 let def = &library.effects[e.def];
                 let strength = if e.potency > 1.0 { format!(" ×{:.1}", e.potency) } else { String::new() };
-                ui.label(RichText::new(format!("• {}{}: {}", def.display_name, strength, def.description)).color(Color32::from_rgb(200, 220, 255)));
+                theme::bullet(ui, "•", theme::ACCENT, &format!("{}{}", def.display_name, strength), Color32::from_rgb(200, 220, 255), &def.description, theme::TEXT);
             }
         }
         for s in &profile.synergies {
             let def = &library.synergies[s.def];
-            ui.label(RichText::new(format!("★ {}: {}", def.display_name, def.description)).color(Color32::from_rgb(255, 225, 160)));
+            theme::bullet(ui, "★", theme::ACCENT, &def.display_name, Color32::from_rgb(255, 225, 160), &def.description, theme::TEXT);
         }
         // How a magic weapon of an unusual kind is used
         let how = match profile.style {
             Style::Channel => Some("Hold the button to pour a beam out at the crosshair; its mana cost goes each second."),
             Style::Summon => Some("Click to conjure a familiar that hangs in the air casting at whatever's near, up to three at once."),
             Style::Hex => Some("Click to cast a hex that drifts after what's near and eats away at it, slowing it; it passes on when it dies."),
-            Style::Toll => Some("Hold to raise the bell, longer for a harder toll; let go to ring out a shockwave all round."),
             Style::Glaive => Some("Swung like a polearm; its finishing blow and heavy blows loose a spell too, for mana."),
             Style::Whirl => Some("Whirled right round, hitting everything about you. Right click brings it down overhead, a shockwave rolling out from where it lands."),
             Style::Quake => Some("Every blow comes down on the ground and sends a shockwave rolling out; every second one, and heavy blows, hit harder and further."),
             Style::Lob => Some("Click to lob a bomb onto the crosshair; it bounces and bursts a moment after it lands. Hold right click to see where it'll come down."),
             Style::Arc => Some("Click to loose lightning at whatever's nearest the crosshair; it leaps on through everything near it."),
             Style::Censer => Some("Hold to swing the censer: each swing billows out a cloud that settles on the crosshair and hangs there, hurting what's in it."),
+            Style::Pick => Some("Its beak's driven in over the top, hooked round and hooked up; its finisher and heavy blows are brought down two-handed, hard."),
+            Style::Knife => Some("Click to flick a knife at the crosshair, as fast as the hand goes; right click, while its Shadowstep comes round, flings a fan of three."),
+            Style::Ring => Some("Click to hurl the chakram at the crosshair; it cuts everything it passes, out and back, and comes back to the hand. Right click glances it from one enemy to the next first."),
+            _ if profile.rite == crate::weapons::Rite::Prism => Some("Each cast is a shard of crystal that splits partway into a fan of splinters, each splitting again where it strikes."),
+            _ if profile.rite == crate::weapons::Rite::Rune => Some("Each cast writes a rune on the ground at the crosshair that blasts up a moment later."),
             _ => None,
         };
         if let Some(how) = how {
@@ -4242,12 +8414,17 @@ impl Game {
     /// The merchant's stall: what they sell, and what the player carries to sell them. False once
     /// it's closed.
     pub fn shop_window(&mut self, ctx: &egui::Context) -> bool {
+        // A specialist being talked to, before trading, see game\specialists.rs
+        if self.talking_to().is_some() {
+            return self.talk_window(ctx);
+        }
         let Some(key) = self.shop else {
             return false;
         };
         let mut open = true;
         let mut deed = None;
-        egui::Window::new(if self.royals.contains(&key) { "The Royal Armoury" } else { "Merchant" })
+        let title = self.shop_title(key).unwrap_or(if self.royals.contains(&key) { "The Royal Armoury".to_owned() } else { "Merchant".to_owned() });
+        egui::Window::new(title)
             .open(&mut open)
             .collapsible(false)
             .resizable(false)
@@ -4261,8 +8438,8 @@ impl Game {
                 ui.separator();
                 ui.horizontal_top(|ui| {
                     ui.vertical(|ui| {
-                        ui.set_width(360.0);
-                        ui.label(RichText::new("For sale").strong());
+                        ui.set_width(384.0);
+                        theme::heading(ui, "For sale", 15.0);
                         egui::ScrollArea::vertical().id_salt("wares").max_height(ctx.screen_rect().height() * 0.55).show(ui, |ui| {
                             for (k, &ware) in self.stocks.get(&key).into_iter().flatten().enumerate() {
                                 let (item, left) = match ware {
@@ -4272,9 +8449,14 @@ impl Game {
                                 let cost = self.price(item);
                                 let row = ui.horizontal(|ui| {
                                     let (rect, _) = ui.allocate_exact_size(vec2(38.0, 38.0), egui::Sense::hover());
+                                    theme::slot(ui.painter(), rect.shrink(2.0), self.slot_tint(item), false);
                                     self.draw_icon(ui.painter(), item, rect.center(), 26.0);
                                     let name = match item {
                                         Item::Weapon(w) => RichText::new(&self.weapons[w].name).color(color(self.library.rarities[self.weapons[w].grade].color)).strong(),
+                                        // Wings in the colour of their rarity, and whether they're
+                                        // had already
+                                        Item::Wings(k) if self.carries(item) => RichText::new(format!("{}  (yours)", self.item_name(item))).color(self.wings_color(k).gamma_multiply(0.6)),
+                                        Item::Wings(k) => RichText::new(self.item_name(item)).color(self.wings_color(k)).strong(),
                                         _ => RichText::new(format!("{}  ×{left}", self.item_name(item))),
                                     };
                                     ui.label(name);
@@ -4294,7 +8476,7 @@ impl Game {
                     });
                     ui.add_space(14.0);
                     ui.vertical(|ui| {
-                        ui.label(RichText::new("Yours, click to sell one").strong());
+                        theme::heading(ui, "Yours, click to sell one", 15.0);
                         match self.slot_grid(ui, "selling", true) {
                             Some(SlotClick::Once(slot) | SlotClick::Twice(slot)) => deed = Some(Deal::Sell(slot)),
                             Some(SlotClick::Moved(a, b)) => deed = Some(Deal::Move(a, b)),
@@ -4319,6 +8501,12 @@ impl Game {
     fn draw_icon(&self, painter: &egui::Painter, item: Item, center: Pos2, size: f32) {
         let r = size * 0.5;
         match item {
+            // Drawn from its model, made into a picture the first time one's shown, see jewels::icon()
+            Item::Jewel(j) => {
+                let icons = self.jewel_icons.get_or_init(|| (0..crate::jewels::KINDS as u8).map(|k| painter.ctx().load_texture(format!("jewel {k}"), crate::jewels::icon(&crate::assets::root(), k, 48), egui::TextureOptions::LINEAR)).collect());
+                let rect = Rect::from_center_size(center, vec2(size * 1.25, size * 1.25));
+                painter.image(icons[j as usize % icons.len()].id(), rect, Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0)), Color32::WHITE);
+            }
             // A sheaf of arrows or bolts, or a pouch of shot, tipped with their element
             Item::Ammo(k, _) => {
                 let def = &self.library.ammo[k];
@@ -4377,6 +8565,43 @@ impl Game {
                 painter.rect_filled(Rect::from_center_size(center - vec2(0.0, r * 0.55), vec2(r * 0.42, r * 0.5)), r * 0.06, glass);
                 painter.rect_filled(Rect::from_center_size(center - vec2(0.0, r * 0.85), vec2(r * 0.5, r * 0.22)), r * 0.05, Color32::from_rgb(140, 95, 55));
             }
+            // A glowing block seen corner on, in its realm's color, bound in gold
+            Item::InnertBlock(realm) => {
+                let [cr, cg, cb] = realms::REALMS[realm as usize % realms::REALMS.len()].color;
+                let glow = Color32::from_rgb(cr, cg, cb);
+                let (top, left, right) = (center - vec2(0.0, r * 0.75), center - vec2(r * 0.68, r * 0.38), center + vec2(r * 0.68, -r * 0.38));
+                let (mid, low_left, low_right, bottom) = (center, center + vec2(-r * 0.68, r * 0.42), center + vec2(r * 0.68, r * 0.42), center + vec2(0.0, r * 0.8));
+                painter.circle_filled(center, r * 0.95, glow.gamma_multiply(0.18));
+                painter.add(egui::Shape::convex_polygon(vec![top, right, mid, left], glow, Stroke::NONE));
+                painter.add(egui::Shape::convex_polygon(vec![left, mid, bottom, low_left], glow.gamma_multiply(0.75), Stroke::NONE));
+                painter.add(egui::Shape::convex_polygon(vec![mid, right, low_right, bottom], glow.gamma_multiply(0.55), Stroke::NONE));
+                for edge in [[top, right], [right, low_right], [low_right, bottom], [bottom, low_left], [low_left, left], [left, top], [left, mid], [mid, right], [mid, bottom]] {
+                    painter.line_segment(edge, Stroke::new(r * 0.07, GOLD));
+                }
+            }
+            // An iron shank with three prongs curling up from its head, and its coil of rope
+            Item::Hook => {
+                let iron = Color32::from_rgb(170, 176, 186);
+                let rope = Color32::from_rgb(150, 110, 70);
+                painter.circle_stroke(center + vec2(-r * 0.3, r * 0.35), r * 0.42, Stroke::new(r * 0.13, rope));
+                painter.line_segment([center + vec2(0.0, r * 0.75), center + vec2(0.0, -r * 0.45)], Stroke::new(r * 0.14, iron));
+                for dx in [-0.45, 0.45] {
+                    painter.line_segment([center + vec2(0.0, -r * 0.45), center + vec2(r * dx, -r * 0.8)], Stroke::new(r * 0.12, iron));
+                    painter.line_segment([center + vec2(r * dx, -r * 0.8), center + vec2(r * dx * 1.2, -r * 0.5)], Stroke::new(r * 0.1, iron));
+                }
+                painter.line_segment([center + vec2(0.0, -r * 0.45), center + vec2(0.0, -r * 0.95)], Stroke::new(r * 0.12, iron));
+            }
+            // A pair of white wings spread wide
+            Item::Wings(k) => {
+                let ([vr, vg, vb], [tr, tg, tb]) = wings::icon_colors(k);
+                let (vane, tip_color) = (Color32::from_rgb(vr, vg, vb), Color32::from_rgb(tr, tg, tb));
+                for side in [-1.0f32, 1.0] {
+                    let tip = center + vec2(side * r * 0.95, -r * 0.6);
+                    painter.add(egui::Shape::convex_polygon(vec![center + vec2(side * r * 0.1, -r * 0.1), tip, center + vec2(side * r * 0.75, r * 0.15), center + vec2(side * r * 0.2, r * 0.35)], vane, Stroke::new(r * 0.05, tip_color)));
+                    painter.circle_filled(tip, r * 0.1, tip_color);
+                }
+                painter.circle_filled(center, r * 0.14, tip_color);
+            }
             Item::Gold(_) => {
                 for (dx, dy) in [(-0.35, 0.35), (0.35, 0.3), (0.0, -0.05)] {
                     let at = center + vec2(r * dx, r * dy);
@@ -4385,13 +8610,38 @@ impl Game {
                     painter.circle_stroke(at - vec2(0.0, r * 0.06), r * 0.28, Stroke::new(r * 0.07, Color32::from_rgb(220, 165, 40)));
                 }
             }
-            Item::Meat => {
+            // A fish side on: silver raw, browned and charred cooked; and a shark's tooth
+            Item::RawFish | Item::CookedFish => {
+                let (body, back) = if item == Item::CookedFish { (Color32::from_rgb(196, 128, 62), Color32::from_rgb(110, 64, 32)) } else { (Color32::from_rgb(196, 208, 220), Color32::from_rgb(92, 116, 150)) };
+                let tail = center + vec2(r * 0.55, 0.0);
+                painter.add(egui::Shape::convex_polygon(vec![tail, center + vec2(r * 0.95, -r * 0.42), center + vec2(r * 0.95, r * 0.42)], back, Stroke::NONE));
+                let points: Vec<Pos2> = (0..24).map(|k| {
+                    let a = k as f32 / 24.0 * std::f32::consts::TAU;
+                    center + vec2(-r * 0.12 + a.cos() * r * 0.68, a.sin() * r * 0.36)
+                }).collect();
+                painter.add(egui::Shape::convex_polygon(points, body, Stroke::new(r * 0.06, back)));
+                if item == Item::CookedFish {
+                    for k in 0..3 {
+                        let x = -r * 0.3 + k as f32 * r * 0.25;
+                        painter.line_segment([center + vec2(x, -r * 0.3), center + vec2(x + r * 0.12, r * 0.3)], Stroke::new(r * 0.08, back));
+                    }
+                }
+                painter.circle_filled(center + vec2(-r * 0.52, -r * 0.06), r * 0.08, if item == Item::CookedFish { Color32::from_rgb(240, 232, 214) } else { Color32::from_rgb(20, 20, 30) });
+            }
+            Item::SharkTooth => {
+                let bone = Color32::from_rgb(240, 234, 216);
+                painter.add(egui::Shape::convex_polygon(vec![center + vec2(0.0, r * 0.9), center + vec2(-r * 0.55, -r * 0.55), center + vec2(r * 0.55, -r * 0.55)], bone, Stroke::new(r * 0.06, Color32::from_rgb(170, 160, 140))));
+                painter.line_segment([center + vec2(-r * 0.6, -r * 0.6), center + vec2(r * 0.6, -r * 0.6)], Stroke::new(r * 0.12, Color32::from_rgb(120, 90, 60)));
+            }
+            Item::Meat | Item::RoastMeat => {
                 let bone = Color32::from_rgb(240, 232, 214);
                 painter.line_segment([center + vec2(-r * 0.85, r * 0.55), center + vec2(-r * 0.1, -r * 0.05)], Stroke::new(r * 0.22, bone));
                 painter.circle_filled(center + vec2(-r * 0.95, r * 0.42), r * 0.16, bone);
                 painter.circle_filled(center + vec2(-r * 0.75, r * 0.72), r * 0.16, bone);
-                painter.circle_filled(center + vec2(r * 0.2, -r * 0.25), r * 0.62, Color32::from_rgb(175, 60, 52));
-                painter.circle_filled(center + vec2(r * 0.05, -r * 0.4), r * 0.22, Color32::from_rgb(215, 110, 100));
+                // Roasted, browned, with a darker crust
+                let (flesh, shine) = if item == Item::RoastMeat { (Color32::from_rgb(120, 62, 30), Color32::from_rgb(170, 100, 50)) } else { (Color32::from_rgb(175, 60, 52), Color32::from_rgb(215, 110, 100)) };
+                painter.circle_filled(center + vec2(r * 0.2, -r * 0.25), r * 0.62, flesh);
+                painter.circle_filled(center + vec2(r * 0.05, -r * 0.4), r * 0.22, shine);
             }
             Item::Weapon(w) => {
                 let weapon = &self.weapons[w];
@@ -4551,8 +8801,10 @@ impl Game {
                                 painter.line_segment([breech, center + vec2(-r * 0.7, r * 0.85)], Stroke::new(r * 0.28, wood));
                                 painter.circle_filled(center + vec2(-r * 0.72, r * 0.9), r * 0.17, Color32::from_rgb(200, 160, 70));
                             }
+                            // A short bed under the back of the barrel and a stout grip down from it
                             WeaponBuild::Cannon => {
-                                painter.line_segment([breech, center + vec2(-r * 0.95, r * 0.65)], Stroke::new(r * 0.16, haft));
+                                painter.line_segment([breech + vec2(-r * 0.05, r * 0.14), breech.lerp(muzzle, 0.35) + vec2(r * 0.05, r * 0.14)], Stroke::new(r * 0.14, haft));
+                                painter.line_segment([breech + vec2(-r * 0.02, r * 0.16), breech + vec2(-r * 0.3, r * 0.55)], Stroke::new(r * 0.2, wood));
                             }
                             _ => {
                                 painter.add(egui::Shape::convex_polygon(
@@ -4609,18 +8861,6 @@ impl Game {
                         for s in [-1.0, 1.0] {
                             painter.line_segment([center - vec2(0.0, r * 0.65), center + vec2(s * r * 0.45, -r * 0.95)], Stroke::new(r * 0.1, Color32::from_rgb(235, 228, 210)));
                         }
-                    }
-                    // A handbell, its clapper glowing under it
-                    Kind::Magic if family == "bell" => {
-                        painter.line_segment([center - vec2(0.0, r * 0.95), center - vec2(0.0, r * 0.45)], Stroke::new(r * 0.18, wood));
-                        let bell = Color32::from_rgb(205, 150, 70);
-                        painter.add(egui::Shape::convex_polygon(
-                            vec![center + vec2(-r * 0.25, -r * 0.45), center + vec2(r * 0.25, -r * 0.45), center + vec2(r * 0.7, r * 0.5), center + vec2(-r * 0.7, r * 0.5)],
-                            bell,
-                            Stroke::NONE,
-                        ));
-                        painter.circle_filled(center - vec2(0.0, r * 0.45), r * 0.27, bell);
-                        painter.circle_filled(center + vec2(0.0, r * 0.68), r * 0.17, glow);
                     }
                     // A rod forking at its top, lightning between the prongs
                     Kind::Magic if family == "rod" => {
@@ -4684,6 +8924,83 @@ fn placed(model: u32, (m, anchor): &(Model, Vector3<f64>), res: f64, point: Vect
 mod tests {
     use super::*;
 
+    /// Choosing who's posed live in a crowd: the nearest, as many as there's room for, none out of
+    /// range; one posed live keeps its place against one about as near, and a little past the
+    /// edge of the range; and one newly come near waits for its room while the one it crowds out
+    /// eases out of it, so there's never more than room for between them
+    #[test]
+    fn the_nearest_are_posed_live_with_room_kept_for_those_easing_out() {
+        let range = 40.0;
+        let n = LIVE_PIECES / 11;
+        // Twenty townsfolk of eleven pieces each, a meter apart from 2 m off, none posed live yet
+        let mut near: Vec<(f64, usize, f64, usize)> = (0..20).map(|k| (2.0 + k as f64, 11, 0.0, k)).collect();
+        assert_eq!(choose_near(&mut near, range), (0..n).collect::<Vec<_>>());
+        assert!(choose_near(&mut [(41.0, 11, 0.0, 0)], range).is_empty(), "none out of range");
+        assert_eq!(choose_near(&mut [(41.0, 11, 0.5, 0)], range), vec![0], "one posed live stays so a little past it");
+        // A crowd posed live keeps its places against one a little nearer than the furthest
+        let mut crowd: Vec<_> = (0..n).map(|k| (2.0 + k as f64, 11, 1.0, k)).collect();
+        crowd.push((n as f64 + 0.5, 11, 0.0, 99));
+        assert!(!choose_near(&mut crowd, range).contains(&99), "the crowd keeps its places");
+        // One much nearer crowds out the furthest, but waits to ease in till that's eased out
+        let mut crowd: Vec<_> = (0..n).map(|k| (10.0 + k as f64, 11, 1.0, k)).collect();
+        crowd.push((1.0, 11, 0.0, 99));
+        let wanted = choose_near(&mut crowd, range);
+        assert!(!wanted.contains(&(n - 1)) && !wanted.contains(&99), "the furthest eases out while the nearer waits: {wanted:?}");
+        let mut crowd: Vec<_> = (0..n).map(|k| (10.0 + k as f64, 11, if k + 1 == n { 0.0 } else { 1.0 }, k)).collect();
+        crowd.push((1.0, 11, 0.0, 99));
+        let wanted = choose_near(&mut crowd, range);
+        assert!(wanted.contains(&99) && !wanted.contains(&(n - 1)), "once it's out, the nearer's in: {wanted:?}");
+        // However they come and go, never more than room for posed live between them
+        let mut rng = 5u32;
+        let mut live: Vec<f64> = vec![0.0; 30];
+        for _ in 0..600 {
+            let mut near: Vec<_> = (0..30).map(|k| (random(&mut rng) * 50.0, 6 + k % 9, live[k], k)).collect();
+            let wanted = choose_near(&mut near, range);
+            for (k, l) in live.iter_mut().enumerate() {
+                *l = crate::baked::fade_live(*l, wanted.contains(&k), 1.0 / 60.0);
+            }
+            let held: usize = (0..30).filter(|&k| live[k] > 0.0).map(|k| 6 + k % 9).sum();
+            assert!(held <= LIVE_PIECES, "{held} pieces posed live");
+        }
+    }
+
+    /// A crowded town square posed live: the nearest as many as there's room for, each one's frame
+    /// standing in for it and its pieces after everything else, telling the shader where its
+    /// stand-in and its own pieces are; never more drawn than the shader sorts by tiles
+    #[test]
+    fn a_crowd_is_posed_live_within_its_room() {
+        let one = |k: usize| AnimalInstance::new(k as u32, Vector3::new(k as f64, 0.0, 0.0), UnitQuaternion::identity(), 1.0, 1.0, animals::MOVING);
+        let mut out: Vec<AnimalInstance> = (0..90).map(one).collect();
+        // Thirty townsfolk among them, every third, eleven pieces each, and one that can't be posed
+        let stand_ins: Vec<(usize, usize)> = (0..30).map(|k| (k * 3, k)).collect();
+        pose_live(&mut out, &stand_ins, &mut |k, pieces| {
+            if k == 2 {
+                return false;
+            }
+            pieces.extend((0..11).map(|p| one(1000 + k * 11 + p)));
+            true
+        });
+        let live: Vec<usize> = (0..90).filter(|&i| out[i].kind() == animals::STAND_IN).collect();
+        assert_eq!(live.len(), LIVE_PIECES / 11, "as many as there's room for: {live:?}");
+        assert_eq!(live[..3], [0, 3, 9], "nearest first, passing over one that can't be posed");
+        assert!(out.len() <= MOST_INSTANCES && out.len() == 90 + live.len() * 11);
+        for (n, &at) in live.iter().enumerate() {
+            let first = 90 + n * 11;
+            for piece in &out[first..first + 11] {
+                assert_eq!(piece.seen_of(), Some((at, first, 11)));
+            }
+        }
+        assert!(out[..90].iter().all(|i| i.seen_of().is_none()));
+        // With little room left, those whose pieces wouldn't all fit are drawn in their frames
+        let mut full: Vec<AnimalInstance> = (0..MOST_INSTANCES - 15).map(one).collect();
+        pose_live(&mut full, &[(0, 0), (1, 1)], &mut |_, pieces| {
+            pieces.extend((0..11).map(one));
+            true
+        });
+        assert_eq!(full.len(), MOST_INSTANCES - 4);
+        assert_eq!((full[0].kind(), full[1].kind()), (animals::STAND_IN, animals::MOVING));
+    }
+
     /// A princess's armoury always has its full stock of weapons, legendary and mythic ones only,
     /// no two of a family
     #[test]
@@ -4698,5 +9015,1226 @@ mod tests {
                 assert!(weapons[i + 1..].iter().all(|b| b.family != a.family));
             }
         }
+    }
+
+    /// How rare what each source of weapons gives is, rolled as each rolls it many times over: how
+    /// many of its weapons are epic, legendary and mythic, how many have a special attack, and how
+    /// many special weapons there are to each kill, chest, boss, stall and kit, in the normal world
+    /// and each realm. To look at: cargo test --release loot_odds -- --ignored --nocapture
+    #[test]
+    #[ignore]
+    fn loot_odds() {
+        let library = Library::load();
+        let at = |id: &str| library.rarities.iter().position(|r| r.id == id).unwrap();
+        let (epic, legendary, mythic) = (at("epic"), at("legendary"), at("mythic"));
+        // What a lot of weapons from one source come to, a lot at a time: a monster's drop, a
+        // chest, a boss's hoard, a stall, a kit. Each weapon is its grade and whether it has a
+        // special attack.
+        #[derive(Default)]
+        struct Tally {
+            weapons: usize,
+            grades: [usize; 6],
+            specials: usize,
+            lots: usize,
+            lots_with: usize,
+        }
+        impl Tally {
+            fn add(&mut self, lot: &[(usize, bool)]) {
+                for &(grade, special) in lot {
+                    self.weapons += 1;
+                    self.grades[grade.min(5)] += 1;
+                    self.specials += special as usize;
+                }
+                self.lots += 1;
+                self.lots_with += lot.iter().any(|w| w.1) as usize;
+            }
+            fn share(&self, n: usize) -> f64 {
+                n as f64 / self.weapons.max(1) as f64
+            }
+            /// Of its weapons, how many have a special attack
+            fn special(&self) -> f64 {
+                self.share(self.specials)
+            }
+            /// Special weapons to each lot
+            fn per_lot(&self) -> f64 {
+                self.specials as f64 / self.lots.max(1) as f64
+            }
+        }
+        let sample = |lots: usize, seed: u32, make: &mut dyn FnMut(&mut u32) -> Vec<(usize, bool)>| {
+            let mut tally = Tally::default();
+            let mut rng = hash(seed ^ 0x1007_0dd5);
+            for _ in 0..lots {
+                tally.add(&make(&mut rng));
+            }
+            tally
+        };
+        // A weapon as Game::roll_weapon() rolls it, `luck` with a realm's scaling
+        let rolled = |rng: &mut u32, luck: f64, sure: bool| {
+            *rng = hash(*rng ^ 0x1007);
+            let seed = if sure { library.special_seed(*rng, None, luck) } else { *rng };
+            let (_, grade, special) = library.preview(seed, None, &library.odds(luck));
+            (grade, special.is_some())
+        };
+        // As Game::open_chest() rolls what's in one with `luck`, its seed where it is
+        let chest = |rng: &mut u32, luck: f64| {
+            *rng = hash(*rng);
+            let (_, grade, special) = library.preview(*rng, None, &library.odds(luck));
+            vec![(grade, special.is_some())]
+        };
+        let pct = |x: f64| format!("{:.2}%", 100.0 * x);
+        let one_in = |x: f64| if x > 0.0 { format!("{:.1}", 1.0 / x) } else { "never".into() };
+        let row = |name: &str, luck: &str, t: &Tally| {
+            println!(
+                "| {name} | {luck} | {} | {} | {} | {} | {} | **{}** | 1 in {} | {:.3} | {} |",
+                t.weapons / t.lots.max(1),
+                pct(t.share(t.grades[epic])),
+                pct(t.share(t.grades[legendary])),
+                pct(t.share(t.grades[mythic])),
+                pct(t.share(t.grades[epic..].iter().sum())),
+                pct(t.special()),
+                one_in(t.special()),
+                t.per_lot(),
+                pct(t.lots_with as f64 / t.lots.max(1) as f64),
+            );
+        };
+        // Chests about the land, the luck worldgen gives them: on top, in the ruins and such, see
+        // worldgen.rs; down in the dungeons and the fallen cities; the crystal chests of caves
+        // behind waterfalls and the hoards of a fallen castle's court and a fallen city's lord;
+        // and the hoards of bandits' camps, as worldgen\camps.rs lucks them by their band
+        let plain: [(&str, f64); 8] = [("pyramid", 2.0), ("pyramid top", 1.4), ("shrine", 1.2), ("castle", 1.3), ("flooded church", 1.6), ("desert ruins", 1.2), ("colonnade", 1.1), ("watchtower", 1.3)];
+        let deep: [(&str, f64); 3] = [("dungeon side hall", 1.7), ("dungeon boss hall", 2.6), ("fallen city house", 2.2)];
+        let lucky: [(&str, f64); 3] = [("crystal cave", 4.0), ("fallen castle court", 4.5), ("fallen city lord", 5.0)];
+        let hoards: [(&str, f64); 3] = [("small band", 3.75), ("usual band", 4.5), ("band with a warlord", 5.5)];
+        let mean = |tallies: &[Tally], f: &dyn Fn(&Tally) -> f64| tallies.iter().map(f).sum::<f64>() / tallies.len() as f64;
+        let header = || {
+            println!("| source | luck | weapons each | epic | legendary | mythic | epic or better | special | special weapons | specials each | with a special |");
+            println!("|---|---|---|---|---|---|---|---|---|---|---|");
+        };
+        println!("\nWhat each source of weapons gives, in the normal world:\n");
+        header();
+        let monster = sample(400_000, 1, &mut |rng| vec![rolled(rng, MONSTER_LUCK, false)]);
+        row("monster drop", &format!("{MONSTER_LUCK}"), &monster);
+        let mut plain_tallies = Vec::new();
+        for (k, (name, luck)) in plain.iter().enumerate() {
+            let t = sample(60_000, 10 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("chest: {name}"), &format!("{luck}"), &t);
+            plain_tallies.push(t);
+        }
+        let mut deep_tallies = Vec::new();
+        for (k, (name, luck)) in deep.iter().enumerate() {
+            let t = sample(60_000, 20 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("deep chest: {name}"), &format!("{luck}"), &t);
+            deep_tallies.push(t);
+        }
+        let mut lucky_tallies = Vec::new();
+        for (k, (name, luck)) in lucky.iter().enumerate() {
+            let t = sample(60_000, 30 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("lucky chest: {name}"), &format!("{luck}"), &t);
+            lucky_tallies.push(t);
+        }
+        let mut hoard_tallies = Vec::new();
+        for (k, (name, luck)) in hoards.iter().enumerate() {
+            let t = sample(60_000, 40 + k as u32, &mut |rng| chest(rng, *luck));
+            row(&format!("bandits' hoard: {name}"), &format!("{luck}"), &t);
+            hoard_tallies.push(t);
+        }
+        let hoard = |of: Hoard, scale: f64, lots: usize, seed: u32| sample(lots, seed, &mut |rng| hoard_rolls(of, rng).into_iter().map(|(luck, sure)| rolled(rng, luck * scale, sure)).collect());
+        let lucks = |l: &[f64]| l.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(", ");
+        let boss = hoard(Hoard::Boss, 1.0, 40_000, 50);
+        row("lesser boss", &lucks(&BOSS_LUCKS), &boss);
+        let raid = hoard(Hoard::Raid, 1.0, 20_000, 51);
+        row("realm raid boss", &lucks(&RAID_LUCKS), &raid);
+        let huge = hoard(Hoard::Huge, 1.0, 20_000, 52);
+        row("huge raid boss, finale", &lucks(&RAID_LUCKS), &huge);
+        let merchant = |scale: f64, lots: usize| {
+            sample(lots, 60, &mut |rng| {
+                MERCHANT_LUCKS
+                    .iter()
+                    .map(|luck| {
+                        *rng = hash(*rng);
+                        let (_, grade, special) = library.preview(*rng, None, &library.odds(luck * scale));
+                        (grade, special.is_some())
+                    })
+                    .collect()
+            })
+        };
+        let stall = merchant(1.0, 40_000);
+        row("merchant's stall", &lucks(&MERCHANT_LUCKS), &stall);
+        let mut royal = Tally::default();
+        for seed in 0..300u32 {
+            royal.add(&royal_weapons(&library, hash(seed ^ 0x9e11)).iter().map(|w| (w.grade, w.profile.special.is_some())).collect::<Vec<_>>());
+        }
+        row("royal armoury", "its own", &royal);
+        let mut start = Tally::default();
+        for seed in 0..4000u32 {
+            start.add(&kit(&library, hash(seed), KIT_LUCK, Some(KIT_RAREST)).iter().map(|(family, seed, odds)| library.preview(*seed, Some(*family), odds)).map(|(_, g, s)| (g, s.is_some())).collect::<Vec<_>>());
+        }
+        row("new player's kit", &format!("{KIT_LUCK}, none rarer than {}", library.rarities[KIT_RAREST].id), &start);
+        let worst = (0..4000u32).map(|seed| kit(&library, hash(seed), KIT_LUCK, Some(KIT_RAREST)).iter().filter(|(f, s, o)| library.preview(*s, Some(*f), o).2.is_some()).count()).max().unwrap_or(0);
+
+        println!("\nSpecial weapons to expect:\n");
+        println!("- per 100 of the dead or bandits killed: {:.2} ({} of them drop a weapon)", 100.0 * MONSTER_WEAPON * monster.special(), pct(MONSTER_WEAPON));
+        println!("- per 10 chests on top: {:.2}; in dungeons and fallen cities: {:.2}; lucky ones: {:.2}; bandits' hoards: {:.2}", 10.0 * mean(&plain_tallies, &Tally::special), 10.0 * mean(&deep_tallies, &Tally::special), 10.0 * mean(&lucky_tallies, &Tally::special), 10.0 * mean(&hoard_tallies, &Tally::special));
+        println!("- per lesser boss: {:.2}; per realm raid boss: {:.2}; per huge raid boss or finale: {:.2}", boss.per_lot(), raid.per_lot(), huge.per_lot());
+        println!("- per merchant: {:.2}; per royal armoury: {:.2}", stall.per_lot(), royal.per_lot());
+        println!("- in a new player's kit of {}: {:.2}, at most {worst}", KIT.len(), start.per_lot());
+
+        println!("\nHow many have a special attack in each realm, its loot luckier by its scaling:\n");
+        println!("| realm | luck | monster drop | chest on top | deep chest | lucky chest | bandits' hoard | lesser boss, specials each | realm raid boss | huge raid boss | merchant's stalls with one |");
+        println!("|---|---|---|---|---|---|---|---|---|---|---|");
+        for (r, realm) in realms::REALMS.iter().enumerate() {
+            let scale = loot_scaling(realms::scaling_in(r, r, 0));
+            let seed = 100 + 10 * r as u32;
+            let monster = sample(100_000, seed, &mut |rng| vec![rolled(rng, MONSTER_LUCK * scale, false)]);
+            let chests = |set: &[(&str, f64)]| set.iter().enumerate().map(|(k, (_, luck))| sample(20_000, seed + k as u32, &mut |rng| chest(rng, luck * scale))).collect::<Vec<_>>();
+            let (p, d, l, h) = (chests(&plain), chests(&deep), chests(&lucky), chests(&hoards));
+            let stall = merchant(scale, 10_000);
+            println!(
+                "| {} | {scale:.2} | 1 in {} | 1 in {} | 1 in {} | 1 in {} | 1 in {} | {:.2} | {:.2} | {:.2} | {} |",
+                realm.name,
+                one_in(monster.special()),
+                one_in(mean(&p, &Tally::special)),
+                one_in(mean(&d, &Tally::special)),
+                one_in(mean(&l, &Tally::special)),
+                one_in(mean(&h, &Tally::special)),
+                hoard(Hoard::Boss, scale, 10_000, seed).per_lot(),
+                hoard(Hoard::Raid, scale, 5_000, seed).per_lot(),
+                hoard(Hoard::Huge, scale, 5_000, seed).per_lot(),
+                pct(stall.lots_with as f64 / stall.lots as f64),
+            );
+        }
+    }
+
+    /// The Coil Unending slain stays slain: its lair's beaten in the save, so it never rises again
+    /// once the world's built afresh round it, and its fang, the one of its kind, keeps its name
+    /// through the save
+    #[test]
+    fn the_coil_unending_stays_beaten() {
+        let size = [64u32, 64, 64];
+        let mut occupancy = vec![0u128; 16 * 16 * 8];
+        occupancy[..16 * 16 * 2].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 4;
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(32.0, 32.0, 16.0));
+        let ground = Vector3::new(32.0, 32.0, 16.0);
+        let lair = |key: [i64; 3]| Lair { look: Look::Ysveth, position: ground, key, raid: None };
+        let key = [1234, -5678, serpents::ULTRA_KEY];
+        game.set_lairs(&world, &dry, vec![lair(key)]);
+        assert!(game.animals.iter().any(|a| a.look.is_ultra()), "it's there to fight");
+        // Slain, it writhes, then falls
+        for a in game.animals.iter_mut().filter(|a| a.look.is_ultra()) {
+            a.health = 0.0;
+        }
+        game.reap(&world);
+        assert!(game.animals.iter().any(|a| a.look.is_ultra()), "it's still going down");
+        for a in game.animals.iter_mut().filter(|a| a.look.is_ultra()) {
+            a.boss.as_mut().unwrap().dying = Some(serpents::GREAT_THROES);
+        }
+        game.reap(&world);
+        assert!(!game.animals.iter().any(|a| a.look.is_ultra()));
+        assert!(game.is_defeated(&key));
+        let fang = game.pickups.iter().find_map(|p| if let Item::Weapon(w) = p.item { (game.weapons[w].name == serpents::FANG).then_some(w) } else { None }).expect("its fang among its hoard");
+        // A whip of the rarest grade, with a serpent's special
+        let weapon = &game.weapons[fang];
+        assert_eq!(weapon.grade, game.library.rarities.len() - 1, "its fang's mythic");
+        assert_eq!(game.library.families[weapon.family].id, "whip");
+        assert!(matches!(game.library.special_of(weapon.seed, Some(weapon.family), FANG_LUCK), Some(Special::SerpentLash | Special::CoilBind)), "with a serpent's special");
+        game.add_item(Item::Weapon(fang), 1);
+        // Through the file's own form and back, into another game
+        let carried: save::CarriedSave = serde_json::from_str(&serde_json::to_string(&game.carried_save()).unwrap()).unwrap();
+        let done: save::WorldSave = serde_json::from_str(&serde_json::to_string(&game.world_save()).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, ground);
+        other.restore(&carried, &done, game.vitals());
+        assert!(other.is_defeated(&key));
+        assert!(other.weapons.iter().any(|w| w.name == serpents::FANG), "its fang keeps its name");
+        // The world built afresh round its lair: it doesn't rise again, though another would
+        other.animals.retain(|a| !a.look.is_great_serpent());
+        other.set_lairs(&world, &dry, vec![lair(key)]);
+        assert!(!other.animals.iter().any(|a| a.look.is_ultra()));
+        other.set_lairs(&world, &dry, vec![lair([1, 2, serpents::ULTRA_KEY])]);
+        assert!(other.animals.iter().any(|a| a.look.is_ultra()));
+    }
+
+    /// What strikes the player is known as what did it, for a necromancer's dead to turn on: by
+    /// whose doing it was, a boss's or a monster's, and otherwise by what's fighting the player
+    /// right where it came from; and never what's only standing near
+    #[test]
+    fn what_strikes_the_player_is_blamed() {
+        let size = [256u32, 256, 32];
+        let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+        let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+        occupancy[..tx * ty * 2].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, crate::worldgen::material::DIRT);
+        world.voxels_per_meter = 8;
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let feet = Vector3::new(128.0, 128.0, 16.0);
+        let mut game = Game::new(&world, &dry, 5, feet);
+        game.animals.clear();
+        let at = |x: f64| feet + Vector3::new(x * 8.0, 0.0, 0.0);
+        let mut pack = animals::spawn_pack(&world, &dry, &[Look::Bandit, Look::Bandit, Look::Bandit], at(2.0), 0.1, 3);
+        for (k, a) in pack.iter_mut().enumerate() {
+            a.position = at([1.5, 6.0, -1.5][k]);
+        }
+        pack[0].boss.as_mut().unwrap().provoke();
+        let ids: Vec<u32> = pack.iter().map(|a| a.id).collect();
+        game.animals = pack;
+        // A blow carried out as the second's doing, from afar
+        game.combat.set_doer(Some(ids[1]));
+        game.hurt(5.0, at(6.0), feet, &world, "a bandit");
+        game.combat.set_doer(None);
+        assert_eq!(game.combat.blamed(), vec![ids[1]]);
+        // A blow from right where the first, fighting the player, stands; the third stands as
+        // near, but isn't fighting them
+        game.hurt(5.0, at(1.5) + Vector3::new(0.0, 0.0, 8.0), feet, &world, "a blast");
+        assert_eq!(game.combat.blamed(), vec![ids[1], ids[0]]);
+        assert!(!game.combat.blamed().contains(&ids[2]));
+    }
+
+    /// The player's body is painted as they painted it, and with the forearms painted the arms
+    /// held before the eye are drawn with models of their own painted the same; unpainted, as
+    /// they always were
+    #[test]
+    fn the_painted_body_is_drawn() {
+        use crate::character::{Character, body::PIECES, paint};
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let arm = |g: &Game| g.held_arm(0, Vector3::new(1.0, 0.0, 0.0), Vector3::z(), Vector3::zeros()).model();
+        game.set_character(&Character::default());
+        assert_eq!(game.body_models.len(), PIECES);
+        assert_eq!(arm(&game), game.combat.arm_model(0));
+        let character = Character { paint: paint::demo(&Default::default()), ..Default::default() };
+        game.set_character(&character);
+        assert_eq!(game.body_models.len(), PIECES + 2);
+        assert_eq!(game.body_models[..PIECES].iter().map(|(m, _)| m.voxels.clone()).collect::<Vec<_>>(), paint::painted(&character.looks, &character.paint).iter().map(|(m, _)| m.voxels.clone()).collect::<Vec<_>>());
+        assert_eq!(arm(&game), game.weapon_model(game.weapons.len()) + (game.preview.len() + PIECES) as u32);
+        game.set_character(&Character::default());
+        assert_eq!(arm(&game), game.combat.arm_model(0));
+    }
+
+    /// What's carried and what's been done, saved and restored into another game, is all there
+    /// again as it was, weapons made of the same parts with the same names
+    #[test]
+    fn a_saved_player_comes_back_the_same() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.arm(77, 4.0);
+        game.add_item(Item::Bread, 3);
+        game.add_item(Item::Potion, 1);
+        game.add_item(Item::Gold(5), 1);
+        game.gold = 812;
+        game.bucket = 1.25;
+        game.selected = 3;
+        game.health = 42.0;
+        game.hunger = 13.5;
+        game.combat.mana = 20.0;
+        game.opened.insert([1, 2, 3]);
+        game.defeated.insert([-4, 5, 6]);
+        game.cleared.insert([7, -8, 9]);
+        game.stock([10, 11, 12]);
+        // A ware bought and one sold back onto the stall
+        game.shop = Some([10, 11, 12]);
+        game.buy(5);
+        game.sell(0);
+        game.shop = None;
+        let carried = game.carried_save();
+        let done = game.world_save();
+        let summary = game.summary();
+        // Through the file's own form and back
+        let carried: save::CarriedSave = serde_json::from_str(&serde_json::to_string(&carried).unwrap()).unwrap();
+        let done: save::WorldSave = serde_json::from_str(&serde_json::to_string(&done).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&carried, &done, game.vitals());
+        assert_eq!(other.summary(), summary);
+        assert_eq!(other.carried_save(), game.carried_save());
+        assert_eq!(other.world_save(), game.world_save());
+        let names = |g: &Game| g.slots.iter().filter_map(|(i, _)| if let Item::Weapon(w) = i { Some(g.weapons[*w].name.clone()) } else { None }).collect::<Vec<_>>();
+        assert_eq!(names(&other), names(&game));
+        // A weapon whose parts are no more is left out, the rest kept
+        let mut damaged = carried.clone();
+        if let save::ItemSave::Weapon(w) = &mut damaged.slots[0].item {
+            w.parts[0] = "a part long gone".into();
+        }
+        other.restore(&damaged, &done, game.vitals());
+        assert_eq!(other.slots.len(), game.slots.len() - 1);
+        // Starting afresh leaves nothing of it
+        other.new_character(9);
+        assert_eq!(other.gold, STARTING_GOLD);
+        assert!(other.defeated.is_empty() && other.opened.is_empty() && other.stocks.is_empty());
+        assert_eq!(other.health, MAX_HEALTH);
+    }
+
+    /// How each realm in turn stands against what the player's found by the time they're through
+    /// it, at the floor of its band of levels and at the top: what its monsters can take and how
+    /// many of their blows the player can, and the best weapon from the hoards of every realm's
+    /// guardians and raid bosses so far, of the same level, how many seconds that takes to kill
+    /// one. Then how dropped weapons' item levels are spread, and how the levels come. Run it with
+    /// `cargo test --release realm_balance -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn realm_balance() {
+        let library = Library::load();
+        let dps = |w: &Weapon| {
+            let p = &w.profile;
+            let speed = ["attackSpeed", "drawSpeed", "castSpeed", "reloadSpeed"].iter().map(|k| p.stat(k)).find(|&v| v > 0.0).unwrap_or(0.0);
+            let damage: f64 = ["physicalDamage", "elementalDamage", "spellDamage"].iter().map(|k| p.stat(k)).sum();
+            damage * speed
+        };
+        let trials = 60;
+        // The median best weapon from the hoards of every realm's guardians and raid bosses so far,
+        // by the time the player's through each realm, at item level 1: its level's worked in below
+        let mut best_by_trial = vec![0.0f64; trials];
+        let mut medians = Vec::new();
+        for r in 0..realms::REALMS.len() {
+            let scaling = realms::scaling_in(r, r, 0);
+            let luck = loot_scaling(scaling);
+            for (t, best) in best_by_trial.iter_mut().enumerate() {
+                let mut rng = hash(0xba1a ^ (t as u32 * 7919) ^ (r as u32 * 104_729));
+                let hoards = std::iter::repeat_n(Hoard::Boss, realms::guardian_count(r)).chain(std::iter::repeat_n(Hoard::Raid, realms::RAIDS));
+                for hoard in hoards {
+                    for (l, sure) in hoard_rolls(hoard, &mut rng) {
+                        rng = hash(rng ^ 0x1007);
+                        let seed = if sure { library.special_seed(rng, None, l * luck) } else { rng };
+                        *best = best.max(dps(&library.generate(seed, None, l * luck)));
+                    }
+                }
+            }
+            let mut sorted = best_by_trial.clone();
+            sorted.sort_by(f64::total_cmp);
+            medians.push(sorted[trials / 2]);
+        }
+        // A realm's monsters on the whole, each as often as it goes about there: what they can take
+        // and how hard they hit, before their levels
+        let health_of = |r: usize| realms::monster_mean(r, Look::health);
+        let blow_of = |r: usize| realms::monster_mean(r, bosses::blow);
+
+        // Every monster comes at the player's level wherever it is, so at one level the realms should
+        // stand about even: what their monsters can take, how long the weapon the player'd have by
+        // then, of the same level, takes over one, and how many of their blows fell the player
+        println!("At one level, the player's, in every realm: each realm's monsters on the whole, and against a weapon of that level, the median best from the hoards up to the realm that level's in\n");
+        println!("| level | realm | monster health | seconds to kill | hits to die |");
+        println!("|---|---|---|---|---|");
+        let mut even = Vec::new();
+        for level in [10, 25, 40] {
+            let home = levels::BANDS.iter().position(|b| (b.lo..=b.hi).contains(&level)).unwrap();
+            let weapon = medians[home] * levels::weapon_power(level);
+            let mut healths = Vec::new();
+            for (r, realm) in realms::REALMS.iter().enumerate() {
+                let health = health_of(r) * levels::toughness(level);
+                let seconds = health / weapon.max(1e-6);
+                let hits = levels::max_health(level) / (blow_of(r) * levels::damage(level));
+                println!("| {level} | {} | {health:.0} | {seconds:.2} | {hits:.1} |", realm.name);
+                even.push((level, realm.name, seconds, hits));
+                healths.push(health);
+            }
+            let mean = healths.iter().sum::<f64>() / healths.len() as f64;
+            let spread = healths.iter().map(|h| (h / mean - 1.0).abs()).fold(0.0, f64::max);
+            println!("| {level} | all, weapon {weapon:.1} dps | {mean:.0} | {:.2} | within {:.0}% of each other |", mean / weapon, spread * 100.0);
+        }
+
+        println!("\nEach realm at its own band, the floor and the top, with the median best weapon from the hoards so far:\n");
+        println!("| realm | level | monster health | hits to die | same-level weapon dps (median best) | seconds to kill | pack, seconds to clear |");
+        println!("|---|---|---|---|---|---|---|");
+        let mut kills = Vec::new();
+        for (r, realm) in realms::REALMS.iter().enumerate() {
+            let pack = realm.monsters.iter().map(|p| p.looks.len()).sum::<usize>() as f64 / realm.monsters.len() as f64 + realms::crowd(r, r) as f64;
+            let band = levels::BANDS[r];
+            for (end, level) in [("floor", band.lo), ("top", band.hi)] {
+                let health = health_of(r) * levels::toughness(level);
+                let hits = levels::max_health(level) / (blow_of(r) * levels::damage(level));
+                let weapon = medians[r] * levels::weapon_power(level);
+                let seconds = health / weapon.max(1e-6);
+                kills.push((realm.name, end, seconds, hits));
+                println!("| {} | {end} {level} | {health:.0} | {hits:.1} | {weapon:.1} | {seconds:.2} | {pack:.1}, {:.1} s |", realm.name, pack * seconds);
+            }
+        }
+        println!("\nMore in each pack: {:?}", (0..realms::REALMS.len()).map(|r| realms::crowd(r, r)).collect::<Vec<_>>());
+        println!("Back in the normal world with each realm reached, its band lifted:");
+        for reached in 0..realms::REALMS.len() {
+            let b = levels::band_in(0, reached);
+            let s = realms::scaling_in(0, reached, 0);
+            println!("  reached {reached}: levels {}-{}, toughness {:.2}-{:.2}, damage {:.2}-{:.2}, luck {:.2}, {} more a pack", b.lo, b.hi, levels::toughness(b.lo), levels::toughness(b.hi), levels::damage(b.lo), levels::damage(b.hi), s.luck, realms::crowd(0, reached));
+        }
+        let again = realms::scaling_in(5, 5, 1);
+        println!("A journey made once already: the Cinder Crown's own band, its monsters {:.2} times as tough again and {:.2} times as hard-hitting", again.toughness, again.damage);
+
+        println!("\nItem levels of dropped weapons, from what's level 20, out of 100 000:\n");
+        println!("| source | -1 | +0 | +1 | +2 | +3 |");
+        println!("|---|---|---|---|---|---|");
+        for (name, source) in [("monster, chest", levels::Source::Found), ("lesser boss", levels::Source::Boss), ("raid boss, finale", levels::Source::Raid), ("merchant", levels::Source::Merchant)] {
+            let mut counts = [0usize; 5];
+            let mut rng = 0x5eed;
+            for _ in 0..100_000 {
+                counts[(levels::drop_level(20, source, random(&mut rng)) as i32 - 19) as usize] += 1;
+            }
+            println!("| {name} | {} |", counts.map(|n| format!("{:.1}%", n as f64 / 1000.0)).join(" | "));
+        }
+
+        println!("\nHow the levels come: experience to go up from each band's floor, and what slaying gives there:\n");
+        println!("| realm | levels | experience across the band | a monster | a boss | a raid boss | a finale | first coming |");
+        println!("|---|---|---|---|---|---|---|---|");
+        for (r, realm) in realms::REALMS.iter().enumerate() {
+            let band = levels::BANDS[r];
+            let across = levels::total_to(band.hi + 1) - levels::total_to(band.lo);
+            let at = (band.lo + band.hi) / 2;
+            println!("| {} | {}-{} | {across:.0} | {:.0} | {:.0} | {:.0} | {:.0} | {:.0} |", realm.name, band.lo, band.hi, levels::experience(at, levels::Slain::Monster), levels::experience(at, levels::Slain::Boss), levels::experience(at, levels::Slain::Raid), levels::experience(at, levels::Slain::Finale), levels::first_visit(r));
+        }
+        println!("All of it to level {}: {:.0}", levels::LEVEL_CAP, levels::total_to(levels::LEVEL_CAP));
+        // At one level, each kill in 1.5 to 3.5 seconds and five to ten blows to fell the player,
+        // in every realm
+        for (level, name, seconds, hits) in even {
+            assert!((1.5..=3.5).contains(&seconds), "{name} at {level}: {seconds:.2} s a kill");
+            assert!((5.0..=10.0).contains(&hits), "{name} at {level}: {hits:.1} hits");
+        }
+        // And at its own band about the same, never under four blows
+        for (name, end, seconds, hits) in kills {
+            assert!((1.0..=4.0).contains(&seconds), "{name} at its {end}: {seconds:.2} s a kill");
+            assert!(hits >= 4.0 && hits <= 10.5, "{name} at its {end}: {hits:.1} hits");
+        }
+    }
+
+    /// Health bars bunched up never come over each other: one that would is lifted clear of those
+    /// nearer, or left out once it can't be; nudged back and forth a little from one frame to the
+    /// next, as what's under them sways, they settle and stay where they are rather than flicker;
+    /// spread out again, they all come back down; and what the crosshair's on, or what was hit
+    /// last, is laid down first, staying put as the crosshair sweeps across them
+    #[test]
+    fn bunched_health_bars_keep_clear_of_each_other_and_still() {
+        let plate = |x: f32, y: f32| Rect::from_min_size(pos2(x, y), vec2(58.0, 15.0));
+        // Eight in a tight bunch, nearest first, as a pack of skeletons a little way off
+        let plates: Vec<(u32, Rect)> = (0..8).map(|k| (k as u32 * 7 + 3, plate(400.0 + (k % 3) as f32 * 23.0, 300.0 + (k / 3) as f32 * 9.0 - (k % 2) as f32 * 4.0))).collect();
+        let shown = |plates: &[(u32, Rect)], lifts: &[(u32, u8)]| -> Vec<Rect> {
+            plates
+                .iter()
+                .filter_map(|&(id, r)| {
+                    let k = lifts[lifts.binary_search_by_key(&id, |e| e.0).unwrap()].1;
+                    (k != BAR_HIDDEN).then(|| r.translate(vec2(0.0, -(r.height() + BAR_GAP) * k as f32)))
+                })
+                .collect()
+        };
+        let lifts = place_bars(&plates, &[], None);
+        assert_eq!(lifts.len(), plates.len());
+        assert!(lifts.windows(2).all(|w| w[0].0 < w[1].0), "sorted by id");
+        let rects = shown(&plates, &lifts);
+        for (i, a) in rects.iter().enumerate() {
+            assert!(rects[i + 1..].iter().all(|b| !a.intersects(*b)), "{lifts:?}");
+        }
+        assert_eq!(lifts.iter().find(|e| e.0 == plates[0].0).unwrap().1, 0, "the nearest stays put");
+        assert!(lifts.iter().any(|e| (1..=BAR_LIFTS).contains(&e.1)) && lifts.iter().any(|e| e.1 == BAR_HIDDEN), "{lifts:?}");
+        // Swaying two pixels either way every frame: after a frame or two to settle, nothing moves
+        let mut now = lifts.clone();
+        let mut seen = Vec::new();
+        for frame in 0..12 {
+            let sway = if frame % 2 == 0 { 2.0 } else { -2.0 };
+            let moved: Vec<(u32, Rect)> = plates.iter().enumerate().map(|(k, &(id, r))| (id, r.translate(vec2(if k % 2 == 0 { sway } else { -sway }, sway * 0.5)))).collect();
+            now = place_bars(&moved, &now, None);
+            let rects = shown(&moved, &now);
+            for (i, a) in rects.iter().enumerate() {
+                assert!(rects[i + 1..].iter().all(|b| !a.intersects(*b)), "frame {frame}: {now:?}");
+            }
+            seen.push(now.clone());
+        }
+        assert!(seen[2..].iter().all(|l| *l == seen[2]), "{seen:?}");
+        // Spread out, every one comes back down
+        let apart: Vec<(u32, Rect)> = plates.iter().enumerate().map(|(k, &(id, r))| (id, r.translate(vec2(k as f32 * 200.0, 0.0)))).collect();
+        assert!(place_bars(&apart, &now, None).iter().all(|e| e.1 == 0));
+
+        // What the crosshair's on, or what was hit last, goes down first, where it is, however far
+        // back in the bunch, and the rest keep clear of it and of each other
+        let clear = |lifts: &[(u32, u8)], when: &str| {
+            let rects = shown(&plates, lifts);
+            for (i, a) in rects.iter().enumerate() {
+                assert!(rects[i + 1..].iter().all(|b| !a.intersects(*b)), "{when}: {lifts:?}");
+            }
+        };
+        let step = |lifts: &[(u32, u8)], id: u32| lifts.iter().find(|e| e.0 == id).unwrap().1;
+        let hidden = lifts.iter().find(|e| e.1 == BAR_HIDDEN).unwrap().0;
+        let first = place_bars(&plates, &lifts, Some(hidden));
+        assert_eq!(step(&first, hidden), 0, "{first:?}");
+        clear(&first, "one left out laid down first");
+        let has_bar = |id: u32| plates.iter().any(|p| p.0 == id);
+        let frame = 1.0 / 60.0;
+        // The crosshair swept quickly across the bunch, on each for a tenth of a second: none of
+        // them comes first, and nothing moves
+        let (mut focus, mut t) = (BarFocus::default(), 0.0);
+        let mut now = lifts.clone();
+        for k in 0..plates.len() * 2 {
+            for _ in 0..6 {
+                t += frame;
+                focus = focus_bars(focus, t, Some(plates[k % plates.len()].0), None, has_bar);
+                now = place_bars(&plates, &now, focus.on.map(|f| f.0));
+            }
+        }
+        assert_eq!(focus.on, None);
+        assert_eq!(now, lifts, "a quick sweep moved bars");
+        // Slowly, a second on each: the one it's on comes first once it's stayed there a moment,
+        // and bars move only when that changes, never in between
+        for k in 0..plates.len() {
+            let on = plates[k].0;
+            for f in 0..60 {
+                t += frame;
+                let before = (focus.on.map(|f| f.0), now.clone());
+                focus = focus_bars(focus, t, Some(on), None, has_bar);
+                now = place_bars(&plates, &now, focus.on.map(|f| f.0));
+                clear(&now, "slow sweep");
+                if focus.on.map(|f| f.0) == before.0 {
+                    assert_eq!(now, before.1, "bars moved with the same one first, {f} frames onto {on}");
+                }
+                if f as f64 * frame >= BAR_DWELL + frame {
+                    assert_eq!(focus.on.map(|f| f.0), Some(on));
+                    assert_eq!(step(&now, on), 0);
+                }
+            }
+        }
+        // Off them all, the last one stays first; something else hit takes it at once, but not
+        // while it's only just been taken
+        let last = plates[plates.len() - 1].0;
+        for _ in 0..60 {
+            t += frame;
+            focus = focus_bars(focus, t, None, None, has_bar);
+        }
+        assert_eq!(focus.on.map(|f| f.0), Some(last));
+        let struck = plates[0].0;
+        t += frame;
+        focus = focus_bars(focus, t, None, Some((struck, t)), has_bar);
+        assert_eq!(focus.on.map(|f| f.0), Some(struck));
+        t += frame;
+        let again = focus_bars(focus, t, None, Some((last, t)), has_bar);
+        assert_eq!(again.on.map(|f| f.0), Some(struck), "taken again too soon");
+        // And once its bar's gone, nothing's first
+        assert_eq!(focus_bars(focus, t + 1.0, None, None, |id| id != struck).on, None);
+    }
+
+    /// Experience gained goes up as many levels as it makes, each raising health at full; the level,
+    /// the experience towards the next and every weapon's item level go in the save and come back;
+    /// and a save from before there were levels has the player and all they carry at the floor of
+    /// the furthest realm reached
+    #[test]
+    fn levels_are_earned_saved_and_come_back() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        assert_eq!(game.level(), (1, 0.0));
+        assert_eq!(game.max_health(), MAX_HEALTH);
+        game.gain_experience(levels::needed(1) + levels::needed(2) + 5.0, None);
+        assert_eq!(game.level, 3);
+        assert!((game.experience - 5.0).abs() < 1e-9 && game.levelled == 0.0);
+        assert!(game.max_health() > MAX_HEALTH);
+        // Never past the cap
+        game.gain_experience(1e9, None);
+        assert_eq!(game.level(), (levels::LEVEL_CAP, 1.0));
+        game.set_level(14);
+        game.experience = 33.0;
+        let w = game.slots.iter().find_map(|(i, _)| if let Item::Weapon(w) = i { Some(*w) } else { None }).unwrap();
+        let before = game.weapons[w].profile.stat("physicalDamage") + game.weapons[w].profile.stat("spellDamage");
+        game.weapons[w].set_level(12, 0);
+        let after = game.weapons[w].profile.stat("physicalDamage") + game.weapons[w].profile.stat("spellDamage");
+        assert!((after / before - levels::weapon_power(12)).abs() < 1e-9, "{before} to {after}");
+        let carried: save::CarriedSave = serde_json::from_str(&serde_json::to_string(&game.carried_save()).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&carried, &game.world_save(), game.vitals());
+        assert_eq!((other.level, other.experience), (14, 33.0));
+        let levels_of = |g: &Game| g.slots.iter().filter_map(|(i, _)| if let Item::Weapon(w) = i { Some(g.weapons[*w].item_level()) } else { None }).collect::<Vec<_>>();
+        assert_eq!(levels_of(&other), levels_of(&game));
+        assert!(levels_of(&other).contains(&12));
+        // From before there were levels
+        let mut old = carried.clone();
+        old.level = None;
+        old.experience = 0.0;
+        for slot in &mut old.slots {
+            if let save::ItemSave::Weapon(w) = &mut slot.item {
+                w.level = None;
+            }
+        }
+        let text = serde_json::to_string(&old).unwrap();
+        assert!(!text.contains("\"level\""), "{text}");
+        let mut legacy = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        legacy.set_legacy_level(levels::legacy_level(3));
+        legacy.restore(&serde_json::from_str(&text).unwrap(), &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert_eq!(legacy.level, levels::BANDS[3].lo);
+        assert!(levels_of(&legacy).iter().all(|&l| l == levels::BANDS[3].lo));
+        // A new character starts at the first again
+        legacy.new_character(3);
+        assert_eq!(legacy.level(), (1, 0.0));
+    }
+
+    /// A bell in a save from before bells were taken out comes back a sceptre of the same rarity
+    /// and level, its jewels still in it, in the bag and on a merchant's stall alike
+    #[test]
+    fn saved_bells_come_back_as_sceptres() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let library = &game.library;
+        let censer = library.family("censer").unwrap();
+        let scepter = library.family("scepter").unwrap();
+        // A legendary bell rung with the Knelling Geode, which a sceptre can't take, and a plain one
+        let pick = |id: &str| library.components.iter().position(|c| c.id == id).unwrap();
+        let bells = [
+            (vec!["crystal_shaft", "halo_focus", "knelling_crystal", "rune_bands"], 0x00be_11u32, 23u32, 1u32),
+            (vec!["oak_shaft", "brazen_focus", "quartz_crystal", "leather_bands"], 0x7011, 4, 0),
+        ];
+        let mut carried = game.carried_save();
+        for (k, (parts, seed, level, jewels)) in bells.iter().enumerate() {
+            carried.slots[k] = save::SlotSave { item: save::ItemSave::Weapon(save::WeaponSave { family: "bell".into(), parts: parts.iter().map(|p| p.to_string()).collect(), seed: *seed, name: None, level: Some(*level), jewels: *jewels }), count: 1 };
+        }
+        let text = serde_json::to_string(&carried).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&serde_json::from_str(&text).unwrap(), &game.world_save(), game.vitals());
+        for (k, (parts, seed, level, jewels)) in bells.iter().enumerate() {
+            let Item::Weapon(w) = other.slots[k].0 else { panic!("bell {k} didn't come back") };
+            let back = &other.weapons[w];
+            // As rare as the same parts make a censer, whose tags bring the same synergies a
+            // bell's did
+            let was = Weapon::assemble(library, censer, parts.iter().map(|p| pick(p)).collect(), *seed).grade;
+            assert_eq!(back.family, scepter);
+            assert_eq!(back.grade, was, "bell {k}");
+            assert_eq!((back.item_level(), back.jewels), (*level + *jewels, *jewels));
+            assert!(back.parts.iter().all(|&p| library.components[p].fits("scepter")));
+        }
+    }
+
+    /// A hand cannon in a save from when it had its long wooden stick comes back the same weapon,
+    /// with each stock it could have, its parts, grade, level and jewels all as they were: its stock
+    /// part's only drawn short now, under its breech, and the stick's gone from it
+    #[test]
+    fn saved_hand_cannons_come_back_without_their_stick() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let library = &game.library;
+        let cannon = library.family("handcannon").unwrap();
+        let stocks = library.fitting(cannon, "stock");
+        assert!(stocks.len() >= 10, "hand cannons take every gun stock they did");
+        let mut carried = game.carried_save();
+        let saved: Vec<(Vec<&str>, u32, u32, u32)> = stocks
+            .iter()
+            .enumerate()
+            .map(|(k, &s)| (vec!["iron_barrel", library.components[s].id.as_str(), "matchlock", "plain_grip"], 0xca11 + k as u32, 3 + k as u32, (k % 2) as u32))
+            .collect();
+        let rest = std::mem::take(&mut carried.slots);
+        for (parts, seed, level, jewels) in &saved {
+            carried.slots.push(save::SlotSave { item: save::ItemSave::Weapon(save::WeaponSave { family: "handcannon".into(), parts: parts.iter().map(|p| p.to_string()).collect(), seed: *seed, name: None, level: Some(*level), jewels: *jewels }), count: 1 });
+        }
+        carried.slots.extend(rest);
+        let text = serde_json::to_string(&carried).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&serde_json::from_str(&text).unwrap(), &game.world_save(), game.vitals());
+        for (k, (parts, seed, level, jewels)) in saved.iter().enumerate() {
+            let Item::Weapon(w) = other.slots[k].0 else { panic!("hand cannon {k} didn't come back") };
+            let back = &other.weapons[w];
+            let ids: Vec<usize> = parts.iter().map(|p| library.components.iter().position(|c| c.id == *p).unwrap()).collect();
+            assert_eq!(back.family, cannon);
+            assert_eq!(back.parts, ids, "{parts:?}");
+            assert_eq!(back.grade, Weapon::assemble(library, cannon, ids.clone(), *seed).grade);
+            assert_eq!((back.item_level(), back.jewels), (*level + *jewels, *jewels));
+            // Nothing far back behind where it's held, as the stick was, half a meter of it
+            let look = crate::weapons::look_of(library, cannon, &ids);
+            let (model, anchor) = &look.frames[0];
+            let back_end = anchor.x - model.size[0] as f64 * 0.5 / look.res;
+            assert!(look.grip.x - back_end < 0.11, "{parts:?}: reaches {:.2} m back behind where it's held", look.grip.x - back_end);
+        }
+    }
+
+    /// What's slain gives experience by its level and what it was, and drops weapons of about its
+    /// level: a monster's within one under to three over, a raid boss's leaning high
+    #[test]
+    fn foes_give_experience_and_weapons_of_their_level() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let raid_key = [10, 20, -9001];
+        game.raid_lairs.insert(raid_key, 1);
+        assert_eq!(slain_of(Look::Skeleton, None, &game.raid_lairs), Slain::Monster);
+        assert_eq!(slain_of(Look::Golem, Some([1, 2, 3]), &game.raid_lairs), Slain::Boss);
+        assert_eq!(slain_of(Look::StormDrake, Some(raid_key), &game.raid_lairs), Slain::Raid);
+        assert_eq!(slain_of(Look::Ysveth, None, &game.raid_lairs), Slain::Finale);
+        for _ in 0..400 {
+            let Item::Weapon(w) = game.roll_weapon(1.0, false, (20, Source::Found)) else { panic!() };
+            assert!((19..=23).contains(&game.weapons[w].item_level()));
+            let Item::Weapon(w) = game.roll_weapon_for(Look::Golem, 1.0, false, (20, Source::Raid)) else { panic!() };
+            assert!((20..=23).contains(&game.weapons[w].item_level()));
+        }
+        // What's about is at the player's level, whichever realm it is
+        game.set_band(levels::BANDS[2]);
+        game.set_level(3);
+        assert_eq!(game.area_level(), 3);
+        game.set_level(40);
+        assert_eq!(game.area_level(), 40);
+        assert!(game.foe_damage() > 1.0 && game.foe_toughness() > 1.0);
+        // A night raider from further on comes at the player's level too
+        assert_eq!(game.foe_level_of(Look::Skeleton, 0.5), 40);
+    }
+
+    /// Every node of the skill web does what it says: each of what it gives, taken alone, moves
+    /// what the game's stats make of it the way it says, see skills::Stat
+    #[test]
+    fn every_skill_node_does_what_it_says() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.feet = Some(Vector3::new(4.0, 4.0, 4.0));
+        // A weapon with each stat a node can change, of each kind
+        let library = Library::load();
+        let mut wanted: Vec<(Kind, &str)> = Vec::new();
+        for kind in [Kind::Melee, Kind::Ranged, Kind::Magic] {
+            for stat in ["physicalDamage", "spellDamage", "elementalDamage", "attackSpeed", "drawSpeed", "reloadSpeed", "castSpeed", "critChance", "critDamage", "range", "projectileSpeed", "manaCost", "area", "statusPotency", "knockback"] {
+                wanted.push((kind, stat));
+            }
+        }
+        let mut by: HashMap<(u8, &str), usize> = HashMap::new();
+        for seed in 0..6000u32 {
+            if by.len() == wanted.len() {
+                break;
+            }
+            let w = library.generate(hash(seed ^ 0x5ce11), None, 3.0);
+            if library.families[w.family].tool.is_some() {
+                continue;
+            }
+            for &(kind, stat) in &wanted {
+                if w.kind() == kind && w.profile.stat(stat) > 0.0 && !by.contains_key(&(kind as u8, stat)) {
+                    by.insert((kind as u8, stat), game.weapons.len());
+                }
+            }
+            game.weapons.push(w);
+        }
+        let probe = |g: &mut Game, stat: Stat| -> f64 {
+            g.boost_weapons();
+            let weapon = |kind: Kind, name: &str| by.get(&(kind as u8, name)).map_or(0.0, |&w| g.weapons[w].profile.stat(name));
+            match stat {
+                Stat::MeleeDamage | Stat::Damage => weapon(Kind::Melee, "physicalDamage"),
+                Stat::RangedDamage => weapon(Kind::Ranged, "physicalDamage"),
+                Stat::MagicDamage => weapon(Kind::Magic, "spellDamage"),
+                Stat::MeleeSpeed => weapon(Kind::Melee, "attackSpeed"),
+                Stat::RangedSpeed => weapon(Kind::Ranged, "drawSpeed") + weapon(Kind::Ranged, "reloadSpeed"),
+                Stat::MagicSpeed => weapon(Kind::Magic, "castSpeed"),
+                Stat::CritChance => weapon(Kind::Melee, "critChance") + weapon(Kind::Ranged, "critChance"),
+                Stat::CritDamage => weapon(Kind::Melee, "critDamage") + weapon(Kind::Ranged, "critDamage"),
+                Stat::ElementalDamage => weapon(Kind::Magic, "elementalDamage") + weapon(Kind::Melee, "elementalDamage"),
+                Stat::MeleeReach => weapon(Kind::Melee, "range"),
+                Stat::ProjectileSpeed => weapon(Kind::Ranged, "projectileSpeed") + weapon(Kind::Magic, "projectileSpeed"),
+                Stat::ManaCost => weapon(Kind::Magic, "manaCost"),
+                Stat::Area => weapon(Kind::Magic, "area") + weapon(Kind::Melee, "area"),
+                Stat::StatusPotency => weapon(Kind::Melee, "statusPotency") + weapon(Kind::Magic, "statusPotency"),
+                Stat::Knockback => weapon(Kind::Melee, "knockback"),
+                Stat::GatherSpeed => g.gather_speed(),
+                Stat::MaxHealth | Stat::MaxHealthPct => g.max_health(),
+                Stat::Armour => 1.0 - g.armoured(),
+                Stat::Regen => g.regen(),
+                Stat::ResistFire | Stat::ResistPoison | Stat::ResistFrost => 1.0 - g.resisted(stat),
+                Stat::Potion => g.potion_boost(),
+                Stat::MoveSpeed => g.pace(),
+                Stat::Glide => g.glide_boost(),
+                Stat::HookReach => g.hook_reach(),
+                Stat::SpecialRecharge => g.charge_rate(),
+                Stat::Thorns => g.thorns(),
+                Stat::Leech => g.leech(),
+                Stat::GoldFind => g.more_gold(1000) as f64,
+                Stat::Experience => g.experience_boost(),
+                Stat::Backstab => 1.0 + g.combat.backstab(),
+            }
+        };
+        let web = game.web.clone();
+        let mut checked = HashSet::new();
+        for (k, node) in web.nodes.iter().enumerate().filter(|(_, n)| n.kind != skills::Kind::Start) {
+            for e in &node.effects {
+                game.forget_skills();
+                let before = probe(&mut game, e.stat);
+                game.taken[k] = true;
+                game.retotal();
+                let after = probe(&mut game, e.stat);
+                // Leech and thorns start at nothing, so can only go up
+                assert!((after - before) * e.value.signum() > 1e-9, "{} ({}): {:?} {} did nothing, {before} to {after}", node.name, node.id, e.stat, e.value);
+                checked.insert(e.stat);
+            }
+        }
+        game.forget_skills();
+        // And every stat a node could give is given by one
+        assert!(Stat::ALL.iter().all(|s| checked.contains(s)), "no node gives {:?}", Stat::ALL.iter().filter(|s| !checked.contains(s)).collect::<Vec<_>>());
+    }
+
+    /// The nodes taken, the bonus points and what they were claimed for go in the save and come
+    /// back; a save from before the web has every point to spend; a realm's three raid bosses
+    /// slain give a point once, a finale two
+    #[test]
+    fn skills_are_saved_and_points_are_earned() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        assert_eq!(game.skill_points(), 0);
+        game.set_level(10);
+        assert_eq!(game.skill_points(), 9);
+        game.take_skills(5);
+        assert_eq!(game.skill_points(), 4);
+        let health = game.max_health();
+        for (look, _) in realms::REALMS[0].raid_bosses {
+            game.claim_bonus(look, Slain::Raid);
+        }
+        game.claim_bonus(realms::REALMS[0].raid_bosses[0].0, Slain::Raid);
+        game.claim_bonus(Look::Ysveth, Slain::Finale);
+        game.claim_bonus(Look::Ysveth, Slain::Finale);
+        assert_eq!(game.bonus_points, REALM_POINTS + FINALE_POINTS);
+        let carried: save::CarriedSave = serde_json::from_str(&serde_json::to_string(&game.carried_save()).unwrap()).unwrap();
+        assert_eq!(carried.skills.len(), 5);
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&carried, &game.world_save(), game.vitals());
+        assert_eq!(other.taken, game.taken);
+        assert_eq!(other.skill_points(), game.skill_points());
+        assert_eq!(other.max_health(), health);
+        assert_eq!(other.carried_save(), game.carried_save());
+        // From before there was a web: every point to spend
+        let mut old = carried.clone();
+        old.skills.clear();
+        old.bonus_points = 0;
+        old.claimed.clear();
+        other.restore(&old, &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert_eq!(other.skill_points(), 9);
+        // A node no longer on the web, or no longer joined to the start, is left out
+        let mut odd = carried.clone();
+        odd.skills = vec!["no such node".into(), "melee_n7".into()];
+        other.restore(&odd, &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert_eq!(other.taken.iter().filter(|t| **t).count(), 1);
+    }
+
+    /// A jewel sets only into a weapon of its own kind and rarity with a socket free, lifting it a
+    /// level each, never past the item level cap; the jewels carried and those set go in the save
+    /// and come back; a save from before them has every socket empty
+    #[test]
+    fn jewels_set_lift_weapons_and_are_saved() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.slots.clear();
+        // A rare melee weapon and a common bow
+        let library = Library::load();
+        let rare = (0..4000u32).map(|s| library.generate(hash(s ^ 0x7e3), None, 2.0)).find(|w| w.grade == 2 && w.kind() == Kind::Melee && library.families[w.family].tool.is_none()).unwrap();
+        let bow = (0..4000u32).map(|s| library.generate(hash(s ^ 0x7e4), None, 0.5)).find(|w| w.grade == 0 && w.kind() == Kind::Ranged).unwrap();
+        game.give_weapon(rare);
+        game.give_weapon(bow);
+        let slot_of = |g: &Game, f: &dyn Fn(Item) -> bool| g.slots.iter().position(|(i, _)| f(*i)).unwrap();
+        let sword = slot_of(&game, &|i| matches!(i, Item::Weapon(_)));
+        let Item::Weapon(w) = game.slots[sword].0 else { panic!() };
+        assert_eq!(game.weapons[w].grade, 2);
+        game.weapons[w].set_level(20, 0);
+        game.give_jewels("melee_rare", 3);
+        game.give_jewels("ranged_rare", 1);
+        game.give_jewels("melee_epic", 1);
+        let jewel = |g: &Game, id: &str| slot_of(g, &|i| i == Item::Jewel(crate::jewels::by_id(id).unwrap()));
+        // Not another kind's, nor another rarity's
+        assert!(!game.socket(jewel(&game, "ranged_rare"), sword));
+        assert!(!game.socket(jewel(&game, "melee_epic"), sword));
+        let before = game.weapons[w].profile.stat("physicalDamage");
+        assert!(game.socket(jewel(&game, "melee_rare"), sword));
+        assert_eq!(game.weapons[w].item_level(), 21);
+        assert!(game.weapons[w].profile.stat("physicalDamage") > before);
+        assert!(game.socket(jewel(&game, "melee_rare"), sword));
+        // A rare one has two sockets, both full now
+        assert!(!game.socket(jewel(&game, "melee_rare"), sword));
+        assert_eq!((game.weapons[w].jewels, game.weapons[w].item_level()), (2, 22));
+        assert_eq!(game.slots[jewel(&game, "melee_rare")].1, 1);
+        // Never past the cap
+        game.weapons[w].set_level(levels::ITEM_CAP - 1, 0);
+        assert!(game.socket(jewel(&game, "melee_rare"), sword));
+        assert_eq!(game.weapons[w].item_level(), levels::ITEM_CAP);
+        game.give_jewels("melee_rare", 1);
+        assert!(!game.socket(jewel(&game, "melee_rare"), sword), "past the cap");
+        game.weapons[w].set_level(levels::ITEM_CAP, 2);
+        assert_eq!(game.weapons[w].item_level(), levels::ITEM_CAP);
+        // Saved and back
+        game.weapons[w].set_level(30, 1);
+        let carried: save::CarriedSave = serde_json::from_str(&serde_json::to_string(&game.carried_save()).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore(&carried, &game.world_save(), game.vitals());
+        assert_eq!(other.carried_save(), game.carried_save());
+        let Item::Weapon(ow) = other.slots[sword].0 else { panic!() };
+        assert_eq!((other.weapons[ow].jewels, other.weapons[ow].item_level()), (1, 31));
+        assert!(other.slots.iter().any(|(i, n)| *i == Item::Jewel(crate::jewels::by_id("melee_rare").unwrap()) && *n == 1));
+        // From before there were jewels: every socket empty
+        let mut old = carried.clone();
+        for slot in &mut old.slots {
+            if let save::ItemSave::Weapon(sw) = &mut slot.item {
+                sw.jewels = 0;
+            }
+        }
+        let text = serde_json::to_string(&old).unwrap();
+        other.restore(&serde_json::from_str(&text).unwrap(), &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        let Item::Weapon(ow) = other.slots[sword].0 else { panic!() };
+        assert_eq!((other.weapons[ow].jewels, other.weapons[ow].item_level()), (0, 30));
+    }
+
+    /// While a realm's guardians stand its raid bosses are warded, but not its finale, its
+    /// guardians nor anything else; the last slain, none are. The guardians slain are kept with
+    /// the realm's save, and come back with it.
+    #[test]
+    fn raid_bosses_are_warded_and_guardians_slain_are_saved() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let (raid, finale, guardian) = ([10, 20, -9001], [30, 40, -9003], [50, 60, -9102]);
+        assert!(realms::is_finale_key(&finale) && realms::is_guardian_key(&guardian) && !realms::is_guardian_key(&raid));
+        game.raid_lairs.insert(raid, 1);
+        game.raid_lairs.insert(finale, 1);
+        let at = Vector3::new(4.0, 4.0, 4.0);
+        game.animals.clear();
+        for (look, key) in [(Look::StormDrake, raid), (Look::ElderWyrm, finale), (Look::Golem, guardian), (Look::Direwolf, [1, 2, 3])] {
+            game.animals.push(Animal::boss(look, at, key, 9));
+        }
+        let warded = |game: &Game| game.animals.iter().map(|a| a.status.warded).collect::<Vec<_>>();
+        game.set_wards(Some((2, 4)));
+        assert_eq!(warded(&game), vec![Some((2, 4)), None, None, None]);
+        assert_eq!(game.warded_bosses().len(), 1);
+        game.set_wards(None);
+        assert!(warded(&game).iter().all(Option::is_none));
+        // Slain, saved and back
+        game.count_as_defeated(guardian);
+        let done: save::WorldSave = serde_json::from_str(&serde_json::to_string(&game.world_save()).unwrap()).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore_world(&done);
+        assert!(other.is_defeated(&guardian) && !other.is_defeated(&raid));
+    }
+
+    /// A saved weapon's made again of the parts it was saved with, never rolled again, so however
+    /// the odds of what rolls change, a save from before keeps every weapon it has just as it was,
+    /// those carried and those on the stalls looked at
+    #[test]
+    fn saved_weapons_stay_the_same_whatever_the_odds() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.arm(31, 60.0);
+        game.stock([10, 11, 12]);
+        let (carried, done) = (game.carried_save(), game.world_save());
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        // Odds nothing like them: every part mythic
+        let top = other.library.rarities.len() - 1;
+        for (k, rarity) in other.library.rarities.iter_mut().enumerate() {
+            rarity.chance = if k == top { 1.0 } else { 0.0 };
+        }
+        other.restore(&carried, &done, game.vitals());
+        assert_eq!(other.carried_save(), carried);
+        assert_eq!(other.world_save(), done);
+        let made = |g: &Game| {
+            let wares = g.stocks.values().flatten().filter_map(|w| if let Ware::Weapon(i) = w { Some(*i) } else { None });
+            let carried = g.slots.iter().filter_map(|(i, _)| if let Item::Weapon(w) = i { Some(*w) } else { None });
+            carried.chain(wares).map(|w| &g.weapons[w]).map(|w| (w.name.clone(), w.grade, w.parts.clone(), format!("{:?}", w.profile.stats), w.profile.special.as_ref().map(|s| s.0))).collect::<Vec<_>>()
+        };
+        assert_eq!(made(&other), made(&game));
+        assert!(made(&game).len() >= KIT.len() + MERCHANT_LUCKS.len());
+    }
+
+    /// What a new player starts with is plain: one of each kind of weapon in KIT, common to rare
+    /// and nothing with a special attack, however many kits are rolled
+    #[test]
+    fn new_players_start_with_plain_gear() {
+        let library = Library::load();
+        for seed in 0..300u32 {
+            let kit = kit(&library, hash(seed), KIT_LUCK, Some(KIT_RAREST));
+            assert_eq!(kit.len(), KIT.len());
+            for (family, seed, odds) in &kit {
+                let (f, grade, special) = library.preview(*seed, Some(*family), odds);
+                assert!(f == *family && grade <= KIT_RAREST && special.is_none(), "{} from {seed}", library.families[f].id);
+            }
+        }
+        // As the game arms them
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let game = Game::new(&world, &dry, 12, Vector3::new(4.0, 4.0, 4.0));
+        let weapons: Vec<&Weapon> = game.slots.iter().filter_map(|(i, _)| if let Item::Weapon(w) = i { Some(&game.weapons[*w]) } else { None }).collect();
+        assert_eq!(weapons.len(), KIT.len());
+        assert!(weapons.iter().all(|w| w.grade <= KIT_RAREST && w.profile.special.is_none() && w.parts.iter().all(|&p| library.components[p].tier <= KIT_RAREST)));
+    }
+
+    /// The hoard of every huge raid boss and finale has a weapon with a special attack in it,
+    /// first, most realm raid bosses' do, and a lesser boss's only now and then
+    #[test]
+    fn raid_bosses_leave_special_weapons() {
+        let library = Library::load();
+        let mut rng = 7;
+        let mut sure = [0usize; 3];
+        for hoard in [Hoard::Boss, Hoard::Raid, Hoard::Huge] {
+            for _ in 0..2000 {
+                let rolls = hoard_rolls(hoard, &mut rng);
+                assert_eq!(rolls.len(), if hoard == Hoard::Boss { BOSS_LUCKS.len() } else { RAID_LUCKS.len() });
+                assert!(rolls.iter().skip(1).all(|r| !r.1), "only the best is sure to have one");
+                sure[hoard as usize] += rolls[0].1 as usize;
+            }
+        }
+        assert_eq!(sure[Hoard::Boss as usize], 0);
+        assert!((1400..1800).contains(&sure[Hoard::Raid as usize]), "{sure:?}");
+        assert_eq!(sure[Hoard::Huge as usize], 2000);
+        // And that one has, however lucky it's rolled
+        for seed in 0..200u32 {
+            for luck in [RAID_LUCKS[0], RAID_LUCKS[0] * loot_scaling(realms::scaling_in(realms::REALM_COUNT - 1, realms::REALM_COUNT - 1, 0))] {
+                let s = library.special_seed(hash(seed), None, luck);
+                assert!(library.special_of(s, None, luck).is_some(), "{seed} at {luck}");
+            }
+        }
+    }
+
+    /// Raw meat in hand roasts over a fire into roast meat, more filling, which goes in the save,
+    /// see hearths.rs
+    #[test]
+    fn meat_roasts_over_a_fire() {
+        let size = [64u32, 64, 64];
+        let mut occupancy = vec![0u128; 16 * 16 * 8];
+        occupancy[..16 * 16 * 2].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 4;
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(32.0, 32.0, 16.0));
+        assert!(Item::RoastMeat.food() > Item::Meat.food());
+        assert!(food_price(Item::RoastMeat) > food_price(Item::Meat));
+        game.add_item(Item::Meat, 2);
+        game.selected = game.slots.iter().position(|(i, _)| *i == Item::Meat).unwrap();
+        assert!(game.holding_raw_meat());
+        assert_eq!(game.cook_selected(), 1);
+        assert!(game.holding_raw_meat());
+        assert_eq!(game.cook_selected(), 0);
+        assert!(!game.slots.iter().any(|(i, _)| *i == Item::Meat));
+        assert_eq!(game.slots.iter().find(|(i, _)| *i == Item::RoastMeat).map(|s| s.1), Some(2));
+        assert!(!game.holding_raw_meat());
+        // Nothing to roast, nothing changes
+        let before = game.slots.clone();
+        game.cook_selected();
+        assert_eq!(game.slots, before);
+        // Through the save
+        let carried = game.carried_save();
+        let text = serde_json::to_string(&carried).unwrap();
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(32.0, 32.0, 16.0));
+        other.restore(&serde_json::from_str(&text).unwrap(), &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert_eq!(other.slots.iter().find(|(i, _)| *i == Item::RoastMeat).map(|s| s.1), Some(2));
+    }
+
+    /// Every travelling merchant sells a pair of wings priced for what a few fights bring in, a
+    /// stall saved before they did too, and the next plainest once it's bought; wings bought are
+    /// put on at once, and how to glide on them is said
+    #[test]
+    fn every_merchant_sells_wings() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        let sells = |game: &Game, key: [i64; 3], kind: Option<u8>| game.stocks[&key].iter().any(|w| matches!(*w, Ware::Food(Item::Wings(k), 1) if kind.is_none_or(|kind| k == kind)));
+        let mut rarer = 0;
+        for n in 0..40 {
+            let key = [n, 3 * n, 7];
+            game.stock(key);
+            assert!(sells(&game, key, Some(wings::GULL)), "merchant {n}");
+            rarer += game.stocks[&key].iter().filter(|w| matches!(w, Ware::Food(Item::Wings(_), _))).count() - 1;
+        }
+        assert!((5..35).contains(&rarer), "{rarer} of 40 have a rarer pair too");
+        assert!(wings::KINDS[wings::GULL as usize].price <= 200);
+        let key = [0, 0, 7];
+        game.shop = Some(key);
+        game.set_gold(1000);
+        let k = game.stocks[&key].iter().position(|w| matches!(w, Ware::Food(Item::Wings(wings::GULL), _))).unwrap();
+        game.buy(k);
+        assert_eq!(game.worn_wings(), Some(wings::GULL));
+        assert_eq!(game.gold, 1000 - wings::KINDS[wings::GULL as usize].price);
+        assert!(game.messages.iter().any(|(m, _)| m.contains("hold Space in the air to glide")));
+        game.stock(key);
+        assert!(game.stocks[&key].iter().any(|w| matches!(*w, Ware::Food(Item::Wings(k), _) if k != wings::GULL)), "the next plainest");
+        // A stall saved before merchants sold wings has a pair as soon as it's looked at
+        let mut done = game.world_save();
+        for stock in &mut done.stocks {
+            stock.wares.retain(|w| !matches!(w, save::WareSave::Goods { item: save::ItemSave::Wings { .. }, .. }));
+        }
+        let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+        other.restore_world(&done);
+        assert!(!sells(&other, key, None));
+        other.stock(key);
+        assert!(sells(&other, key, Some(wings::GULL)));
+        // Nor does the royal armoury sell the plain ones
+        other.royals.insert([1, 1, 1]);
+        other.stock([1, 1, 1]);
+        assert!(!sells(&other, [1, 1, 1], Some(wings::GULL)));
+    }
+
+    /// Every kind of wings, the new ones too, comes back from a save as it went in: worn, in the
+    /// pack and on a merchant's stall, and a kind a later Innert has that this one doesn't is left
+    /// out rather than spoiling the save
+    #[test]
+    fn every_kind_of_wings_is_saved() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        for (k, kind) in wings::KINDS.iter().enumerate() {
+            let k = k as u8;
+            let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+            let spare = (k + 1) % wings::KINDS.len() as u8;
+            game.gain_wings(k);
+            game.gain_wings(spare);
+            game.stocks.insert([1, 2, 3], vec![Ware::Food(Item::Wings(k), 1)]);
+            let text = serde_json::to_string(&game.carried_save()).unwrap();
+            assert!(text.contains(kind.id), "{text}");
+            let (carried, done) = (serde_json::from_str(&text).unwrap(), game.world_save());
+            let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+            other.restore(&carried, &done, game.vitals());
+            assert_eq!(other.worn_wings(), Some(k), "{}", kind.name);
+            assert!(other.slots.contains(&(Item::Wings(spare), 1)));
+            assert!(matches!(other.stocks[&[1, 2, 3]][..], [Ware::Food(Item::Wings(s), 1)] if s == k));
+        }
+        let later: save::CarriedSave = serde_json::from_str(r#"{"worn": "phoenix", "slots": [{"item": {"kind": "wings", "of": "phoenix"}}, {"item": {"kind": "wings", "of": "roc"}}]}"#).unwrap();
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.restore(&later, &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert_eq!(game.worn_wings(), None);
+        assert_eq!(game.slots, vec![(Item::Wings(wings::by_id("roc").unwrap()), 1)]);
+    }
+
+    /// A game saved wearing wings that truly fly loads with them on, flying, and told how on
+    /// their card and when they're put on
+    #[test]
+    fn a_save_with_flying_wings_loads() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let fliers: Vec<u8> = (0..wings::KINDS.len() as u8).filter(|&k| wings::KINDS[k as usize].flight.is_some()).collect();
+        assert!(fliers.len() >= 4);
+        for &k in &fliers {
+            let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+            game.gain_wings(k);
+            assert!(game.messages.iter().any(|(m, _)| m.contains("to take off and fly")), "{}", wings::KINDS[k as usize].name);
+            let text = serde_json::to_string(&game.carried_save()).unwrap();
+            let mut other = Game::new(&world, &dry, 9, Vector3::new(4.0, 4.0, 4.0));
+            other.restore(&serde_json::from_str(&text).unwrap(), &game.world_save(), game.vitals());
+            let worn = other.worn_wings().expect("worn");
+            assert_eq!(worn, k);
+            assert!(wings::KINDS[worn as usize].flight.is_some());
+        }
+        // A save from before wings flew, wearing the roc's, loads them flying now
+        let old: save::CarriedSave = serde_json::from_str(r#"{"worn": "roc", "slots": []}"#).unwrap();
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+        game.restore(&old, &save::WorldSave::default(), (50.0, 50.0, 50.0));
+        assert!(game.worn_wings().is_some_and(|k| wings::KINDS[k as usize].flight.is_some()));
+    }
+
+    /// Chests hold wings now and then, more often the luckier, and never a kind already had
+    #[test]
+    fn chests_hold_wings_now_and_then() {
+        let world = World::from_packed_occupancy([8; 3], &[0; 4], AIR);
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        // How many pairs 200 chests hold, the player's taken off them after each if not `kept`
+        let found = |luck: f64, kept: bool| {
+            let mut game = Game::new(&world, &dry, 5, Vector3::new(4.0, 4.0, 4.0));
+            let mut pairs = 0;
+            for n in 0..200 {
+                game.chests.push(Chest { position: Vector3::zeros(), heading: 0.0, key: [n, -n, 11], luck, hoard: false });
+                game.open_chest(game.chests.len() - 1);
+                let kinds: Vec<u8> = game.worn.into_iter().chain(game.slots.iter().filter_map(|(i, _)| if let Item::Wings(k) = i { Some(*k) } else { None })).collect();
+                let mut unlike = kinds.clone();
+                unlike.sort_unstable();
+                unlike.dedup();
+                assert_eq!(unlike.len(), kinds.len(), "no kind twice: {kinds:?}");
+                if !kept {
+                    pairs += kinds.len();
+                    game.worn = None;
+                    game.slots.retain(|(i, _)| !matches!(i, Item::Wings(_)));
+                }
+            }
+            pairs
+        };
+        found(3.0, true);
+        let (plain, lucky) = (found(1.2, false), found(4.5, false));
+        assert!((8..40).contains(&plain), "{plain} of 200 plain chests");
+        assert!(lucky > plain, "{lucky} of 200 lucky ones");
     }
 }

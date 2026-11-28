@@ -1,0 +1,29 @@
+{
+  "what": "Ancient Treant, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    19,
+    19,
+    62
+  ],
+  "pivot": [
+    9.28,
+    9.28,
+    10.080000000000002
+  ],
+  "anchor": [
+    0.01375000000000004,
+    0.01375000000000004,
+    -0.6300000000000001
+  ],
+  "origin": [
+    -9,
+    -9,
+    -10
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    48228,
+    "1bde2c3e2604bf02"
+  ]
+}

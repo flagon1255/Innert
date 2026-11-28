@@ -1,0 +1,29 @@
+{
+  "what": "Necromancer, chest",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    8,
+    9
+  ],
+  "pivot": [
+    2.72,
+    3.84,
+    0.96
+  ],
+  "anchor": [
+    0.017499999999999988,
+    0.010000000000000009,
+    -0.06
+  ],
+  "origin": [
+    -3,
+    -4,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1843,
+    "b9051feb88dc9f87"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Hoarback Mammoth, lower fore left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    22,
+    22,
+    44
+  ],
+  "pivot": [
+    10.752000000000002,
+    10.752000000000002,
+    33.024
+  ],
+  "anchor": [
+    0.015499999999999847,
+    0.015499999999999847,
+    -2.064
+  ],
+  "origin": [
+    -11,
+    -11,
+    -33
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    43533,
+    "6a6c9b44a8304c1a"
+  ]
+}

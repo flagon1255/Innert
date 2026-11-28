@@ -1,0 +1,29 @@
+{
+  "what": "Dune burrower, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    18,
+    12,
+    8
+  ],
+  "pivot": [
+    8.413,
+    6.0,
+    5.6135
+  ],
+  "anchor": [
+    0.03668750000000001,
+    0.0,
+    -0.35084375
+  ],
+  "origin": [
+    -8,
+    -6,
+    -6
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    3420,
+    "0369f55dafa98c14"
+  ]
+}

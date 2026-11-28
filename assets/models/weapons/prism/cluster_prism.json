@@ -1,0 +1,37 @@
+{
+  "what": "Prism, focus: Cluster Prism",
+  "voxels_per_meter": 192.0,
+  "size": [
+    22,
+    23,
+    44
+  ],
+  "pivot": [
+    10.084675775199393,
+    11.72097106772017,
+    -25.240000000000002
+  ],
+  "anchor": null,
+  "origin": [
+    -10,
+    -12,
+    25
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.07
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.358
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    17341,
+    "dfdb1ff2f8d127ba"
+  ]
+}

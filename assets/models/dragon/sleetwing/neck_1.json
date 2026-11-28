@@ -1,0 +1,29 @@
+{
+  "what": "sleetwing, neck 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    7,
+    8
+  ],
+  "pivot": [
+    3.04,
+    3.04,
+    3.4959999999999996
+  ],
+  "anchor": [
+    0.185,
+    0.028749999999999998,
+    -0.21849999999999997
+  ],
+  "origin": [
+    -3,
+    -3,
+    -3
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2191,
+    "bc417e0f6e36e5bc"
+  ]
+}

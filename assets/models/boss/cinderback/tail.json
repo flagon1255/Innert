@@ -1,0 +1,29 @@
+{
+  "what": "Cinderback Tortoise, tail",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    4,
+    6
+  ],
+  "pivot": [
+    6.48,
+    1.6800000000000002,
+    3.6
+  ],
+  "anchor": [
+    -0.12375000000000003,
+    0.01999999999999999,
+    -0.225
+  ],
+  "origin": [
+    -6,
+    -2,
+    -4
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1393,
+    "22932df027ae3ff2"
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "what": "Siege Crossbow, prod: Galeforce Prod, frame 2 of 5",
+  "voxels_per_meter": 128.0,
+  "size": [
+    56,
+    147,
+    8
+  ],
+  "pivot": [
+    -98.136,
+    73.66907949131529,
+    3.3200000000000003
+  ],
+  "anchor": null,
+  "origin": [
+    98,
+    -74,
+    -3
+  ],
+  "points": {
+    "grip": [
+      0.15,
+      0.0,
+      -0.11
+    ],
+    "mover_handle": [
+      -0.065,
+      0.075,
+      0.024
+    ],
+    "mover_pivot": [
+      -0.035,
+      0.0,
+      0.024
+    ],
+    "nock_1": [
+      1.1234677419354837,
+      0.0,
+      0.006
+    ],
+    "nock_2": [
+      0.7734274193548386,
+      0.0,
+      0.006
+    ],
+    "nock_3": [
+      0.44999999999999996,
+      0.0,
+      0.006
+    ],
+    "support": [
+      0.73,
+      0.0,
+      -0.11
+    ],
+    "tip": [
+      1.26,
+      0.0,
+      0.008
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    13498,
+    "d0e7abe1d2de1e63"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Worldpyre Ancient, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    124,
+    72,
+    80
+  ],
+  "pivot": [
+    64.0,
+    35.519999999999996,
+    33.599999999999994
+  ],
+  "anchor": [
+    -0.125,
+    0.03000000000000025,
+    -2.0999999999999996
+  ],
+  "origin": [
+    -64,
+    -36,
+    -34
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1426748,
+    "5fb2b2a413fdc87d"
+  ]
+}

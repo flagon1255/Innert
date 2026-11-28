@@ -1,0 +1,29 @@
+{
+  "what": "Elder Cinder Wyrm, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    37,
+    26,
+    17
+  ],
+  "pivot": [
+    13.44,
+    12.671999999999999,
+    6.912000000000001
+  ],
+  "anchor": [
+    0.31625000000000003,
+    0.020500000000000074,
+    -0.43200000000000005
+  ],
+  "origin": [
+    -13,
+    -13,
+    -7
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    9219,
+    "996a85447c370ecb"
+  ]
+}

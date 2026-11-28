@@ -1,0 +1,37 @@
+{
+  "what": "Axe, hilt: Faceted Obsidian Hilt",
+  "voxels_per_meter": 192.0,
+  "size": [
+    11,
+    11,
+    107
+  ],
+  "pivot": [
+    5.600000000000001,
+    5.5488,
+    1.8543999999999992
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -6,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.24380000000000002
+    ],
+    "tip": [
+      0.2,
+      0.0,
+      0.6298
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    16118,
+    "c18d8a6b8d0ab19b"
+  ]
+}

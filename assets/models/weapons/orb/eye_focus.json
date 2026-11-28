@@ -1,0 +1,37 @@
+{
+  "what": "Orb, focus: All-Seeing Focus",
+  "voxels_per_meter": 192.0,
+  "size": [
+    17,
+    17,
+    26
+  ],
+  "pivot": [
+    8.6,
+    8.6,
+    -20.16
+  ],
+  "anchor": null,
+  "origin": [
+    -9,
+    -9,
+    20
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.05
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.18
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    4850,
+    "20c199188851f2c3"
+  ]
+}

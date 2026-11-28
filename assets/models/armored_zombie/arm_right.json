@@ -1,0 +1,29 @@
+{
+  "what": "Armoured zombie, arm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    3,
+    4
+  ],
+  "pivot": [
+    0.6656,
+    1.98,
+    2.719999999999999
+  ],
+  "anchor": [
+    0.17715,
+    -0.03,
+    -0.16999999999999993
+  ],
+  "origin": [
+    -1,
+    -2,
+    -3
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1357,
+    "3914be562b211ba9"
+  ]
+}

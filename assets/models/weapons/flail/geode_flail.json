@@ -1,0 +1,37 @@
+{
+  "what": "Flail, blade: Geode Flail Head",
+  "voxels_per_meter": 192.0,
+  "size": [
+    35,
+    39,
+    108
+  ],
+  "pivot": [
+    19.041839441389154,
+    17.313287074715486,
+    -79.0
+  ],
+  "anchor": null,
+  "origin": [
+    -19,
+    -17,
+    79
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.1736
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.8575999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    27702,
+    "6e4ea21ef73e854e"
+  ]
+}

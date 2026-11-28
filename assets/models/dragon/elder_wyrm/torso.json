@@ -1,0 +1,29 @@
+{
+  "what": "Elder Cinder Wyrm, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    60,
+    37,
+    43
+  ],
+  "pivot": [
+    30.720000000000002,
+    18.470399999999998,
+    17.472
+  ],
+  "anchor": [
+    -0.04500000000000015,
+    0.0018500000000001293,
+    -1.092
+  ],
+  "origin": [
+    -31,
+    -18,
+    -17
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    187144,
+    "aba267fe61adce2f"
+  ]
+}

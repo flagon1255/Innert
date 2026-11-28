@@ -1,0 +1,29 @@
+{
+  "what": "Grovemaul, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    17,
+    24,
+    14
+  ],
+  "pivot": [
+    8.184,
+    11.656,
+    5.456
+  ],
+  "anchor": [
+    0.019750000000000045,
+    0.021499999999999964,
+    -0.341
+  ],
+  "origin": [
+    -8,
+    -12,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    11639,
+    "0a75bca12f71fdd0"
+  ]
+}

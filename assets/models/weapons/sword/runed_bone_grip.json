@@ -1,0 +1,37 @@
+{
+  "what": "Sword, hilt: Runed Bone Grip",
+  "voxels_per_meter": 192.0,
+  "size": [
+    12,
+    7,
+    50
+  ],
+  "pivot": [
+    6.384,
+    3.6864,
+    1.0752000000000008
+  ],
+  "anchor": null,
+  "origin": [
+    -6,
+    -4,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.1476
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      1.0796000000000001
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    9037,
+    "f717552f70bf7b69"
+  ]
+}

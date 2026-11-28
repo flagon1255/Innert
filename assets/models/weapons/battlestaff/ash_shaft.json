@@ -1,0 +1,37 @@
+{
+  "what": "Battle Staff, shaft: Ash Shaft",
+  "voxels_per_meter": 150.0,
+  "size": [
+    5,
+    5,
+    164
+  ],
+  "pivot": [
+    2.899380165289257,
+    2.609374999999999,
+    1.495625
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -3,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.44000000000000006
+    ],
+    "tip": [
+      0.07200000000000001,
+      0.0,
+      1.5825000000000002
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    9674,
+    "0328a4c3b5f97b4d"
+  ]
+}

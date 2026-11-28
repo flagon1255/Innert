@@ -1,0 +1,29 @@
+{
+  "what": "Hollow Mother, forearm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    5,
+    25
+  ],
+  "pivot": [
+    1.288,
+    2.192,
+    22.8
+  ],
+  "anchor": [
+    0.0445,
+    0.01924999999999999,
+    -1.425
+  ],
+  "origin": [
+    -1,
+    -2,
+    -23
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1581,
+    "9be2accfdb5c0e66"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "squallwing, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    26,
+    13,
+    15
+  ],
+  "pivot": [
+    13.440000000000001,
+    6.216,
+    5.88
+  ],
+  "anchor": [
+    -0.02750000000000008,
+    0.017749999999999988,
+    -0.3675
+  ],
+  "origin": [
+    -13,
+    -6,
+    -6
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    10431,
+    "9b27870c3ed66c66"
+  ]
+}

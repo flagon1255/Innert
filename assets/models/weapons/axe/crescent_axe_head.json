@@ -1,0 +1,37 @@
+{
+  "what": "Axe, blade: Crescent Axe Head",
+  "voxels_per_meter": 192.0,
+  "size": [
+    92,
+    7,
+    69
+  ],
+  "pivot": [
+    46.075823309491184,
+    3.5695999999999994,
+    -80.0
+  ],
+  "anchor": null,
+  "origin": [
+    -46,
+    -4,
+    80
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2336
+    ],
+    "tip": [
+      0.24,
+      0.0,
+      0.5955999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    105634,
+    "58f961bc2c95da63"
+  ]
+}

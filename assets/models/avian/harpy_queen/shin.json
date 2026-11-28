@@ -1,0 +1,29 @@
+{
+  "what": "Harpy Queen, shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    8,
+    25
+  ],
+  "pivot": [
+    2.9195295910784447,
+    3.888000000000001,
+    22.944653891400545
+  ],
+  "anchor": [
+    0.1300294005575972,
+    0.006999999999999951,
+    -1.434040868212534
+  ],
+  "origin": [
+    -3,
+    -4,
+    -23
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1761,
+    "b3c5cf1b7dcb84b0"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Frost Wyrm, fore shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    5,
+    14
+  ],
+  "pivot": [
+    3.1735098041686056,
+    2.01168,
+    12.1811357330342
+  ],
+  "anchor": [
+    0.08290563723946215,
+    0.03051999999999999,
+    -0.7613209833146375
+  ],
+  "origin": [
+    -3,
+    -2,
+    -12
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1656,
+    "4341e0beb5d5a69a"
+  ]
+}

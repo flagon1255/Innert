@@ -1,0 +1,29 @@
+{
+  "what": "Dreadmare, upper fore right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    7,
+    21
+  ],
+  "pivot": [
+    3.016,
+    3.016,
+    17.863999999999997
+  ],
+  "anchor": [
+    0.03025,
+    0.03025,
+    -1.1164999999999998
+  ],
+  "origin": [
+    -3,
+    -3,
+    -18
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2640,
+    "cf34ada6d5a16790"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Elderhorn, tail",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    4,
+    9
+  ],
+  "pivot": [
+    4.4079999999999995,
+    1.624,
+    6.728
+  ],
+  "anchor": [
+    -0.05674999999999997,
+    0.023499999999999993,
+    -0.4205
+  ],
+  "origin": [
+    -4,
+    -2,
+    -7
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1425,
+    "8077920b235fd827"
+  ]
+}

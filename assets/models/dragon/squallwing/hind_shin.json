@@ -1,0 +1,29 @@
+{
+  "what": "squallwing, hind shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    4,
+    13
+  ],
+  "pivot": [
+    2.2339228627410437,
+    1.812,
+    10.904234728299494
+  ],
+  "anchor": [
+    0.07912982107868477,
+    0.011749999999999997,
+    -0.6815146705187184
+  ],
+  "origin": [
+    -2,
+    -2,
+    -11
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1496,
+    "61381ee8fb2cfeae"
+  ]
+}

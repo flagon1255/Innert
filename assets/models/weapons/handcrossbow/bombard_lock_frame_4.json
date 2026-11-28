@@ -1,0 +1,62 @@
+{
+  "what": "Hand Crossbow, lock: Bombard Lock, frame 4 of 4",
+  "voxels_per_meter": 128.0,
+  "size": [
+    24,
+    12,
+    3
+  ],
+  "pivot": [
+    -24.448000000000008,
+    6.272,
+    6.912
+  ],
+  "anchor": null,
+  "origin": [
+    24,
+    -6,
+    -7
+  ],
+  "points": {
+    "grip": [
+      0.10500000000000004,
+      0.0,
+      -0.078
+    ],
+    "mover_handle": [
+      0.20000000000000004,
+      0.0,
+      -0.045
+    ],
+    "mover_pivot": [
+      0.37,
+      0.0,
+      -0.034
+    ],
+    "nock_1": [
+      0.2819354838709678,
+      0.0,
+      0.006
+    ],
+    "nock_2": [
+      0.20935483870967744,
+      0.0,
+      0.006
+    ],
+    "nock_3": [
+      0.16000000000000003,
+      0.0,
+      0.006
+    ],
+    "tip": [
+      0.41000000000000003,
+      0.0,
+      0.008
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1729,
+    "769e23e58547b13b"
+  ]
+}

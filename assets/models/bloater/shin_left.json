@@ -1,0 +1,29 @@
+{
+  "what": "Bloater, shin left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    4,
+    7
+  ],
+  "pivot": [
+    2.5,
+    1.6799999999999997,
+    1.4720000000000002
+  ],
+  "anchor": [
+    0.0,
+    0.020000000000000018,
+    -0.09200000000000001
+  ],
+  "origin": [
+    -3,
+    -2,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1532,
+    "6e02739893769124"
+  ]
+}

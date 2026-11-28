@@ -1,0 +1,29 @@
+{
+  "what": "Thunderborn Giant, thigh left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    9,
+    25
+  ],
+  "pivot": [
+    4.488,
+    4.488,
+    20.328
+  ],
+  "anchor": [
+    0.0007499999999999729,
+    0.0007499999999999729,
+    -1.2705
+  ],
+  "origin": [
+    -4,
+    -4,
+    -20
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    6104,
+    "417fcec660502bed"
+  ]
+}

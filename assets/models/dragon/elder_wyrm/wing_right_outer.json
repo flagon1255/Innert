@@ -1,0 +1,29 @@
+{
+  "what": "Elder Cinder Wyrm, wing right outer",
+  "voxels_per_meter": 16.0,
+  "size": [
+    34,
+    62,
+    5
+  ],
+  "pivot": [
+    31.7184,
+    59.6928,
+    1.728
+  ],
+  "anchor": [
+    -0.9198999999999999,
+    -1.7933,
+    -0.108
+  ],
+  "origin": [
+    -32,
+    -60,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    9303,
+    "b033640fa25576b9"
+  ]
+}

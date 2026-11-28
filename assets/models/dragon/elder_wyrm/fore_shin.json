@@ -1,0 +1,29 @@
+{
+  "what": "Elder Cinder Wyrm, fore shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    16,
+    9,
+    26
+  ],
+  "pivot": [
+    5.129795207410854,
+    4.2048000000000005,
+    21.14335241428302
+  ],
+  "anchor": [
+    0.1793877995368216,
+    0.018449999999999966,
+    -1.3214595258926887
+  ],
+  "origin": [
+    -5,
+    -4,
+    -21
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    5084,
+    "95c1c50dce5648ca"
+  ]
+}

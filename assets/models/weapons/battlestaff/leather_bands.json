@@ -1,0 +1,37 @@
+{
+  "what": "Battle Staff, binding: Leather Bands",
+  "voxels_per_meter": 150.0,
+  "size": [
+    8,
+    8,
+    29
+  ],
+  "pivot": [
+    4.0132258064516115,
+    4.013225806451612,
+    -129.95548387096775
+  ],
+  "anchor": null,
+  "origin": [
+    -4,
+    -4,
+    130
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.4400000000000001
+    ],
+    "tip": [
+      0.07200000000000001,
+      0.0,
+      1.5851612903225807
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2293,
+    "7364603c41a6f16c"
+  ]
+}

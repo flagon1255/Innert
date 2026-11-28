@@ -1,0 +1,37 @@
+{
+  "what": "Scythe, blade: Gleaner's Blade",
+  "voxels_per_meter": 192.0,
+  "size": [
+    195,
+    9,
+    58
+  ],
+  "pivot": [
+    19.50399999999999,
+    4.569599999999999,
+    -231.0
+  ],
+  "anchor": null,
+  "origin": [
+    -20,
+    -5,
+    231
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.5550999999999999
+    ],
+    "tip": [
+      0.915,
+      0.0,
+      1.2076
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    31995,
+    "a238814a2b4aa1ab"
+  ]
+}

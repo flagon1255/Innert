@@ -1,0 +1,29 @@
+{
+  "what": "Ember Drake, tail 4",
+  "voxels_per_meter": 16.0,
+  "size": [
+    20,
+    9,
+    6
+  ],
+  "pivot": [
+    17.776,
+    4.256,
+    2.3396827784979735
+  ],
+  "anchor": [
+    -0.486,
+    0.015249999999999986,
+    -0.14623017365612334
+  ],
+  "origin": [
+    -18,
+    -4,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1884,
+    "e73287a8e60e8956"
+  ]
+}

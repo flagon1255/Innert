@@ -1,0 +1,29 @@
+{
+  "what": "Thornleaf Wings",
+  "voxels_per_meter": 96.0,
+  "size": [
+    174,
+    77,
+    24
+  ],
+  "pivot": [
+    1.9200000000000017,
+    58.166475972719475,
+    11.52
+  ],
+  "anchor": [
+    0.88625,
+    -0.20485912471582784,
+    -0.12
+  ],
+  "origin": [
+    -2,
+    -58,
+    -12
+  ],
+  "note": "The right wing; the left is it mirrored.",
+  "written": [
+    177926,
+    "e191e8339114070b"
+  ]
+}

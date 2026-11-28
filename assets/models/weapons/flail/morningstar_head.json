@@ -1,0 +1,37 @@
+{
+  "what": "Flail, blade: Morningstar",
+  "voxels_per_meter": 192.0,
+  "size": [
+    44,
+    43,
+    109
+  ],
+  "pivot": [
+    24.707348898543074,
+    23.412714651275724,
+    -78.0
+  ],
+  "anchor": null,
+  "origin": [
+    -25,
+    -23,
+    78
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.1736
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.8626
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    34875,
+    "9e031d3b76c4367c"
+  ]
+}

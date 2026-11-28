@@ -1,0 +1,29 @@
+{
+  "what": "Hollow Mother, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    26,
+    26,
+    59
+  ],
+  "pivot": [
+    12.512,
+    12.512,
+    44.16
+  ],
+  "anchor": [
+    0.03049999999999997,
+    0.03049999999999997,
+    -2.76
+  ],
+  "origin": [
+    -13,
+    -13,
+    -44
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    46537,
+    "6b08f95dfb1f057c"
+  ]
+}

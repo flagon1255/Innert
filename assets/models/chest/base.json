@@ -1,0 +1,25 @@
+{
+  "what": "Chest (Chest), standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    12,
+    7
+  ],
+  "pivot": [
+    4.5,
+    6.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -5,
+    -6,
+    0
+  ],
+  "note": "",
+  "written": [
+    3516,
+    "fc5bed360ea2c72b"
+  ]
+}

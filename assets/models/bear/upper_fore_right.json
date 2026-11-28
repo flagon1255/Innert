@@ -1,0 +1,29 @@
+{
+  "what": "Bear, upper fore right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    9
+  ],
+  "pivot": [
+    2.6799999999999997,
+    2.16,
+    6.5600000000000005
+  ],
+  "anchor": [
+    -0.011249999999999982,
+    0.02124999999999999,
+    -0.41000000000000003
+  ],
+  "origin": [
+    -3,
+    -2,
+    -7
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1769,
+    "421a24230148ad95"
+  ]
+}

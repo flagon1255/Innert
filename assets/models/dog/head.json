@@ -1,0 +1,29 @@
+{
+  "what": "Dog, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    4,
+    3
+  ],
+  "pivot": [
+    1.7199999999999998,
+    2.0,
+    1.3599999999999994
+  ],
+  "anchor": [
+    0.048750000000000016,
+    0.0,
+    -0.08499999999999996
+  ],
+  "origin": [
+    -2,
+    -2,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1363,
+    "6977135d231364f0"
+  ]
+}

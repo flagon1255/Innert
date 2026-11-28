@@ -1,0 +1,29 @@
+{
+  "what": "Grave Knight, shin right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    4,
+    4,
+    22
+  ],
+  "pivot": [
+    1.8304,
+    1.8304,
+    19.2896
+  ],
+  "anchor": [
+    0.010599999999999998,
+    0.010599999999999998,
+    -1.2056
+  ],
+  "origin": [
+    -2,
+    -2,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1864,
+    "9e24a3b41c5868fa"
+  ]
+}

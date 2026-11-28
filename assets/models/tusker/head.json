@@ -1,0 +1,29 @@
+{
+  "what": "Tusker, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    14,
+    8,
+    10
+  ],
+  "pivot": [
+    0.8000000000000007,
+    4.0,
+    7.199999999999999
+  ],
+  "anchor": [
+    0.38749999999999996,
+    0.0,
+    -0.44999999999999996
+  ],
+  "origin": [
+    -1,
+    -4,
+    -7
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    3004,
+    "da6d4a2c4bf39515"
+  ]
+}

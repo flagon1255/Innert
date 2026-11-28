@@ -1,0 +1,37 @@
+{
+  "what": "Staff, focus: Spire Focus",
+  "voxels_per_meter": 150.0,
+  "size": [
+    16,
+    16,
+    68
+  ],
+  "pivot": [
+    7.799999999999999,
+    7.799999999999999,
+    -221.71
+  ],
+  "anchor": null,
+  "origin": [
+    -8,
+    -8,
+    222
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.775
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      1.67
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    16057,
+    "df9e129877d49b63"
+  ]
+}

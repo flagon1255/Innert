@@ -1,0 +1,25 @@
+{
+  "what": "Serpent's tongue, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    3,
+    2
+  ],
+  "pivot": [
+    5.0,
+    1.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -5,
+    -2,
+    0
+  ],
+  "note": "",
+  "written": [
+    1288,
+    "b9e210ed7b8261ab"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Royal guard, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    10
+  ],
+  "pivot": [
+    3.0,
+    2.5,
+    0.7199999999999989
+  ],
+  "anchor": [
+    -0.03125,
+    0.0,
+    -0.04499999999999993
+  ],
+  "origin": [
+    -3,
+    -3,
+    -1
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1557,
+    "b79b9991f708c893"
+  ]
+}

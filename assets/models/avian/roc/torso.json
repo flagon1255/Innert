@@ -1,0 +1,29 @@
+{
+  "what": "Cloudreaver Roc, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    92,
+    43,
+    48
+  ],
+  "pivot": [
+    41.216,
+    21.049599999999998,
+    23.8464
+  ],
+  "anchor": [
+    0.29899999999999993,
+    0.02815000000000012,
+    -1.4904
+  ],
+  "origin": [
+    -41,
+    -21,
+    -24
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    320955,
+    "715644a6b07a546c"
+  ]
+}

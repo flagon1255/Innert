@@ -1,0 +1,37 @@
+{
+  "what": "Chakram, blade: Wheel of Noon",
+  "voxels_per_meter": 192.0,
+  "size": [
+    89,
+    3,
+    80
+  ],
+  "pivot": [
+    44.504000000000005,
+    1.3759999999999994,
+    2.3040000000000003
+  ],
+  "anchor": null,
+  "origin": [
+    -45,
+    -1,
+    -2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.016
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.17
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    13873,
+    "a41f36d621bb4efa"
+  ]
+}

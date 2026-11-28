@@ -1,0 +1,37 @@
+{
+  "what": "Hammer, core: Orbit Heart",
+  "voxels_per_meter": 192.0,
+  "size": [
+    15,
+    14,
+    12
+  ],
+  "pivot": [
+    7.112000000000002,
+    8.054400000000001,
+    -128.0
+  ],
+  "anchor": null,
+  "origin": [
+    -7,
+    -8,
+    128
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2576
+    ],
+    "tip": [
+      0.13,
+      0.0,
+      0.7315999999999999
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    4522,
+    "58b17c9486c06c29"
+  ]
+}

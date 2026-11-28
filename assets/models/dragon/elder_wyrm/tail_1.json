@@ -1,0 +1,29 @@
+{
+  "what": "Elder Cinder Wyrm, tail 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    43,
+    22,
+    24
+  ],
+  "pivot": [
+    32.011856717713655,
+    10.507856717713656,
+    11.558642389485023
+  ],
+  "anchor": [
+    -0.6569910448571035,
+    0.030758955142896505,
+    -0.7224151493428139
+  ],
+  "origin": [
+    -32,
+    -11,
+    -12
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    41237,
+    "a04de1dcc4ee4617"
+  ]
+}

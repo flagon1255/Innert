@@ -1,0 +1,29 @@
+{
+  "what": "Dune Wyrm, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    52,
+    37,
+    44
+  ],
+  "pivot": [
+    25.6,
+    18.144000000000002,
+    18.48
+  ],
+  "anchor": [
+    0.02499999999999991,
+    0.02224999999999988,
+    -1.155
+  ],
+  "origin": [
+    -26,
+    -18,
+    -18
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    151303,
+    "dd5bdee23ad495de"
+  ]
+}

@@ -1,6 +1,5 @@
-// No console window behind the game, except when debugging. Problems are shown in a box, see
-// show_error().
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+//! Innert: the game, src\bin\innert.rs, and its model editor, src\bin\innert-editor.rs, are both
+//! this, started by main() or editor_main().
 
 use egui_winit_vulkano::{
     Gui,
@@ -24,7 +23,6 @@ use vulkano::{
     command_buffer::{
         AutoCommandBufferBuilder, BlitImageInfo, BufferCopy, BufferImageCopy, ClearColorImageInfo, CommandBufferUsage,
         CopyBufferInfo, CopyBufferToImageInfo, CopyImageToBufferInfo, PrimaryAutoCommandBuffer,
-        PrimaryCommandBufferAbstract,
         allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
@@ -64,30 +62,73 @@ use winit::{
 use winit_input_helper::WinitInputHelper;
 
 mod animals;
+mod anim;
+mod assets;
 mod audio;
+mod avians;
+mod baked;
+mod bases;
+mod bindings;
+mod building;
 mod bosses;
 mod camera;
+mod character;
 mod combat;
+mod compass;
+mod crash;
+mod daynight;
+mod demis;
+mod dragons;
+mod editor;
+mod felling;
 mod effects;
 mod game;
+mod gargoyles;
+mod gates;
+mod gather;
 mod gpu_timing;
+mod hearths;
 mod hot_reload;
+mod jewels;
 mod leaves;
+mod levels;
+mod serpent_lairs;
+mod serpent_trials;
+mod serpents;
 mod limits;
 mod loading;
+mod materials;
 mod memory;
+mod merchants;
+mod night;
 mod perf;
+mod pieces;
 mod player;
 mod quality;
+mod raids;
+mod realms;
+mod rig;
+mod rope;
+mod save;
+mod session;
+mod skills;
 mod shafts;
 mod skips;
 mod staging;
 mod startup;
 mod stream;
+mod theme;
+mod tools;
 mod voxelize;
+mod vox;
 mod water;
+mod weapon_parts;
 mod weapons;
+mod wings;
 mod worldgen;
+mod guardians;
+/// Fish and sharks as the app has them, see seas.rs
+mod seas;
 
 use crate::animals::AnimalInstance;
 use crate::camera::Camera;
@@ -120,6 +161,9 @@ const STILL_HISTORY: u32 = 4096;
 const MOVING_HISTORY: u32 = 12;
 // While animals are about even a still view keeps changing, as their shadows move over the ground
 const ANIMATED_HISTORY: u32 = 32;
+// Frames a pixel keeps averaging as the sun moves on a step with the day, see daynight.rs: the light
+// changes only a little, so what was there is let go of over a few frames
+const SUN_STEP_HISTORY: u32 = 6;
 
 // Has to match the FLAG_* constants in shaders\traverse.comp
 const FLAG_SHADOWS: u32 = 1;
@@ -178,6 +222,8 @@ impl RenderMode {
 enum Scene {
     Terrain,
     Model(Model),
+    /// The model editor's: a plain floor and nothing else, see editor.rs
+    Studio,
 }
 
 impl Scene {
@@ -192,6 +238,7 @@ impl Scene {
         match self {
             Scene::Terrain => "Terrain".to_string(),
             Scene::Model(model) => format!("{:?}", model),
+            Scene::Studio => "Studio".to_string(),
         }
     }
 
@@ -238,6 +285,67 @@ fn voxels_to_camera(position: Vector3<f64>, world_size: [u32; 3]) -> Vector3<f64
     (position - size * 0.5) / size.max()
 }
 
+/// The flames and crystals to light the world with this frame, of `lights`, in voxels as App::lights
+/// has them, for the eye at `eye`: those whose light reaches nearest it, the most STILL_LIGHTS, each
+/// fading out as it comes to be the next left out, or to LIGHT_MARGIN_M past where its light
+/// reaches, so walking along a cave lit by many torches they come and go smoothly
+fn still_lights(lights: impl Iterator<Item = [f32; 8]>, eye: Vector3<f32>, vpm: f32) -> Vec<[f32; 8]> {
+    let (margin, fade) = (LIGHT_MARGIN_M * vpm, LIGHT_FADE_M * vpm);
+    let mut near: Vec<(f32, [f32; 8])> = lights.map(|l| ((Vector3::new(l[0], l[1], l[2]) - eye).norm() - l[3], l)).filter(|(r, _)| *r < margin).collect();
+    near.sort_by(|a, b| a.0.total_cmp(&b.0));
+    // Where the first left out is, which moves smoothly as the eye does
+    let cutoff = near.get(STILL_LIGHTS).map_or(margin, |(r, _)| r.min(margin));
+    near.truncate(STILL_LIGHTS);
+    near.into_iter()
+        .filter_map(|(r, mut l)| {
+            let t = ((r - (cutoff - fade)) / fade).clamp(0.0, 1.0);
+            let k = 1.0 - t * t * (3.0 - 2.0 * t);
+            for c in &mut l[4..7] {
+                *c *= k;
+            }
+            (k > 0.0).then_some(l)
+        })
+        .collect()
+}
+
+/// Light `light`, as App::lights has it, flickering and swaying a little at `seconds` if it's a
+/// flame, going by its warm color: a torch's or a fire's most, a candle's less and a lantern's,
+/// yellower behind its glass, least. Crystals and glows shine steady.
+fn flicker(light: [f32; 8], seconds: f32, vpm: f32) -> [f32; 8] {
+    let [r, g, b] = [light[4], light[5], light[6]];
+    // The pale fire of the dead's camps in caves gutters, sinking low and flaring up slowly, see
+    // worldgen\camps\cave.rs
+    if [r, g, b] == worldgen::GHOST_FIRE_LIGHT {
+        let s = (light[0] * 0.37 + light[1] * 0.71).fract() * 40.0;
+        let t = seconds;
+        let k = 0.78 + 0.14 * (t * 2.1 + s).sin() + 0.08 * (t * 5.3 + 1.3 * s).sin() + 0.05 * (t * 11.7 + s).sin();
+        let mut out = light;
+        for c in &mut out[4..7] {
+            *c *= k;
+        }
+        return out;
+    }
+    if r <= 0.0 || r < g || g <= b {
+        return light;
+    }
+    let amount = ((0.78 - g / r) * 3.5).clamp(0.0, 1.0);
+    if amount <= 0.0 {
+        return light;
+    }
+    // Each its own way, so they don't all flicker together
+    let s = (light[0] * 0.37 + light[1] * 0.71 + light[2] * 0.13).fract() * 40.0;
+    let t = seconds;
+    let k = 1.0 + amount * (0.09 * (t * 7.3 + s).sin() + 0.06 * (t * 13.1 + 2.3 * s).sin() + 0.04 * (t * 23.7 + 1.7 * s).sin());
+    let sway = amount * 0.03 * vpm;
+    let mut out = light;
+    out[0] += sway * (t * 1.9 + s).sin();
+    out[1] += sway * (t * 2.3 + 0.5 * s).cos();
+    for c in &mut out[4..7] {
+        *c *= k;
+    }
+    out
+}
+
 /// The world in voxels, and for generated landscapes what it was built from, to build finer pieces
 /// of later. A landscape is endless, and the world holds the piece of it whose corner is at
 /// `origin`, in voxels from the corner of the whole landscape.
@@ -256,6 +364,7 @@ fn build_world(scene: Scene, terrain: &TerrainSettings, voxel_resolution: u32, o
             );
             (world, None)
         }
+        Scene::Studio => (World::studio(editor::STUDIO_SIZE, worldgen::material::STONE, worldgen::material::GRAVEL, terrain.voxels_per_meter), None),
     }
 }
 
@@ -328,8 +437,17 @@ const VRAM_CHECK: Duration = Duration::from_secs(2);
 /// How long after coming down for want of room the render scale may go back up, so it doesn't go
 /// up and down while whatever took the room comes and goes
 const RAISE_AFTER: Duration = Duration::from_secs(30);
-/// The most flames and crystals lighting things up at once, nearest the camera first
-const MAX_LIGHTS: usize = 16;
+/// The most flames and crystals lighting things up at once, nearest the camera first, see
+/// still_lights(): a share of their own, so the fighting never takes one of theirs away and makes
+/// it go out
+const STILL_LIGHTS: usize = 14;
+/// And the most lights from the fighting, see Game::lights(), the nearest and brightest first
+const FIGHTING_LIGHTS: usize = 10;
+/// How far past where its light reaches a flame or crystal is still sent, in meters, so a pool
+/// of light down a cave or a street shows from a way off; and over how many meters before that,
+/// or before where the farthest of STILL_LIGHTS sent is, each fades out, so none pops in or out
+const LIGHT_MARGIN_M: f32 = 12.0;
+const LIGHT_FADE_M: f32 = 4.0;
 /// Has to match CACHE_WORDS in shaders\traverse.comp. How many entries the light cache has is
 /// up to how much memory the graphics card has, see memory.rs: the shader goes by how big it is.
 const LIGHT_CACHE_WORDS: u64 = 13;
@@ -744,6 +862,56 @@ struct View {
     pixel_to_ray: Matrix4<f32>,
     /// World to last frame's rendered pixel
     previous_world_to_pixel: Matrix4<f32>,
+    /// The day going round, see daynight::Sky: towards the sun, its light and how much the stars
+    /// show, towards the moon and how bright it is, the light the world's lit by, and what the light
+    /// cache keeps light relative to. Only traverse.comp reads these.
+    sun: [f32; 4],
+    sun_light: [f32; 4],
+    moon: [f32; 4],
+    key_light: [f32; 4],
+    cache_level: [f32; 4],
+    /// The look of the realm the world is, see App::realm_look(), and the colours its sky's tinted
+    /// towards, straight up and round the horizon, with how far, see sky_tint()
+    realm: [f32; 4],
+    realm_sky: [[f32; 4]; 2],
+}
+
+impl View {
+    fn new(pixel_to_ray: Matrix4<f32>, previous_world_to_pixel: Matrix4<f32>, sky: &daynight::Sky, realm: [f32; 4]) -> Self {
+        let v = |v: Vector3<f64>, w: f64| [v.x as f32, v.y as f32, v.z as f32, w as f32];
+        let c = |c: [f64; 3], w: f64| [c[0] as f32, c[1] as f32, c[2] as f32, w as f32];
+        View {
+            pixel_to_ray,
+            previous_world_to_pixel,
+            sun: v(sky.sun, 0.0),
+            sun_light: c(sky.sun_light, sky.stars),
+            moon: v(sky.moon, sky.moon_shine),
+            key_light: c(sky.key_light, sky.moon_phase),
+            cache_level: c(sky.cache_level, 0.0),
+            realm,
+            realm_sky: sky_tint(realm),
+        }
+    }
+}
+
+/// The colours the sky of the realm with look `realm` is tinted towards straight up and round the
+/// horizon, and how far, see App::realm_look(): the dreaming realm's lilac over a rosy horizon, deep
+/// red over its bleeding half, the frozen realm's pale and cold, the sunken reach's clear, the
+/// Cinder Crown's smoky over embers, and no tint for the normal world's and the sky isles'. Worked
+/// out here once a frame rather than for every ray that looks at the sky in traverse.comp.
+fn sky_tint(realm: [f32; 4]) -> [[f32; 4]; 2] {
+    let mix = |a: [f32; 3], b: [f32; 3], t: f32| [0, 1, 2].map(|i| a[i] + (b[i] - a[i]) * t);
+    let with = |c: [f32; 3], w: f32| [c[0], c[1], c[2], w];
+    let blood = realm[3];
+    match realm[0].round() as u32 {
+        2 => [with(mix([0.42, 0.3, 0.85], [0.45, 0.04, 0.05], blood), 0.85), with(mix([1.0, 0.68, 0.8], [0.95, 0.28, 0.16], blood), 0.85)],
+        3 => [with([0.32, 0.5, 0.82], 0.6), with([0.82, 0.9, 1.0], 0.6)],
+        // The sunken reach's a clear sea blue over a pale green-blue horizon
+        4 => [with([0.06, 0.4, 0.82], 0.4), with([0.6, 0.88, 0.9], 0.45)],
+        // The Cinder Crown's dark and smoky over an ember horizon
+        5 => [with([0.36, 0.15, 0.1], 0.9), with([0.98, 0.5, 0.24], 0.85)],
+        _ => [[0.0; 4]; 2],
+    }
 }
 
 /// The top three rows of `m`, whose last is 0, 0, 0, 1, as upscale.comp takes them
@@ -776,6 +944,9 @@ struct PostConstants {
     step: u32,
     flags: u32,
     bloom: f32,
+    /// How much brighter it's shown, and how much of the color goes at night, see daynight::Sky
+    exposure: f32,
+    night: f32,
 }
 
 // Runs one of post.comp's stages over an image of the given size
@@ -805,7 +976,7 @@ fn ground_of(material: u8) -> audio::Ground {
         SAND | SANDSTONE | SANDSTONE_DARK => audio::Ground::Sand,
         SNOW => audio::Ground::Snow,
         WATER | FOAM => audio::Ground::Water,
-        STONE | ROCK | GRAVEL | CLAY | TEMPLE_STONE | TEMPLE_DARK | TEMPLE_RED | TEMPLE_TEAL | BRICK_STONE | MORTAR | LIMESTONE | WOOD | DEAD_WOOD | CLAY_POT => audio::Ground::Stone,
+        STONE | ROCK | GRAVEL | CLAY | CLAY_BANK | TEMPLE_STONE | TEMPLE_DARK | TEMPLE_RED | TEMPLE_TEAL | BRICK_STONE | MORTAR | LIMESTONE | WOOD | DEAD_WOOD | CLAY_POT => audio::Ground::Stone,
         _ => audio::Ground::Grass,
     }
 }
@@ -846,7 +1017,8 @@ struct GpuWorld {
     bricks: Subbuffer<[u32]>,
     // How many bricks there's room for
     capacity: usize,
-    // What else the set binds, to bind again when there's more room for bricks, see grow()
+    // What else the set binds, to bind again when there's more room for bricks, see
+    // grow_with_frame()
     views: Vec<(u32, Arc<ImageView>)>,
     set_index: usize,
     // The bricks before there was more room for them, to be copied over with the next frame, see
@@ -862,16 +1034,10 @@ impl GpuWorld {
         self.bricks.size() + texels(&self.grid) + grass
     }
 
-    /// Makes room for at least `needed` bricks, and SPARE_BRICKS more: a bigger buffer, the bricks
-    /// there are copied into on the GPU, which is far quicker than sending the world over again
-    fn grow(&mut self, needed: usize, memory_allocator: &Arc<StandardMemoryAllocator>, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, descriptor_set_allocator: &Arc<StandardDescriptorSetAllocator>, render_pipeline: &ComputePipeline, queue: &Arc<Queue>) {
-        self.grow_with_frame(needed, spare_bricks(), memory_allocator, descriptor_set_allocator, render_pipeline);
-        self.settle(command_buffer_allocator, queue);
-    }
-
-    /// The same, `spare` more, but copied over with the next frame, see copy_over(), so no frame
-    /// waits for it: drawn with the new buffer from then on, the old one goes once the frames
-    /// before are done with it
+    /// Makes room for at least `needed` bricks, and `spare` more: a bigger buffer, the bricks there
+    /// are copied into on the GPU, which is far quicker than sending the world over again, with
+    /// the next frame, see copy_over(), so no frame waits for it: drawn with the new buffer from
+    /// then on, the old one goes once the frames before are done with it
     fn grow_with_frame(&mut self, needed: usize, spare: usize, memory_allocator: &Arc<StandardMemoryAllocator>, descriptor_set_allocator: &Arc<StandardDescriptorSetAllocator>, render_pipeline: &ComputePipeline) {
         // No more than a shader can see, see memory::most_bricks()
         let capacity = (needed + spare).min(memory::most_bricks()).max(needed);
@@ -887,24 +1053,49 @@ impl GpuWorld {
     }
 
     /// Copies the bricks over into the bigger buffer with the frame being recorded, if there is one
-    /// since the last, before anything else's sent into it
+    /// since the last, before anything else's sent into it. Nothing's ever sent into them outside
+    /// a frame, see App::flush_edits().
     fn copy_over(&mut self, builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>) {
         if let Some(old) = self.copy_from.take() {
             let len = old.len().min(self.bricks.len());
             builder.copy_buffer(CopyBufferInfo::buffers(old.slice(0..len), self.bricks.clone().slice(0..len))).unwrap();
         }
     }
-
-    /// Copies them over now, waiting for it, before anything's sent into them outside a frame
-    fn settle(&mut self, command_buffer_allocator: &Arc<StandardCommandBufferAllocator>, queue: &Arc<Queue>) {
-        if self.copy_from.is_none() {
-            return;
-        }
-        let mut builder = AutoCommandBufferBuilder::primary(command_buffer_allocator.clone(), queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
-        self.copy_over(&mut builder);
-        builder.build().unwrap().execute(queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
-    }
 }
+
+/// Holes blown in the world and stains splashed on it, as they're to go over to the GPU with the
+/// next frame, see App::flush_edits() and App::record_edits(): host memory of their own, held by
+/// that frame's commands till it's done, so nothing waits and nothing's written while it's read
+struct EditUpload {
+    /// The cells of the brick grid that changed, then their bricks
+    words: Subbuffer<[u32]>,
+    grid: Vec<BufferImageCopy>,
+    bricks: Vec<BufferCopy>,
+    /// The ground the water lies on where it changed, and where the water was laid on it, a piece
+    /// of each for each part of the room it's in
+    #[allow(clippy::type_complexity)]
+    ground: Vec<((Subbuffer<[u32]>, BufferImageCopy), (Subbuffer<[u32]>, BufferImageCopy))>,
+}
+
+/// Host memory for `words`, to be copied from with a frame
+fn host_words(memory_allocator: &Arc<StandardMemoryAllocator>, words: Vec<u32>) -> Subbuffer<[u32]> {
+    Buffer::from_iter(
+        memory_allocator.clone(),
+        BufferCreateInfo { usage: BufferUsage::TRANSFER_SRC, ..Default::default() },
+        AllocationCreateInfo { memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE, ..Default::default() },
+        words,
+    )
+    .unwrap()
+}
+
+/// Seconds a frame spends blowing holes in the world at the most, past the first, see
+/// App::pending_craters: a burst of them, as a cluster bomb's, goes over the next few frames
+const CARVE_SECONDS: f64 = 0.004;
+
+/// How much water something knocks down going into it, in cubic meters, for a splash of size 1,
+/// see App::ripple(), and how long till it's let back, wider, so the dip rolls on out as a wave
+const RIPPLE_VOLUME: f64 = 0.45;
+const RIPPLE_REFILL_SECONDS: f64 = 0.15;
 
 /// Room for this many more bricks in the main world than it starts with, for holes blown in it.
 /// `--set spare_bricks=100` leaves less, to try out making more room.
@@ -948,7 +1139,7 @@ fn bricks_buffer(memory_allocator: &Arc<StandardMemoryAllocator>, words: u64) ->
     Buffer::new_slice::<u32>(
         memory_allocator.clone(),
         BufferCreateInfo {
-            // Copied from when there's to be more room for bricks, see GpuWorld::grow()
+            // Copied from when there's to be more room for bricks, see GpuWorld::grow_with_frame()
             usage: BufferUsage::STORAGE_BUFFER | BufferUsage::TRANSFER_DST | BufferUsage::TRANSFER_SRC,
             ..Default::default()
         },
@@ -1161,6 +1352,14 @@ struct App {
     water_pipeline: HotReloadComputePipeline,
     /// Works out again how far empty bricks skip where strips join the world, see skips.rs
     skips_pipeline: HotReloadComputePipeline,
+    /// Makes empty bricks round what's just been built skip no further than it, see building.rs
+    builds_pipeline: HotReloadComputePipeline,
+    /// What's been built and dug, and what's carried to build with, see bases.rs, and the building
+    /// and gathering going on, see building.rs
+    bases: bases::Bases,
+    building: building::Building,
+    /// The night's raid, see night.rs
+    raid: night::Raid,
 
     // Which parts of the world sunlight reaches, for sunbeams. Computed for this sun direction.
     sun_map: Arc<ImageView>,
@@ -1208,6 +1407,10 @@ struct App {
 
     sun_azimuth: f32,
     sun_elevation: f32,
+    /// The day going round, see daynight.rs, unless the sun's held where `sun_azimuth` and
+    /// `sun_elevation` put it, as `--set sun_azimuth=` and the like do and the settings can
+    cycle: daynight::DayNight,
+    fixed_sun: bool,
     shadows: bool,
     ambient_occlusion: bool,
     bounce_light: bool,
@@ -1215,6 +1418,8 @@ struct App {
     smooth_shading: bool,
     // Leaves and flowers swaying in the wind
     wind: bool,
+    // Leaves drifting down from the trees round about, see leaves.rs
+    falling_leaves: bool,
     sunbeams: bool,
     // Density of the haze near the ground, per meter
     haze: f32,
@@ -1245,6 +1450,10 @@ struct App {
     // Every animal's model and the rest that never change, see Game::model_words(), and every
     // weapon's, see Game::weapon_model_words()
     animal_models: Subbuffer<[u32]>,
+    /// Model files in assets\models read again as they're saved, see assets.rs
+    model_files: assets::Reloader<Subbuffer<[u32]>>,
+    /// The model editor, in its own app, see editor.rs
+    editor: editor::Editor,
     weapon_models: Subbuffer<[u32]>,
     // Which of Game::models_version() the weapons' are
     models_version: u32,
@@ -1253,7 +1462,10 @@ struct App {
     // Light bounced onto each voxel face, gathered over frames, see LightCache in traverse.comp
     light_cache: Subbuffer<[u32]>,
     // What the light in it was gathered for. When that changes it's thrown away.
-    light_cache_for: Option<([f32; 4], u32)>,
+    light_cache_for: Option<(u64, u32)>,
+    /// Which sun the frames were last drawn under, see sky_epoch in render(): a step of the sun
+    /// with the day keeps it
+    sky_epoch: u64,
     // For things that move on their own, like waterfalls
     start_time: Instant,
     // Flowing water, simulated on the GPU
@@ -1266,6 +1478,12 @@ struct App {
     // running
     scripted_walk: bool,
     scripted_sprint: bool,
+    // jump held, and whether it was last frame, for pressing it,
+    scripted_jump: bool,
+    scripted_jump_was: bool,
+    // a camera following behind the player, so far off them in voxels, and how far up the player
+    // was looking, see chase_camera(),
+    chase: Option<(Vector3<f64>, f64)>,
     // and the mouse buttons for the next frame
     script_controls: combat::Controls,
     // How far a shot's kick has turned the camera up, so it's turned back down as the kick dies away
@@ -1280,6 +1498,17 @@ struct App {
     edited: Vec<usize>,
     edited_ground: Option<([i64; 2], [i64; 2])>,
     batching: bool,
+    /// What flush_edits() made of them, to go over with the next frame, see record_edits()
+    edit_uploads: Vec<EditUpload>,
+    /// Holes still to be blown, a few a frame, see CARVE_SECONDS: where, in voxels of the whole
+    /// landscape, and how big, in meters
+    pending_craters: VecDeque<(Vector3<f64>, f64)>,
+    /// Water still to be knocked down or let back where things went into it, see ripple(): in how
+    /// many seconds, where in voxels of the whole landscape, how far round in voxels, and how many
+    /// cubic voxels, taken out if negative. One a frame, as the water takes one brush a frame.
+    pending_ripples: Vec<(f64, Vector3<f64>, f64, f64)>,
+    /// Stains still to be splashed, once the holes before them are blown, the same way
+    pending_stains: Vec<(Vector3<f64>, f64, u8, bool)>,
     // Stains splashed on the ground the same way: where, how big, of what, and whether it burnt
     // the plants there
     stains: Vec<([f64; 3], f64, u8, bool)>,
@@ -1295,8 +1524,34 @@ struct App {
     menu_open: bool,
     // Whether the game has started, so the menu says Resume instead of Play
     started: bool,
+    /// The land the loading screen showed, behind the menu until a game's started, answering the
+    /// mouse, see loading::Backdrop
+    backdrop: Option<loading::Backdrop>,
+    /// Whether the world's the empty one Innert starts on, with nothing built in it yet, see
+    /// empty_world(): not drawn behind the menu, and built afresh when a game's begun
+    bare: bool,
+    /// The mode being played, Free Roam or Realms, and its save, see session.rs
+    session: session::Session,
+    /// The seed a new Free Roam game's landscape is to have, picked in the menu
+    new_seed: u32,
+    /// A grappling hook thrown, and the winds bringing the player back after a fall below the sky
+    /// isles, see rope.rs
+    hook: Option<rope::Hook>,
+    fall_back: Option<rope::FallBack>,
+    /// The map on M, see compass.rs
+    map: compass::Map,
+    /// How the wings worn are moving, see wings.rs
+    wings: wings::Flight,
+    /// The wards round raid bosses breaking, see guardians.rs
+    wards: guardians::Wards,
     show_settings: bool,
+    /// The keys every action's on, and their Controls window, see bindings.rs
+    keys: bindings::Keys,
     inventory_open: bool,
+    /// The skill web's window is open, over everything, the world held still behind it, see skills.rs
+    skills_open: bool,
+    /// Its window closed from within, for the mouse to be taken back next frame
+    skills_closed: bool,
     // Whether a merchant's stall was open last frame, to take the mouse back once it closes
     shopping: bool,
     // Set from the menu, done at the start of the next frame
@@ -1396,6 +1651,9 @@ struct Capture {
     /// `--set nowait=1` doesn't wait for each frame to finish before starting the next, as in
     /// play, where the frames being drawn overlap: then frame times are what a player sees
     nowait: bool,
+    /// The frame times said at the end are those from this frame on: from when the world's there
+    /// to play in, with `--set time_from_ready=1`, rather than while it's still being built
+    stats_from: usize,
 }
 
 impl Capture {
@@ -1422,6 +1680,7 @@ impl Capture {
             seconds: value("--seconds").and_then(|n| n.parse().ok()),
             started: Instant::now(),
             nowait: settings_from_args().iter().any(|(k, v)| k == "nowait" && (v == "1" || v == "true")),
+            stats_from: 0,
         })
     }
 }
@@ -1659,12 +1918,13 @@ struct Pipelines {
     water: HotReloadComputePipeline,
     shafts: HotReloadComputePipeline,
     skips: HotReloadComputePipeline,
+    builds: HotReloadComputePipeline,
 }
 
 impl Pipelines {
     // Read from where they are while working on them, so they reload when changed. Copies are
     // built in for running elsewhere.
-    const SHADERS: [(&str, &str); 7] = [
+    const SHADERS: [(&str, &str); 8] = [
         ("traverse.comp", include_str!("../shaders/traverse.comp")),
         ("post.comp", include_str!("../shaders/post.comp")),
         ("resample.comp", include_str!("../shaders/resample.comp")),
@@ -1672,6 +1932,7 @@ impl Pipelines {
         ("water.comp", include_str!("../shaders/water.comp")),
         ("shafts.comp", include_str!("../shaders/shafts.comp")),
         ("skips.comp", include_str!("../shaders/skips.comp")),
+        ("builds.comp", include_str!("../shaders/builds.comp")),
     ];
 
     fn path(name: &str) -> PathBuf {
@@ -1690,7 +1951,7 @@ impl Pipelines {
             let device = device.clone();
             std::thread::spawn(move || HotReloadComputePipeline::new(device, &Self::path(name), built_in))
         });
-        let [render, post, resample, upscale, water, shafts, skips] = making;
+        let [render, post, resample, upscale, water, shafts, skips, builds] = making;
         Some(Pipelines {
             render: render.join().ok()?,
             post: post.join().ok()?,
@@ -1699,6 +1960,7 @@ impl Pipelines {
             water: water.join().ok()?,
             shafts: shafts.join().ok()?,
             skips: skips.join().ok()?,
+            builds: builds.join().ok()?,
         })
     }
 }
@@ -1720,6 +1982,8 @@ struct Placed {
     indoors: bool,
     /// How the graphics card's memory is shared out, see memory.rs
     memory: memory::Plan,
+    /// Whether it's the empty world Innert starts its menu on, see empty_world()
+    bare: bool,
 }
 
 impl Placed {
@@ -1727,7 +1991,8 @@ impl Placed {
         let settings = settings_from_args();
         let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
 
-        let scene = Scene::Terrain;
+        // The model editor's own app opens on a plain floor rather than the landscape
+        let scene = if editor::is_app() { Scene::Studio } else { Scene::Terrain };
         let mut terrain = INITIAL_TERRAIN;
         // As fine and as wide as the quality preset wants it, see quality.rs
         let preset = quality::chosen().settings();
@@ -1743,6 +2008,11 @@ impl Placed {
         if let Some(v) = setting("tufts") {
             terrain.grass_tufts = v == "true" || v == "1";
         }
+        // `--set land_seed=0xF2000001` starts on the land of that seed, as the dreaming realm's, for
+        // looking at what grows there with `at=` or `biome=`
+        if let Some(seed) = setting("land_seed").and_then(|v| v.strip_prefix("0x").map_or_else(|| v.parse().ok(), |h| u32::from_str_radix(h, 16).ok())) {
+            terrain.seed = seed;
+        }
         let rivers = Arc::new(RiverCache::default());
         // For trying out a dungeon: `--set dungeon=1` starts at the way into the nearest one
         let dungeon = setting("dungeon").and_then(|_| {
@@ -1753,6 +2023,17 @@ impl Placed {
         let cavern = setting("cave").filter(|_| dungeon.is_none()).and_then(|_| {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
             landscape.and_then(|l| l.nearest_cavern([112.0, 112.0]))
+        });
+        // `--set cave_camp=bandits`, `dead`, `nobody` or `any` starts by the fire of the nearest
+        // camp in a cave kept by them, a way back along the way in to it, looking at it,
+        // `cave_camp_distance=12` that many meters off, and `cave_camp_room=2.4` the nearest with
+        // that much room round its fire, see worldgen\camps\cave.rs
+        let cave_camp = setting("cave_camp").filter(|_| dungeon.is_none() && cavern.is_none()).and_then(|kind| {
+            let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
+            let room = setting("cave_camp_room").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            let c = landscape?.nearest_cave_camp([112.0, 112.0], worldgen::Folk::named(kind), room)?;
+            println!("Cave camp: {:?} at {:.0}, {:.0}, {:.1}, room {:.1} m, {} bandits and {} brutes", c.folk, c.fire[0], c.fire[1], c.fire[2], c.room, c.bandits, c.brutes);
+            Some(c)
         });
         // `--set town=1` starts in the square of the nearest town, `town=far` past the end of one of
         // its streets, looking down it, `town=stall` in front of a merchant's stall on its square,
@@ -1809,10 +2090,67 @@ impl Placed {
                 landscape.bandit_camps().iter().filter(|c| c.kind == kind).min_by(|a, b| off(a).total_cmp(&off(b))).map(|c| [c.fire[0], c.fire[1]])
             })
         });
+        // `--set dragon_lair=1` starts at the Worldpyre Ancient's far lair, see dragons.rs, looking
+        // in at it from out over its rim
+        let dragon_lair = setting("dragon_lair").and_then(|_| worldgen::far_lair(&terrain));
+        // `--set dragon_lairs=1` builds the three great dragons' lairs round where the game starts,
+        // as the Dragon realm has them, for `--set spawn=dragon:0` and so on to wait in
+        if setting("dragon_lairs").is_some() {
+            let [x, y] = worldgen::FREE_ROAM_START;
+            let lairs: Vec<(worldgen::LairKind, [f32; 2])> = [(worldgen::LairKind::Peak, [x - 55.0, y + 45.0]), (worldgen::LairKind::Caldera, [x + 62.0, y + 30.0]), (worldgen::LairKind::Hoard, [x + 5.0, y - 64.0])]
+                .into_iter()
+                .map(|(kind, at)| (kind, worldgen::dry_land_near(&terrain, at, 80.0, 10.0, &|_| true).unwrap_or(at)))
+                .collect();
+            worldgen::set_lairs(terrain.seed, lairs);
+        }
+        // `--set crevice=edge` starts on the rim of the nearest open ravine beside the hollow at its
+        // bottom, looking down into it; `crevice=bottom` down on its floor looking across the
+        // hollow at what's there, `crevice=ramp` at the top of the way down looking down it,
+        // `crevice=air` high over it, `crevice=demi` and `crevice=fight` on the floor of the nearest
+        // with a demi-boss in it, the latter near enough for it to come for the player, and
+        // `crevice=built` high over the nearest thing built near the edge of one. With
+        // `--set hold=bones`, `crystals`, `fungus`, `nest` or `cache`, the nearest with that down in it.
+        let crevice_view = setting("crevice");
+        // `--set demi=archer`, `brute`, `ghoul` or `spider`: every demi-boss that kind, see demis.rs
+        if let Some(kind) = setting("demi")
+            && !demis::force(kind)
+        {
+            println!("No demi-boss grows from a {kind}");
+        }
+        // Near where a new game sets out, so with a mode too the world needn't move on from it
+        let near_start = {
+            let widest = memory::WIDTHS_M[0] * terrain.voxels_per_meter;
+            let at = camera_to_voxels(scene.initial_camera().position, [widest, widest, terrain.size()[2]]) / terrain.voxels_per_meter as f64;
+            [at.x as f32, at.y as f32]
+        };
+        let hold = setting("hold").and_then(|h| worldgen::Hold::ALL.into_iter().find(|k| format!("{k:?}").eq_ignore_ascii_case(h)));
+        let chasm_built = crevice_view.filter(|v| *v == "built").and_then(|_| worldgen::built_by_chasm(&terrain, near_start, 14.0, &rivers));
+        let chasm = match crevice_view {
+            Some("built") => chasm_built.map(|(_, _, c)| c),
+            Some("demi" | "fight") => worldgen::nearest_chasm(&terrain, near_start, Some(worldgen::Hold::Lurker)),
+            Some(_) => worldgen::nearest_chasm(&terrain, near_start, hold),
+            None => None,
+        };
+        if let Some(c) = &chasm {
+            println!("Crevice: {:?} down in it, its floor at {:.0}, {:.0}, {:.1} m under its rim", c.hold, c.floor[0], c.floor[1], c.rim[2] - c.floor[2]);
+        }
+        if let Some((kind, at, _)) = chasm_built {
+            println!("Built by a crevice: a {kind} at {:.0}, {:.0}", at[0], at[1]);
+        }
+        let chasm_spot = chasm.map(|c| match chasm_built {
+            Some((_, at, _)) => [(at[0] + c.rim[0]) * 0.5, (at[1] + c.rim[1]) * 0.5],
+            // Between it and where a new game sets out, if they're near enough for both to be in
+            // the world, so a game started with `--set mode=` needn't move it on
+            None if (c.floor[0] - near_start[0]).hypot(c.floor[1] - near_start[1]) < 110.0 => [(c.floor[0] + near_start[0]) * 0.5, (c.floor[1] + near_start[1]) * 0.5],
+            None => [c.floor[0], c.floor[1]],
+        });
         // For trying out each kind of land: `--set biome=jungle` starts in the nearest jungle
-        let start_in = camp_at
+        let start_in = dragon_lair
+            .or(chasm_spot)
+            .or(camp_at)
             .or(dungeon.map(|d| [d[0], d[1]]))
             .or(cavern.map(|(floor, ..)| [floor[0], floor[1]]))
+            .or(cave_camp.map(|c| [c.fire[0], c.fire[1]]))
             .or(town.map(|(square, _)| [square[0], square[1]]))
             .or(royal.as_ref().map(|r| {
                 // Out in front of it, there's room in the world for the view of it from there
@@ -1822,6 +2160,11 @@ impl Placed {
             // Halfway from the foot of the shaft to the temple, so all of it's in the world
             .or(sunken.as_ref().map(|s| [(s.foot[0] + s.heart[0]) * 0.5, (s.foot[1] + s.heart[1]) * 0.5]))
             .or(river_at)
+            // `--set at=x,y` starts over that spot of the landscape, in meters
+            .or_else(|| {
+                let at: Vec<f32> = setting("at")?.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                (at.len() == 2).then(|| [at[0], at[1]])
+            })
             .or_else(|| setting("biome").and_then(|kind| worldgen::find_climate(&terrain, kind, [160.0, 160.0])));
         // Lined up with the strips the world moves on by, see stream.rs
         let strip = (stream::STRIP_M * terrain.voxels_per_meter) as i64;
@@ -1845,7 +2188,26 @@ impl Placed {
         };
         // Where the camera starts in that world
         let start_camera = voxels_to_camera(start_at - Vector3::new(origin[0] as f64, origin[1] as f64, 0.0), terrain.size());
-        let (world, landscape) = progress.building_world(|| build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, origin, &rivers));
+        // The land round there's shown rising on the loading screen as it's built
+        if scene.is_terrain() {
+            let vpm = terrain.voxels_per_meter as f32;
+            progress.show_land(terrain, start_in.unwrap_or([start_at.x as f32 / vpm, start_at.y as f32 / vpm]));
+        }
+        // Innert starts on its menu with no world built, only the map of the one about to be
+        // entered beside it: the world's built once a game's begun, behind the loading screen, see
+        // App::begin(). Screenshot runs go straight into the world as they always have, as does
+        // one that starts a game straight away with `--set mode=`, and `--set world_at_start=1`
+        // builds it as before behind the menu.
+        let bare = scene.is_terrain()
+            && setting("menu").map_or(Capture::from_args().is_none() || loading::previewing(), |v| v == "1" || v == "true")
+            && setting("mode").is_none()
+            && setting("world_at_start").is_none_or(|v| v != "1" && v != "true");
+        let (world, landscape) = if bare {
+            progress.world_built();
+            (empty_world(&terrain, origin, &rivers), None)
+        } else {
+            progress.building_world(|| build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, origin, &rivers))
+        };
         // The first piece of the world is built with every core, the rest in the background while
         // the game goes on, leaving it some
         worldgen::leave_cores(2);
@@ -1916,6 +2278,50 @@ impl Placed {
             let eye = middle + back + Vector3::new(0.0, 0.0, 1.7 * vpm);
             camera.position = voxels_to_camera(eye, world.size);
             camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 1.0 * vpm), world.size));
+            // `--set cave=passage` stands a little way down the tunnel from a torch on its wall, the
+            // nearest more than 15 m out from the cavern, looking back along the tunnel at it
+            let torch = landscape.as_ref().and_then(|l| {
+                let off = |p: [f32; 3]| (p[0] - floor[0]).hypot(p[1] - floor[1]);
+                l.lights()
+                    .iter()
+                    .filter(|t| t.color == worldgen::TORCH_LIGHT && off(t.position) > 15.0 && t.position[2] < floor[2] + 12.0)
+                    .min_by(|a, b| off(a.position).total_cmp(&off(b.position)))
+                    .map(|t| Vector3::new(t.position[0] as f64 * vpm - origin[0] as f64, t.position[1] as f64 * vpm - origin[1] as f64, t.position[2] as f64 * vpm))
+            });
+            if let (Some("passage"), Some(torch)) = (setting("cave"), torch) {
+                // Which way the tunnel runs from it: the way with the most room, at head height
+                let low = torch - Vector3::new(0.0, 0.0, 0.8 * vpm);
+                let room = |d: Vector3<f64>| (1..=(12.0 * vpm) as i64).take_while(|&k| worldgen::is_passable(world.material_at((low.x + d.x * k as f64) as i64, (low.y + d.y * k as f64) as i64, low.z as i64))).count();
+                let way = (0..32).map(|k| k as f64 / 32.0 * std::f64::consts::TAU).map(|a| Vector3::new(a.cos(), a.sin(), 0.0)).max_by_key(|&d| room(d)).unwrap_or(Vector3::x());
+                let eye = low + way * (room(way) as f64).min(7.0 * vpm) * 0.85;
+                camera.position = voxels_to_camera(eye, world.size);
+                let target = voxels_to_camera(torch - way * 3.0 * vpm - Vector3::new(0.0, 0.0, 0.6 * vpm), world.size);
+                camera.look_at(target);
+                // The same view for a build without this, as `--set camera=` and `look_at=`
+                let whole = voxels_to_camera(eye + Vector3::new(origin[0] as f64, origin[1] as f64, 0.0), [widest, widest, terrain.size()[2]]);
+                println!("Passage view: --set camera={},{},{} --set look_at={},{},{}", whole.x, whole.y, whole.z, target.x, target.y, target.z);
+            }
+        } else if let Some(c) = cave_camp {
+            // Back along the way in from the fire, as far as there's room, looking at it
+            let vpm = world.voxels_per_meter as f64;
+            let fire = Vector3::new(c.fire[0] as f64 * vpm - origin[0] as f64, c.fire[1] as f64 * vpm - origin[1] as f64, c.fire[2] as f64 * vpm);
+            let low = fire + Vector3::new(0.0, 0.0, 1.6 * vpm);
+            let want = setting("cave_camp_distance").and_then(|v| v.parse::<f64>().ok()).unwrap_or(c.room as f64 + 2.2);
+            let room = |d: Vector3<f64>| (1..=(want * vpm) as i64).take_while(|&k| worldgen::is_passable(world.material_at((low.x + d.x * k as f64) as i64, (low.y + d.y * k as f64) as i64, low.z as i64))).count() as f64;
+            // The way with the most room, toward the way in if there's as much that way
+            let toward = Vector3::new(c.way[0] as f64, c.way[1] as f64, 0.0);
+            let way = (0..32).map(|k| k as f64 / 32.0 * std::f64::consts::TAU).map(|a| Vector3::new(a.cos(), a.sin(), 0.0)).max_by(|a, b| (room(*a) + a.dot(&toward)).total_cmp(&(room(*b) + b.dot(&toward)))).unwrap_or(toward);
+            let at = low + way * (room(way) - 0.5 * vpm).max(1.5 * vpm);
+            // Standing on the floor there, which may be higher or lower than at the fire
+            let floor = (0..(4.0 * vpm) as i64).map(|k| at.z - k as f64).find(|&z| !worldgen::is_passable(world.material_at(at.x as i64, at.y as i64, z as i64 - 1))).unwrap_or(fire.z);
+            let eye = Vector3::new(at.x, at.y, floor + 1.6 * vpm);
+            camera.position = voxels_to_camera(eye, world.size);
+            let target = voxels_to_camera(fire + Vector3::new(0.0, 0.0, 0.5 * vpm), world.size);
+            camera.look_at(target);
+            // The same view for a build without this
+            let whole = voxels_to_camera(eye + Vector3::new(origin[0] as f64, origin[1] as f64, 0.0), [widest, widest, terrain.size()[2]]);
+            let look = target - camera.position;
+            println!("Cave camp view: --set at={},{} --set camera={},{},{} --set look={},{},{}", c.fire[0], c.fire[1], whole.x, whole.y, whole.z, look.x, look.y, look.z);
         } else if let Some((inside, out)) = falls_cave {
             // Just inside the cave behind a waterfall, looking out through it
             let vpm = world.voxels_per_meter as f64;
@@ -2023,8 +2429,15 @@ impl Placed {
             let (square, way_in) = (at(square), at(way_in));
             let out = Vector3::new(way_in.x - square.x, way_in.y - square.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
             let up = |m: f64| Vector3::new(0.0, 0.0, m * vpm);
+            // `town=bowyer` and the like in front of that specialist's stall, see merchants.rs
+            let wanted = town_view.and_then(|v| merchants::Trade::by_id(v)).map_or("town stall", |t| t.stall_site());
+            let specialist = town_view == Some("specialist");
+            if let Some(l) = &landscape {
+                let stalls: Vec<String> = l.sites().iter().filter(|s| s.kind.ends_with("stall")).map(|s| format!("{} at {:.0}, {:.0}", s.kind, s.position[0], s.position[1])).collect();
+                println!("Stalls about: {}", stalls.join("; "));
+            }
             let stall = landscape.as_ref().and_then(|l| {
-                let sites = l.sites().iter().filter(|s| s.kind == "town stall");
+                let sites = l.sites().iter().filter(|s| s.kind == wanted || specialist && merchants::Trade::of_site(s.kind).is_some());
                 sites.map(|s| (at(s.position), Vector3::new(s.facing[0] as f64, s.facing[1] as f64, 0.0))).min_by(|a, b| (a.0 - square).norm().total_cmp(&(b.0 - square).norm()))
             });
             let (eye, target) = match (town_view, stall) {
@@ -2032,11 +2445,58 @@ impl Placed {
                 (Some("tunnel"), _) => (way_in + out * 7.0 * vpm + up(1.7), way_in + up(1.4)),
                 // Where a customer would stand, the merchant behind the counter
                 (Some("stall"), Some((spot, facing))) => (spot + facing * 3.2 * vpm + up(1.6), spot + up(1.2)),
+                (Some(v), Some((spot, facing))) if v == "specialist" || merchants::Trade::by_id(v).is_some() => (spot + facing * 4.6 * vpm + up(1.9), spot + up(1.5)),
                 // A little way along a street, looking down it across the square
                 _ => (square + out * 10.0 * vpm + up(1.7), square - out * 8.0 * vpm + up(1.2)),
             };
             camera.position = voxels_to_camera(eye, world.size);
             camera.look_at(voxels_to_camera(target, world.size));
+        } else if let Some(lair) = dragon_lair {
+            let vpm = world.voxels_per_meter as f64;
+            let middle = Vector3::new(lair[0] as f64 * vpm - origin[0] as f64, lair[1] as f64 * vpm - origin[1] as f64, 0.0);
+            let ground = |p: Vector3<f64>| (0..world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(world.material_at(p.x as i64, p.y as i64, z))).unwrap_or(0) as f64;
+            // From out past the way into its arena
+            let way = worldgen::dragon_arena_way(&terrain, lair) as f64;
+            let back = Vector3::new(way.cos(), way.sin(), 0.0);
+            let out = setting("dragon_lair_out").and_then(|v| v.parse::<f64>().ok()).unwrap_or(48.0);
+            let eye = middle + back * out * vpm;
+            let eye = Vector3::new(eye.x, eye.y, ground(eye) + setting("rise").and_then(|v| v.parse::<f64>().ok()).unwrap_or(16.0) * vpm);
+            camera.position = voxels_to_camera(eye, world.size);
+            camera.look_at(voxels_to_camera(Vector3::new(middle.x, middle.y, ground(middle) + 3.0 * vpm), world.size));
+        } else if let Some(c) = &chasm {
+            let vpm = world.voxels_per_meter as f64;
+            let at = |p: [f32; 3]| Vector3::new(p[0] as f64 * vpm - origin[0] as f64, p[1] as f64 * vpm - origin[1] as f64, p[2] as f64 * vpm);
+            let up = |m: f64| Vector3::new(0.0, 0.0, m * vpm);
+            let flat = |d: [f32; 2]| Vector3::new(d[0] as f64, d[1] as f64, 0.0);
+            let (across, along) = (flat(c.across), flat(c.along));
+            let (eye, target) = match crevice_view {
+                // Over the middle of it a little above its rim, looking down along it to the floor
+                Some("edge") => {
+                    let eye = at(c.floor) - along * 12.0 * vpm;
+                    (Vector3::new(eye.x, eye.y, at(c.rim).z + 4.0 * vpm), at(c.floor) + along * 3.0 * vpm)
+                }
+                Some("ramp") => (at(c.top) + up(1.7), at(c.foot) + up(1.2)),
+                Some("air") => (at(c.rim) - across * 14.0 * vpm + up(26.0), at(c.floor)),
+                Some("built") => {
+                    let built = chasm_built.map_or(c.rim, |(_, b, _)| b);
+                    let middle = (at(built) + at(c.rim)) * 0.5;
+                    let side = Vector3::new(-(at(built) - at(c.rim)).y, (at(built) - at(c.rim)).x, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+                    (middle + side * 34.0 * vpm + up(30.0), middle)
+                }
+                // Back along the floor from the hollow, looking across it
+                Some("demi") => (at(c.floor) - along * 11.0 * vpm + up(1.7), at(c.floor) + up(1.0)),
+                Some("fight") => (at(c.floor) - along * 6.0 * vpm + up(1.7), at(c.floor) + up(1.0)),
+                _ => (at(c.floor) - along * 6.5 * vpm + up(1.7), at(c.floor) + along * 2.0 * vpm + up(0.4)),
+            };
+            camera.position = voxels_to_camera(eye, world.size);
+            camera.look_at(voxels_to_camera(target, world.size));
+            // The same view for a build without this, as `--set camera=` and `look_at=`, in the world
+            // that starts round that camera
+            let shift = Vector3::new(origin[0] as f64, origin[1] as f64, 0.0);
+            let e = voxels_to_camera(eye + shift, [widest, widest, terrain.size()[2]]);
+            let there = [0, 1].map(|i| (((eye + shift)[i]) as i64 - terrain.size()[i] as i64 / 2 + strip / 2).div_euclid(strip) * strip);
+            let t = voxels_to_camera(target + shift - Vector3::new(there[0] as f64, there[1] as f64, 0.0), world.size);
+            println!("Crevice view: --set camera={},{},{} --set look_at={},{},{}", e.x, e.y, e.z, t.x, t.y, t.z);
         } else if start_in.is_some() {
             // Over the middle of the world, a little above the ground, looking out across it
             let [sx, sy, sz] = world.size.map(|n| n as i64);
@@ -2076,14 +2536,25 @@ impl Placed {
         if let Some(target) = setting("look_at").and_then(parse_vector) {
             camera.look_at(target);
         }
-        let indoors = dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city;
+        let down_in_chasm = chasm.is_some() && matches!(crevice_view, Some("bottom" | "demi" | "fight"));
+        let indoors = dungeon.is_some() || cavern.is_some() || cave_camp.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city || down_in_chasm;
         // Into the world that moves on from here a strip at a time
         let (world, pieces, river_springs) = match &landscape {
             Some(landscape) => into_window(world, landscape),
             None => (world, Vec::new(), Vec::new()),
         };
-        Placed { scene, terrain, rivers, world, pieces, river_springs, camera, indoors, memory }
+        Placed { scene, terrain, rivers, world, pieces, river_springs, camera, indoors, memory, bare }
     }
+}
+
+/// A world with nothing in it yet, the size and at the place the landscape's would be, `origin` in
+/// voxels from the corner of the whole landscape, for Innert to start on with no world built, see
+/// Placed::place(): built afresh once a game's begun, at the level of the sea it would have
+fn empty_world(terrain: &TerrainSettings, origin: [i64; 2], rivers: &RiverCache) -> World {
+    // The sea's level as a world built there has it, from a few columns of one
+    let (_, few) = worldgen::generate_area(terrain, origin, [8, 8], rivers);
+    let strip = stream::STRIP_M * terrain.voxels_per_meter;
+    World::window(terrain.size(), strip, origin, terrain.voxels_per_meter, few.sea_level)
 }
 
 /// What App::new() puts the game together from: everything that takes a while, made on the loader
@@ -2138,6 +2609,9 @@ impl Loaded {
         if progress.cancelled() {
             return None;
         }
+        // The creatures are made meanwhile, on every core now the world's built, rather than
+        // once the game's put together, which held the loading screen still for a second or more
+        let creatures = std::thread::Builder::new().name("creatures".into()).spawn(animals::make_ahead).ok();
 
         let settings = settings_from_args();
         let flag = |key: &str, default: bool| settings.iter().find(|(k, _)| k == key).map_or(default, |(_, v)| v == "true" || v == "1");
@@ -2176,12 +2650,19 @@ impl Loaded {
         let water = progress.run(Step::Water, || {
             let mut springs = river_springs.clone();
             springs.extend(pieces.iter().flat_map(|p| p.springs.iter().copied()));
+            if flag("water_report", false) {
+                water::keep_report();
+            }
             let mut water = Water::new(memory_allocator, command_buffer_allocator, descriptor_set_allocator, queue, &pipelines.water, world, &springs);
             water.active &= flag("water", true);
             water
         });
 
         note_vram(&gpu.device, "the water made");
+        progress.run(Step::Creatures, || creatures.map(|c| c.join()));
+        if progress.cancelled() {
+            return None;
+        }
         let sun_map = get_history_image_view(
             memory_allocator.clone(),
             [SUN_MAP_SIZE, SUN_MAP_SIZE],
@@ -2200,8 +2681,8 @@ impl App {
         let Loaded { gpu, pipelines, sun_map, placed, voxel_set, empty_near_set, water } = loaded;
         // The instance was only needed to make the window's surface, which the loading screen did
         let Gpu { instance: _, device, queue, memory_allocator, descriptor_set_allocator, command_buffer_allocator } = gpu;
-        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline, skips: skips_pipeline } = pipelines;
-        let Placed { scene, terrain, rivers, mut world, pieces, river_springs, mut camera, indoors, memory } = placed;
+        let Pipelines { render: render_pipeline, post: post_pipeline, resample: resample_pipeline, upscale: upscale_pipeline, water: water_pipeline, shafts: shafts_pipeline, skips: skips_pipeline, builds: builds_pipeline } = pipelines;
+        let Placed { scene, terrain, rivers, mut world, pieces, river_springs, mut camera, indoors, memory, bare } = placed;
         let stream = scene.is_terrain().then(|| stream::Stream::new(stream::STRIP_M * world.voxels_per_meter, pieces, river_springs, memory_allocator.clone()));
         // The water has what it needs of it now
         world.forget_water_surface();
@@ -2213,6 +2694,9 @@ impl App {
         let preset = quality.settings();
         println!("Quality: {} (sun shafts {})", quality.name(), preset.sun_shafts.name());
         water::set_flowing_area((setting("flowing_water_m").and_then(|v| v.parse().ok()).unwrap_or(preset.flowing_water_m) * world.voxels_per_meter as f32) as u32);
+        if let Some(times) = setting("water_speed").and_then(|v| v.parse().ok()) {
+            water::set_speed(times);
+        }
 
         let input = WinitInputHelper::new();
         let flag = |key: &str, default: bool| setting(key).map_or(default, |v| v == "true" || v == "1");
@@ -2221,20 +2705,83 @@ impl App {
         let capture = Capture::from_args();
         let water_level = |x: f64, y: f64| water.surface_at(x, y);
 
-        let walk = scene.is_terrain() && flag("walk", capture.is_none());
+        // No one's stood in the empty world Innert starts on till a game's begun
+        let walk = scene.is_terrain() && flag("walk", capture.is_none()) && !bare;
         // In a dungeon or a cave, right where the camera is rather than up on the ground over it
         let eye = camera_to_voxels(camera.position, world.size);
         let player = walk.then(|| if indoors { Player::new(eye, &world) } else { Player::on_dry_ground(eye, &world, &water_level) });
 
         let start = player.as_ref().map_or(camera_to_voxels(camera.position, world.size), |p| p.position);
         let mut game = Game::new(&world, &water_level, terrain.seed, start);
+        // For trying out levels: `--set player_level=12` starts the player at that level, before
+        // any monster's given its own, `level_up=1` has them go up one straight away, and
+        // `level_up_hold=1` holds the moment of it on the HUD for a screenshot, see levels.rs
+        if let Some(level) = setting("player_level").and_then(|v| v.parse().ok()) {
+            game.set_level(level);
+        }
+        if let Some(share) = setting("player_xp").and_then(|v| v.parse::<f64>().ok()) {
+            game.gain_experience(crate::levels::needed(game.level().0) * share.clamp(0.0, 0.99), None);
+        }
+        if flag("level_up", false) {
+            game.level_up_now();
+        }
+        // `--set skill_points=30` takes that many nodes of the skill web, going up levels for them
+        // if there aren't the points, and `--set skills=1` opens its window, `skill_zoom=0.4` that
+        // close, `skill_hover=melee_n3` with the pointer over that node, for its card
+        if let Some(n) = setting("skill_points").and_then(|v| v.parse::<usize>().ok()) {
+            while (game.skill_points() as usize) < n && game.level().0 < crate::levels::LEVEL_CAP {
+                game.level_up_now();
+            }
+            game.take_skills(n);
+        }
+        if let Some(zoom) = setting("skill_zoom").and_then(|v| v.parse::<f32>().ok()) {
+            game.skill_view.zoom = zoom;
+        }
+        if let Some(id) = setting("skill_hover") {
+            game.skill_view.hover = Some(id.to_owned());
+        }
+        // `--set inventory=1 inspect=2` opens the inventory with the card of its third slot showing
+        if let Some(slot) = setting("inspect").and_then(|v| v.parse().ok()) {
+            game.inspect(slot);
+        }
+        // And `card_hover=1` with the card of its second slot showing as it does with the pointer
+        // over it, in the inventory or at a merchant's
+        game.card_hover = setting("card_hover").and_then(|v| v.parse().ok());
+        game::HOLD_LEVEL_UP.store(flag("level_up_hold", false), std::sync::atomic::Ordering::Relaxed);
+        // `--set class=priest` and the rest without a mode: who's playing is that character, armed
+        // as their class starts, their body there for its shadow, to try them out in screenshot
+        // runs with `enemy=` and the rest, see character.rs. A mode started sets its own.
+        if setting("class").is_some() && setting("mode").is_none() {
+            game.set_character(&character::Character::from_settings());
+            game.new_character(terrain.seed);
+        }
         // For trying out weapons: `--set weapon_seed=7 weapon_luck=3` starts with other ones, rarer
         // the luckier, and `--set weapon=bow` with the bow in hand
         if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
             game.arm(seed, setting("weapon_luck").and_then(|v| v.parse().ok()).unwrap_or(1.0));
         }
+        // and `--set weapon=none` with nothing in hand, for looking at what's about
         if let Some(family) = setting("weapon") {
+            if family == "none" {
+                game.empty_hands();
+            }
             game.select_family(family);
+        }
+        // `--set blast_size=0.5` has every gun's shell burst that big next to the usual, for a
+        // shot of a small, an ordinary or a big one, see combat::shell_size()
+        if let Some(size) = setting("blast_size").and_then(|v| v.parse::<f64>().ok()) {
+            combat::force_blast_size(size);
+        }
+        // `--set jewels=melee_rare:3,magic_common:1` gives those jewels, see jewels.rs, and
+        // `socket=1` sets one of each into the first weapon carried it fits
+        if let Some(list) = setting("jewels") {
+            for part in list.split(',') {
+                let (id, n) = part.split_once(':').map_or((part, 1), |(id, n)| (id, n.parse().unwrap_or(1)));
+                game.give_jewels(id, n);
+            }
+        }
+        if flag("socket", false) {
+            game.socket_some();
         }
         // `--set ammo=fire_bolts` gives a few bundles of that special ammo and loads it
         if let Some(id) = setting("ammo") {
@@ -2269,11 +2816,62 @@ impl App {
                 camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 0.3 * vpm), world.size));
             }
         }
+        // `--set drops=25` strews that many things as if dropped, a mix of everything that can lie
+        // about, weapons of every rarity among it, round a spot `drops_at=30` meters ahead,
+        // `drops_radius=5` meters out, to look at their beams and models, see game\drops.rs;
+        // `drops=rarities` lays a weapon of each rarity in a row there instead. `drops_look=1` turns
+        // the camera to look at the spot from where it is, `drops_from=3` brings it that many meters
+        // back from the spot and up a little, as for a close look at a boss's loot.
+        if let Some(what) = setting("drops") {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let vpm = world.voxels_per_meter as f64;
+            // `drops_turn=60` strews them that many degrees round to the left of ahead
+            let turn = setting("drops_turn").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).to_radians();
+            let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+            let turned = |a: f64| Vector3::new(flat.x * a.cos() - flat.y * a.sin(), flat.x * a.sin() + flat.y * a.cos(), 0.0);
+            // `drops_at=10,30,60` strews a pile at each, fanned out a little either side
+            let distances: Vec<f64> = setting("drops_at").map_or(vec![30.0], |v| v.split(',').filter_map(|d| d.trim().parse().ok()).collect());
+            let radius: f64 = setting("drops_radius").and_then(|v| v.parse().ok()).unwrap_or(5.0);
+            let row = what == "rarities";
+            let count = what.parse().unwrap_or(25);
+            let mut middle = start;
+            for (k, &distance) in distances.iter().enumerate() {
+                let way = turned(turn + (k as f64 - (distances.len() - 1) as f64 * 0.5) * 14f64.to_radians());
+                let mut spot = start + way * distance * vpm;
+                // `drops_water=1` strews them over the nearest water at least 2 m deep there, to see
+                // them float up
+                if flag("drops_water", false)
+                    && let Some(deep) = animals::deep_water_near(&world, &water_level, spot, 60.0, 2.0)
+                {
+                    println!("drops: over water {:.0} m deep", (water_level(deep.x, deep.y) - deep.z) / vpm);
+                    spot = deep;
+                }
+                middle = game.strew(&world, spot, way, count, radius, row);
+                println!("drops: {} strewn {distance} m ahead", if row { 6 } else { count });
+            }
+            let flat = turned(turn);
+            if let Some(back) = setting("drops_from").and_then(|v| v.parse::<f64>().ok()) {
+                camera.position = voxels_to_camera(middle - flat * back * vpm + Vector3::new(0.0, 0.0, (0.6 * back).max(1.7) * vpm), world.size);
+            }
+            if distances.len() > 1 {
+                let average = distances.iter().sum::<f64>() / distances.len() as f64;
+                camera.look_at(voxels_to_camera(Vector3::new(start.x, start.y, middle.z) + flat * average * vpm + Vector3::new(0.0, 0.0, 2.0 * vpm), world.size));
+            } else if flag("drops_look", false) || setting("drops_from").is_some() {
+                camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 0.5 * vpm), world.size));
+            }
+        }
         // `--set staff_element=fire` puts a staff of fire in hand, or of another element, or `none`
         if let Some(name) = setting("staff_element") {
             let element = serde_json::from_str::<weapons::Element>(&format!("\"{name}\"")).ok();
             game.find_weapon("staff", element, 2.0);
         }
+        // Avians and gargoyles made from here on making only `--set boss_move=snatch` or another of
+        // their own moves, in a screenshot run, see avians.rs
+        avians::force(setting("boss_move").filter(|_| capture.is_some()).and_then(avians::Move::named));
+        // `--set live_npcs=0` draws townsfolk, merchants, monsters and animals in their baked frames
+        // however near, rather than posed afresh from their pieces, to compare, and `live_npcs=25`
+        // poses only those within 25 meters
+        baked::set_live(setting("live_npcs").and_then(|v| v.parse().ok()).unwrap_or(preset.live_npcs));
         // `--set boss=golem`, `frostwyrm`, `broodmother` and so on puts one a little way ahead, to
         // try fighting it
         let boss = setting("boss").and_then(|name| {
@@ -2288,6 +2886,72 @@ impl App {
             if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
                 game.hurt_bosses(fraction);
             }
+            // `--set boss_slain=1` has it fall straight away, to see its hoard spill out
+            if flag("boss_slain", false) {
+                game.slay_bosses();
+            }
+            // `--set boss_move=throw` has it make only that move, as soon as it's ready, wherever
+            // the player is, for shots of it in a screenshot run
+            if let Some(m) = setting("boss_move").filter(|_| capture.is_some()).and_then(bosses::Move::named) {
+                game.force_boss_move(m);
+            }
+            // `--set boss_pit=3` blows a pit that many meters round under it, to see it bound out
+            if let Some(radius) = setting("boss_pit").filter(|_| capture.is_some()).and_then(|v| v.parse::<f64>().ok()) {
+                game.pit_bosses(radius);
+            }
+        }
+        // `--set aerie_show=1` has avians and gargoyles fight with nobody about as if someone were,
+        // and `aerie_trace=1` says what each is doing twice a second, see avians.rs
+        avians::SHOW.store(flag("aerie_show", false), std::sync::atomic::Ordering::Relaxed);
+        avians::TRACE.store(flag("aerie_trace", false), std::sync::atomic::Ordering::Relaxed);
+        // Dragons, see dragons.rs: `--set spawn=dragon:0`, `1` or `2` puts the Dragon realm's raid
+        // boss of that lair a little way ahead, `spawn=dragon:ashwing` or another drakeling a pair
+        // of them, and `--set dragon_ultra=1` the Worldpyre Ancient, its finale
+        if let Some(which) = setting("spawn").and_then(|v| v.strip_prefix("dragon:").map(str::to_owned)) {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            match which.parse::<usize>() {
+                Ok(n) => {
+                    let look = dragons::RAID_DRAGONS[n.min(2)];
+                    // In its lair, if the lairs are built, see `--set dragon_lairs`
+                    let kind = dragons::lair_kind(look);
+                    match worldgen::lairs_set(terrain.seed).into_iter().find(|(k, _)| Some(*k) == kind) {
+                        Some((_, lair)) => {
+                            let vpm = world.voxels_per_meter as f64;
+                            let at = Vector3::new(lair[0] as f64 * vpm - world.origin[0] as f64, lair[1] as f64 * vpm - world.origin[1] as f64, start.z);
+                            game.summon(&world, &water_level, look, at, ahead, 0.0);
+                        }
+                        None => game.summon(&world, &water_level, look, start, ahead, setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(32.0)),
+                    }
+                    println!("dragon: {}", look.name());
+                }
+                Err(_) => {
+                    let look = dragons::DRAKELINGS.into_iter().find(|l| l.name().eq_ignore_ascii_case(&which)).unwrap_or(animals::Look::Ashwing);
+                    let count = setting("enemy_count").and_then(|v| v.parse().ok()).unwrap_or(2);
+                    game.summon_pack(&world, &water_level, &vec![look; count], start, ahead, setting("enemy_distance").and_then(|v| v.parse().ok()).unwrap_or(18.0), 0.0, flag("enemy_calm", false), None);
+                    println!("dragons: {count} {}", look.name());
+                }
+            }
+            if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
+                game.hurt_bosses(fraction);
+            }
+        }
+        // `--set dragon_show=1`: with nobody about, as with the camera flying, they fight as if
+        // someone stood where they were put, to be seen at it, see the "dragon" script
+        dragons::SHOW.store(flag("dragon_show", false), std::sync::atomic::Ordering::Relaxed);
+        // `--set dragon_trace=1` says what each dragon's doing, twice a second
+        dragons::TRACE.store(flag("dragon_trace", false), std::sync::atomic::Ordering::Relaxed);
+        // `--set dragon_move=breath` has every dragon make only that move, as soon as it's ready,
+        // wherever the player is, for shots of it in a screenshot run
+        let only = setting("dragon_move").filter(|_| capture.is_some()).and_then(dragons::Move::named);
+        dragons::FORCED.store(only.map_or(0, |m| m as usize + 1), std::sync::atomic::Ordering::Relaxed);
+        if flag("dragon_ultra", false) {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            game.summon(&world, &water_level, dragons::ULTRA, start, ahead, setting("boss_distance").and_then(|v| v.parse().ok()).unwrap_or(55.0));
+            game.promote_ultra();
+            if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
+                game.hurt_bosses(fraction);
+            }
+            println!("dragon: {}", dragons::ULTRA.name());
         }
         // `--set enemy=crossbowman`, `shieldbearer`, `burrower`, `wraith`, `lurker`, `gloomwing`,
         // `tusker` or any other monster puts a pack of them a little way ahead, or `gang` a gang of
@@ -2329,6 +2993,18 @@ impl App {
             let turn = setting("enemy_turn").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).to_radians();
             game.summon_pack(&world, &water_level, &looks, start, ahead, distance, turn, flag("enemy_calm", false), pose);
             println!("enemy: {}", looks.iter().map(|l| l.name()).collect::<Vec<_>>().join(", "));
+            // `enemy_demi=1` makes them demi-bosses of the kind each grows into, see src\demis.rs, out
+            // in the open to be seen, and `boss_move=storm` has them make only that move
+            if flag("enemy_demi", false) {
+                game.promote_demis();
+                if let Some(m) = setting("boss_move").filter(|_| capture.is_some()).and_then(bosses::Move::named) {
+                    game.force_boss_move(m);
+                }
+            }
+            // `enemy_health=0.6` starts them hurt, their bars and levels showing
+            if let Some(fraction) = setting("enemy_health").and_then(|v| v.parse::<f64>().ok()) {
+                game.hurt_monsters(fraction);
+            }
         }
         // `--set health=10` starts the player that hurt, to see them die
         if let Some(health) = setting("health").and_then(|v| v.parse::<f64>().ok()) {
@@ -2343,10 +3019,27 @@ impl App {
         if flag("shop", false) {
             game.open_nearest_shop(start);
         }
+        // `--set specialist=bowyer` puts that specialist `specialist_distance=3` meters ahead, see
+        // merchants.rs, and `specialist=all` every one of them side by side
+        if let Some(wanted) = setting("specialist") {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let side = Vector3::new(-ahead.y, ahead.x, 0.0).try_normalize(1e-6).unwrap_or(Vector3::y());
+            let distance = setting("specialist_distance").and_then(|v| v.parse().ok()).unwrap_or(3.0);
+            let trades: Vec<merchants::Trade> = if wanted == "all" { merchants::Trade::ALL.to_vec() } else { merchants::Trade::by_id(wanted).into_iter().collect() };
+            let vpm = world.voxels_per_meter as f64;
+            for (k, &trade) in trades.iter().enumerate() {
+                let by = (k as f64 - (trades.len() as f64 - 1.0) / 2.0) * 1.1 * vpm;
+                game.summon_specialist(&world, &water_level, start + side * by, ahead, distance, trade);
+            }
+        }
         // `--set villager=3` puts a villager of each kind that many meters ahead, to see them close
         if let Some(distance) = setting("villager").and_then(|v| v.parse::<f64>().ok()) {
             let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
             game.summon_villagers(&world, &water_level, start, ahead, distance);
+            // And `villager_walk=1` sets them off strolling across in front, to see them walk
+            if flag("villager_walk", false) {
+                game.walk_villagers(ahead.x.atan2(-ahead.y), 30.0);
+            }
         }
         if capture.is_some() {
             println!("{}", game.describe_weapons());
@@ -2378,8 +3071,12 @@ impl App {
                 ..Default::default()
             },
         );
-        // A preview of the loading screen shows it fade into the menu, as it does in play
-        let menu_open = (capture.is_none() || loading::previewing()) && flag("menu", true);
+        // A preview of the loading screen shows it fade into the menu, as it does in play, and
+        // `--set menu=1` shows it in a screenshot run, to see it with `gui=1`
+        let menu_open = flag("menu", capture.is_none() || loading::previewing()) && !editor::is_app();
+        // Saves go where they're kept, except in screenshot runs, which save only with `--set
+        // saves=<folder>`, so trying things out never touches the player's own
+        let session = session::Session::new(setting("saves").map(PathBuf::from), capture.is_none() && !editor::is_app());
         // `--set waterfall=2` starts looking at the second waterfall
         let visit_waterfall = setting("waterfall").and_then(|v| v.parse::<usize>().ok()).filter(|&n| n > 0);
         // `--set sun_shafts=off`, `low` or `high`, and `sun_shafts_strength=1.5` for thicker air
@@ -2391,6 +3088,25 @@ impl App {
             setting("sun_shafts").and_then(shafts::Quality::parse).unwrap_or(preset.sun_shafts),
             setting("sun_shafts_strength").and_then(|v| v.parse().ok()).unwrap_or(1.0),
         );
+        // The keys, kept in %LOCALAPPDATA%\Innert\keys.txt; screenshot runs play on the ones they
+        // had to begin with and keep them only with `--set keys=<file>`. `--set controls=1` opens
+        // their window, `rebind=jump:G` puts that action on that key as the window does, and
+        // `rebinding=jump` has it waiting for a key for one, see bindings.rs
+        let keys = {
+            let mut keys = bindings::Keys::new(setting("keys").map(PathBuf::from).or_else(|| capture.is_none().then(bindings::kept_file)));
+            keys.open = flag("controls", false);
+            // `--set controls_scroll=900` that far down its list
+            keys.scroll_to = setting("controls_scroll").and_then(|v| v.parse().ok());
+            if let Some((action, key)) = setting("rebind").and_then(|v| v.split_once(':'))
+                && let (Some(action), Some(key)) = (bindings::Action::by_id(action), bindings::Input::parse(key))
+            {
+                keys.bind(action, 0, key);
+            }
+            if let Some(action) = setting("rebinding").and_then(bindings::Action::by_id) {
+                keys.change(action, 0);
+            }
+            keys
+        };
 
         let mut app = App {
             device,
@@ -2406,6 +3122,10 @@ impl App {
             upscale_pipeline,
             water_pipeline,
             skips_pipeline,
+            builds_pipeline,
+            bases: bases::Bases::new(),
+            building: building::Building::default(),
+            raid: night::Raid::default(),
 
             sun_map,
             sun_map_for: None,
@@ -2444,11 +3164,28 @@ impl App {
             // haze, so the voxels read crisply. Grass is made of voxels rather than triangles.
             sun_azimuth: setting("sun_azimuth").and_then(|v| v.parse().ok()).unwrap_or(150.0),
             sun_elevation: setting("sun_elevation").and_then(|v| v.parse().ok()).unwrap_or(38.0),
+            // `--set time=21.5` starts at that hour, `--set day_cycle=0` holds the sun still where
+            // it is then, and setting where the sun is holds it there
+            cycle: {
+                let mut cycle = daynight::DayNight::new(daynight::Clock::default());
+                // `--set day=3` for the fourth day, and its moon
+                if let Some(day) = setting("day").and_then(|v| v.parse::<u32>().ok()) {
+                    cycle.clock.day = day;
+                }
+                if let Some(hour) = setting("time").and_then(|v| v.parse::<f64>().ok()) {
+                    cycle.set_hour(hour);
+                }
+                cycle.clock.running = flag("day_cycle", true);
+                cycle
+            },
+            fixed_sun: ["sun_azimuth", "sun_elevation", "sun_ahead"].iter().any(|k| setting(k).is_some()) || editor::is_app(),
             shadows: flag("shadows", preset.shadows),
             ambient_occlusion: flag("ao", preset.ambient_occlusion),
             bounce_light: flag("bounce", preset.bounce_light),
             smooth_shading: flag("smooth", preset.smooth_shading),
             wind: flag("wind", preset.wind),
+            // `--set leaves=0` hides the falling leaves, as turning them off in the settings does
+            falling_leaves: flag("leaves", quality::kept_leaves().unwrap_or(preset.falling_leaves)),
             sunbeams: flag("sunbeams", false),
             denoise: flag("denoise", preset.denoise),
             color_grade: flag("grade", true),
@@ -2471,11 +3208,14 @@ impl App {
             game,
             animals_on: flag("animals", true),
             animal_models,
+            model_files: assets::Reloader::new(),
+            editor: Default::default(),
             weapon_models,
             models_version,
             instance_allocator,
             light_cache,
             light_cache_for: None,
+            sky_epoch: 0,
             start_time: Instant::now(),
             water,
             last_frame: Instant::now(),
@@ -2483,6 +3223,9 @@ impl App {
             wake: None,
             scripted_walk: false,
             scripted_sprint: false,
+            scripted_jump: false,
+            scripted_jump_was: false,
+            chase: None,
             script_controls: combat::Controls::default(),
             kicked: 0.0,
             audio,
@@ -2490,6 +3233,10 @@ impl App {
             edited: Vec::new(),
             edited_ground: None,
             batching: false,
+            edit_uploads: Vec::new(),
+            pending_craters: VecDeque::new(),
+            pending_ripples: Vec::new(),
+            pending_stains: Vec::new(),
             stains: Vec::new(),
             step_distance: 0.0,
             walk_speed: 0.0,
@@ -2498,10 +3245,23 @@ impl App {
 
             menu_open,
             started: !menu_open,
+            backdrop: None,
+            bare,
+            session,
+            // `--set new_seed=42` for a new Free Roam game on that seed
+            new_seed: setting("new_seed").and_then(|v| v.parse().ok()).unwrap_or(terrain.seed),
+            hook: None,
+            fall_back: None,
+            map: compass::Map::default(),
+            wings: wings::Flight::default(),
+            wards: guardians::Wards::default(),
             // `--set settings=1` starts with them shown, to see them in screenshots with `gui=1`
             show_settings: flag("settings", false),
+            keys,
             // `--set inventory=1` shows the inventory, to see how it looks
             inventory_open: flag("inventory", false),
+            skills_open: flag("skills", false),
+            skills_closed: false,
             shopping: false,
             generate_requested: false,
             waterfall_requested: false,
@@ -2531,6 +3291,80 @@ impl App {
         };
         let pieces = app.stream.as_ref().map_or(Vec::new(), |s| s.pieces.clone());
         app.adopt_pieces(&pieces);
+        // `--set mode=freeroam` or `realms` starts playing that mode straight away, going on from
+        // its save if there is one, or afresh with `--set new=1`, as picking it from the menu
+        // does. Then `health=37`, `gold=900` and `weapon_seed=7` change the player, to see it all
+        // come back from the save next time.
+        if let Some(mode) = setting("mode").and_then(save::Mode::parse) {
+            let saved = if flag("new", false) { None } else { app.session.saves.saved(mode).cloned() };
+            let view = (app.camera.position, app.camera.rotation);
+            app.begin(mode, saved);
+            // `--set crevice=fight` and the like with a mode too: the player stands where the view
+            // of the ravine is, near where the game sets out, see Placed::place()
+            if setting("crevice").is_some() {
+                let eye = camera_to_voxels(view.0, app.world.size);
+                let mut player = Player::new(eye, &app.world);
+                player.position = eye - Vector3::new(0.0, 0.0, 1.6 * app.world.voxels_per_meter as f64);
+                app.player = Some(player);
+                (app.camera.position, app.camera.rotation) = view;
+            }
+            if let Some(health) = setting("health").and_then(|v| v.parse::<f64>().ok()) {
+                app.game.set_health(health);
+            }
+            if let Some(gold) = setting("gold").and_then(|v| v.parse().ok()) {
+                app.game.set_gold(gold);
+            }
+            if let Some(level) = setting("player_level").and_then(|v| v.parse().ok()) {
+                app.game.set_level(level);
+            }
+            if let Some(seed) = setting("weapon_seed").and_then(|v| v.parse().ok()) {
+                app.game.arm(seed, setting("weapon_luck").and_then(|v| v.parse().ok()).unwrap_or(1.0));
+            }
+            // And `realm=1`, `blocks=3` and the like to try out the journey through the realms
+            app.try_journey(&settings);
+            // `weapon=handcannon` in hand in the mode started too, not only in the world before it
+            if let Some(family) = setting("weapon") {
+                app.game.select_family(family);
+            }
+            println!("STATE at the start: {}", app.state_line());
+        }
+        // `--set confirm=freeroam` asks whether to start a new game in its place, as New does
+        app.session.menu.confirm = setting("confirm").and_then(save::Mode::parse);
+        // `--set map_of=new:realms` or `continue:freeroam` has the map beside the menu show that
+        // game, as pointing at its button does
+        app.session.menu.looking = setting("map_of").and_then(|v| {
+            let (which, mode) = v.split_once(':')?;
+            let mode = save::Mode::parse(mode)?;
+            match which {
+                "new" => Some(session::MenuAction::New(mode)),
+                "continue" => Some(session::MenuAction::Continue(mode)),
+                _ => None,
+            }
+        });
+        // `--set creator=freeroam` opens the window a new character's made in, as New does, with
+        // what `--set class=priest`, `name=`, `skin=` and the rest say chosen, turned `creator_turn`
+        // radians round, to see it in a screenshot with `menu=1 gui=1`
+        if let Some(mode) = setting("creator").and_then(save::Mode::parse) {
+            let turn = setting("creator_turn").and_then(|v| v.parse().ok()).unwrap_or(0.5);
+            let mut creator = character::creator::Creator::with(mode, character::Character::from_settings(), turn);
+            // And `creator_scroll=600` scrolled that far down what's chosen, to see the bottom of it
+            creator.scroll_to = setting("creator_scroll").and_then(|v| v.parse().ok());
+            // And `paint_view=face` painting, looking at the face, `paint_hover=0.4,0.5` the mouse
+            // taken to be that far across and down the picture, see character\studio.rs
+            if let Some(focus) = setting("paint_view").and_then(character::studio::Focus::parse) {
+                creator.paint(focus);
+                if let (Some(studio), Some(at)) = (&mut creator.studio, setting("paint_hover")) {
+                    let v: Vec<f32> = at.split(',').filter_map(|v| v.trim().parse().ok()).collect();
+                    studio.hover_at = (v.len() == 2).then(|| [v[0], v[1]]);
+                }
+            }
+            app.session.creator = Some(creator);
+        }
+        // `--set shot_at=20,60` takes shots at those frames too, with `gui=1` of the whole screen,
+        // as for the menu or the window a new character's made in
+        if let (Some(frames), Some(capture)) = (setting("shot_at"), &mut app.capture) {
+            capture.shots.extend(frames.split(',').filter_map(|f| f.trim().parse::<usize>().ok()));
+        }
         // `--set camp_clear=1` kills every bandit of the camp nearest the start, its warlord too,
         // so its hoard turns up
         if flag("camp_clear", false) {
@@ -2541,6 +3375,29 @@ impl App {
         // nearer than the one wandering about
         if setting("shop").is_some_and(|v| v == "true" || v == "1") {
             app.game.open_nearest_shop(start);
+        }
+        // `--set talk=1` talks to the specialist nearest the start, see merchants.rs, and
+        // `talk_do=invite`, `land` or `trade` says that, with `talk_gold=500` to pay with and
+        // `talk_home=1` a fireplace at the base to come to
+        if flag("talk", false) {
+            app.game.stage_talk(start, setting("talk_do"), setting("talk_gold").and_then(|v| v.parse().ok()), flag("talk_home", false));
+        }
+        // `--set map=1` opens the map, to see what's marked on it
+        if flag("map", false) {
+            app.map.open = true;
+        }
+        // `--set build=1` starts building, the pieces to pick from showing, and `--set craft=1`
+        // shows the inventory's Craft tab when it's open, to see them with `gui=1`
+        if flag("build", false) {
+            app.building.on = true;
+        }
+        if flag("craft", false) {
+            app.building.craft_open = true;
+        }
+        // `--set shots_at=80,140` takes shots at those frames too, with the GUI with `gui=1`, as of
+        // the window of a specialist being talked to
+        if let Some(capture) = &mut app.capture {
+            capture.shots.extend(setting("shots_at").map_or(Vec::new(), |v| v.split(',').filter_map(|n| n.trim().parse::<usize>().ok()).collect()));
         }
         if let Some(n) = visit_waterfall {
             app.waterfall_index = n - 1;
@@ -2589,8 +3446,14 @@ impl App {
         }
         // For checking how trees look: `--set view_tree=3` looks at the third tree nearest the start,
         // from `--set view_distance=12` meters away or far enough to see all of it
+        // nearest `--set view_tree_near=x,y` in meters of the landscape if that's given
         if let Some(n) = setting("view_tree").and_then(|v| v.parse::<usize>().ok()) {
-            let start = camera_to_voxels(app.camera.position, app.world.size);
+            let mut start = camera_to_voxels(app.camera.position, app.world.size);
+            if let Some(near) = setting("view_tree_near").map(|v| v.split(',').filter_map(|n| n.trim().parse::<f64>().ok()).collect::<Vec<f64>>()).filter(|p| p.len() == 2) {
+                let vpm = app.world.voxels_per_meter as f64;
+                start.x = near[0] * vpm - app.world.origin[0] as f64;
+                start.y = near[1] * vpm - app.world.origin[1] as f64;
+            }
             if let Some(&(foot, height, reach)) = app.trees_near(start, 30.0).get(n.saturating_sub(1)) {
                 let vpm = app.world.voxels_per_meter as f64;
                 let distance = setting("view_distance").and_then(|v| v.parse::<f64>().ok()).unwrap_or((height * 1.1).max(reach * 2.0) + 3.0);
@@ -2646,6 +3509,17 @@ impl App {
         }
     }
 
+    /// Whether one of `action`'s keys went down this frame, as the Controls window has them, see
+    /// bindings.rs
+    fn pressed(&self, action: bindings::Action) -> bool {
+        self.keys.map.pressed(&self.input, action)
+    }
+
+    /// Whether one of `action`'s keys is held down
+    fn held(&self, action: bindings::Action) -> bool {
+        self.keys.map.held(&self.input, action)
+    }
+
     /// Takes the lights and props of what the world's made of, `landscape`, in its voxels: every
     /// time it moves on, so what's come in turns up, see stream.rs. What's there already stays.
     fn adopt_features(&mut self, landscape: &worldgen::PieceFeatures) {
@@ -2661,10 +3535,11 @@ impl App {
             })
             .collect();
         // Bosses guard some of the ruins: golems the castles and watchtowers, drakes the desert
-        // ruins and pyramids, Ironhide the shrines, colonnades and ravines. Each waits a little way
-        // out in front, where there's room to fight.
+        // ruins and pyramids, Ironhide the shrines and colonnades. Each waits a little way out in
+        // front, where there's room to fight. Down in the ravines it's demi-boss's instead, below.
         let camps = &landscape.camps;
         let camp_at = |site: &worldgen::Site| camps.iter().find(|c| c.fire == site.position);
+        let cave_camp_at = |site: &worldgen::Site| landscape.cave_camps.iter().find(|c| c.fire == site.position);
         let lairs: Vec<game::Lair> = landscape
             .sites
             .iter()
@@ -2674,10 +3549,14 @@ impl App {
                 // Every dungeon's deepest hall has its Grave Knight, and every great cavern of a
                 // cave its boss; only some ruins have one, and some bandits' camps a warlord, more
                 // of the forts than the others, see worldgen\camps.rs
-                if pick >= BOSS_CHANCE && !matches!(site.kind, "dungeon" | "cavern" | "bandit camp" | "fallen throne" | "undercity heart") {
+                if pick >= BOSS_CHANCE && !matches!(site.kind, "dungeon" | "cavern" | "bandit camp" | "fallen throne" | "undercity heart" | "dragon lair") {
                     return None;
                 }
                 let look = match site.kind {
+                    // The Worldpyre Ancient in its far lair, in Free Roam: in Realms it's the Cinder
+                    // Crown's finale instead, see dragons.rs
+                    "dragon lair" if self.session.mode != Some(save::Mode::Realms) => dragons::ULTRA,
+                    "dragon lair" => return None,
                     // Raid bosses: in a third of the dungeons' deepest halls, and the odd castle and
                     // pyramid
                     "dungeon" if pick % 3 == 0 => animals::Look::CryptTitan,
@@ -2687,18 +3566,42 @@ impl App {
                     "undercity heart" => animals::Look::GraveKnight,
                     "castle" if pick % 5 == 0 => animals::Look::Colossus,
                     "pyramid" if pick % 5 == 0 => animals::Look::ElderWyrm,
+                    // A pharaoh sunk in the desert's ruins and pyramids; an ogre in the old castles,
+                    // towers and caverns, a jotun where it's cold and a thunderborn giant on the high
+                    // stone; an elderhorn at the woods' shrines, a mire crone at the jungle's, see
+                    // Look::for_ground and src\rig.rs
+                    // The Gilded Sphinx, a raid boss, in some of the desert's ruins, and the
+                    // Cinderback Tortoise in others, see src\bosses\roster.rs
+                    "desert ruins" if pick % 5 == 0 => animals::Look::GildedSphinx,
+                    // A Dune Wyrm under the sand out in front of others, see src\bosses\wyrms.rs
+                    "desert ruins" | "pyramid" if pick % 5 == 3 => animals::Look::DuneWyrm,
+                    "pyramid" | "desert ruins" if pick % 3 == 1 => animals::Look::SandPharaoh,
+                    "desert ruins" if pick % 3 == 0 => animals::Look::Cinderback,
+                    // The Lantern Widow in half the flooded churches, the Fenhulk in a quarter, a drake
+                    // in the rest, see src\bosses\roster\wardens.rs
+                    "flooded church" if pick % 2 == 0 => animals::Look::LanternWidow,
+                    "flooded church" if pick % 4 == 1 => animals::Look::Fenhulk,
+                    // The Gloamdelver digging in a fifth of the great caverns
+                    "cavern" if pick % 5 == 1 => animals::Look::Gloamdelver,
+                    // The Skymane on the high towers, see src\dragons\skymane.rs, and the Grotto Squid
+                    // in the pools of the waterfall caves, see src\bosses\kraken.rs
+                    "watchtower" if pick % 6 == 2 => animals::Look::Skymane,
+                    "waterfall cave" => animals::Look::GrottoSquid,
+                    "castle" | "watchtower" if pick % 4 == 3 => animals::Look::Ogre,
+                    "cavern" if pick % 4 == 3 => animals::Look::Ogre,
+                    "shrine" if pick % 2 == 0 => animals::Look::Elderhorn,
                     // Each turns into a kind of its own for the land round it, see Look::for_ground
                     // A castle fallen to the dead has one on its throne
                     "dungeon" | "fallen throne" => animals::Look::GraveKnight,
                     "castle" if pick % 3 == 1 => animals::Look::Ironhide,
                     "castle" if pick % 3 == 2 => animals::Look::GraveKnight,
+                    // The great carving over a ruined castle's gate, that the gargoyles on its walls
+                    // answer to, see gargoyles.rs
+                    "castle" if pick % 2 == 0 => animals::Look::Grotesque,
                     "castle" | "desert ruins" => animals::Look::Golem,
                     "watchtower" | "colonnade" if pick % 2 == 1 => animals::Look::Direwolf,
                     "watchtower" | "pyramid" | "flooded church" => animals::Look::Drake,
                     "colonnade" => animals::Look::Ironhide,
-                    // A crevice is shut in under the ground, with no way down to it, so nothing
-                    // guards it
-                    "ravine" => animals::Look::Spider,
                     // In caves spiders, cave bears, and golems of the stone itself
                     "cavern" if pick % 3 == 2 => animals::Look::Golem,
                     "cavern" if pick % 3 == 1 => animals::Look::Ironhide,
@@ -2709,15 +3612,22 @@ impl App {
                 };
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
-                let out = if matches!(site.kind, "ravine" | "dungeon" | "cavern" | "bandit camp" | "fallen throne" | "undercity heart") { 0.0 } else { 16.0 };
+                let out = if matches!(site.kind, "dungeon" | "cavern" | "bandit camp" | "fallen throne" | "undercity heart" | "dragon lair") { 0.0 } else { 16.0 };
                 let at = [site.position[0] + fx / length * out, site.position[1] + fy / length * out, site.position[2]];
-                Some(game::Lair { look, position: to_voxels(at), key })
+                // As hard to beat there as a realm's finale, see realms::FINALE_PROMOTION
+                let key = if look == dragons::ULTRA { realms::finale_key_at([at[0] as f64, at[1] as f64]) } else { key };
+                Some(game::Lair { look, position: to_voxels(at), key, raid: None })
             })
             .collect();
+        // In Realms, the realm's own three raid bosses too, and the Innert Gate or its portal home,
+        // see session.rs
+        let (raids, shrines) = self.realm_sites();
+        let lairs: Vec<game::Lair> = lairs.into_iter().chain(raids).chain(self.serpent_sites()).collect();
         // Monsters haunt the other halls of dungeons, cave spiders nest in caverns or gloomwings
         // roost there, bandits keep camps, as many as each camp's band, their hoard turning up
-        // once they're all dead, gloomwings roost along open ravines, and burrowers dig in out in
-        // front of desert ruins and pyramids
+        // once they're all dead, and burrowers dig in out in front of desert ruins and pyramids.
+        // Down at the bottoms of open ravines the dead walk among the bones, gloomwings roost
+        // among the crystals and spiders nest, see worldgen\ravines.rs.
         let dens: Vec<game::Den> = landscape
             .sites
             .iter()
@@ -2735,12 +3645,33 @@ impl App {
                             hint: c.hint,
                         }),
                     ),
-                    "ravine" => (game::DenKind::Roost, 0.0, None),
+                    // Bandits by their fire in a cave, as at a camp out on the land, and the dead
+                    // lying under the floor of theirs, see worldgen\camps\cave.rs
+                    worldgen::CAVE_CAMP_SITE => match cave_camp_at(site)? {
+                        c if c.folk == worldgen::Folk::Bandits => (
+                            game::DenKind::Camp,
+                            0.0,
+                            Some(game::Band {
+                                keepers: std::iter::repeat_n(animals::Look::Bandit, c.bandits as usize).chain(std::iter::repeat_n(animals::Look::BanditBrute, c.brutes as usize)).collect(),
+                                within: c.spread as f64,
+                                hoard: game::Chest { position: to_voxels(c.chest), heading: c.heading as f64, key: c.chest.map(|v| (v * 10.0).round() as i64), luck: c.luck as f64, hoard: true },
+                                hint: c.hint,
+                            }),
+                        ),
+                        c if c.folk == worldgen::Folk::Dead => (game::DenKind::Risen, 0.0, None),
+                        _ => return None,
+                    },
+                    worldgen::ROOST_SITE => (game::DenKind::Roost, 0.0, None),
+                    worldgen::NEST_SITE => (game::DenKind::Nest, 0.0, None),
+                    worldgen::BONES_SITE => (game::DenKind::Hall, 0.0, None),
                     "desert ruins" | "pyramid" => (game::DenKind::Burrows, 12.0, None),
                     "fallen castle" | "fallen court" | "fallen hall" | "fallen throne" => (game::DenKind::Fallen, 0.0, None),
                     // The dead walking the streets, the square, the canal and the temple of a city
                     // fallen under the land
                     "undercity gate" | "undercity street" | "undercity canal" | "undercity plaza" | "undercity hall" => (game::DenKind::Sunken, 0.0, None),
+                    // Gargoyles asleep in stone on a ruin's tower, over a fallen castle's gate and
+                    // before a fallen city's temple, see gargoyles.rs
+                    "gargoyle perch" => (game::DenKind::Perch, 0.0, None),
                     _ => return None,
                 };
                 let [fx, fy] = site.facing;
@@ -2756,21 +3687,26 @@ impl App {
             .filter_map(|site| {
                 let key = site.position.map(|v| (v * 10.0).round() as i64);
                 if site.kind == "town stall" {
-                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: None });
+                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: None, trade: None });
+                }
+                // A specialist's stall beside it, see merchants.rs
+                if let Some(trade) = merchants::Trade::of_site(site.kind) {
+                    let heading = (site.facing[1] as f64).atan2(site.facing[0] as f64);
+                    return Some(game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.0, royal: None, trade: Some((trade, heading)) });
                 }
                 // The princess keeps the royal armoury in a castle's throne room
                 if site.kind.starts_with("royal") {
                     let heading = (site.facing[1] as f64).atan2(site.facing[0] as f64);
-                    return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading) });
+                    return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading), trade: None });
                 }
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || site.kind.starts_with("undercity") || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town") {
+                if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || site.kind.starts_with("undercity") || site.kind.starts_with("ravine") || site.kind == worldgen::LURKER_SITE || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | worldgen::CAVE_CAMP_SITE | "town" | "cave town" | "gargoyle perch") {
                     return None;
                 }
                 let [fx, fy] = site.facing;
                 let length = (fx * fx + fy * fy).sqrt().max(1e-3);
                 let at = [site.position[0] + fx / length * 11.0, site.position[1] + fy / length * 11.0, site.position[2]];
-                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7], within: 4.0, royal: None })
+                Some(game::Stall { position: to_voxels(at), key: [key[0], key[1], key[2] + 7], within: 4.0, royal: None, trade: None })
             })
             .collect();
         // Folk live round the towns' squares, those down in caverns in fewer of them, and some
@@ -2798,9 +3734,36 @@ impl App {
         let water = &self.water;
         self.game.set_lairs(&self.world, &|x, y| water.surface_at(x, y), lairs);
         self.game.set_dens(&self.world, &|x, y| water.surface_at(x, y), dens);
+        // The fires of the camps in caves, heard and giving off embers near them, see
+        // src\game\cavecamps.rs
+        self.game.set_cave_fires(landscape.cave_camps.iter().map(|c| game::CaveFire { position: to_voxels(c.fire), folk: c.folk, key: c.fire.map(|v| (v * 10.0).round() as i64) }).collect());
         self.game.set_stalls(&self.world, &|x, y| water.surface_at(x, y), stalls);
         self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
         self.game.set_guards(&self.world, &|x, y| water.surface_at(x, y), guards);
+        // A demi-boss down in one in five of the open ravines, the desert's, the snow's and the
+        // swamps' their own kinds, and out in front of a third of the ruins no boss keeps an
+        // armoured dead thing, see src\demis.rs
+        let climate = self.terrain_settings();
+        let ravines = landscape.sites.iter().filter(|site| site.kind == worldgen::LURKER_SITE).map(|site| {
+            let c = worldgen::climate(&climate, site.position[0], site.position[1]);
+            let key = demis::ravine(site.position.map(|v| (v * 10.0).round() as i64), c.snow, c.desert, c.jungle);
+            game::DemiLair { position: to_voxels(site.position), heading: (site.facing[1] as f64).atan2(site.facing[0] as f64), key }
+        });
+        let ruins = landscape.sites.iter().filter_map(|site| {
+            let key = site.position.map(|v| (v * 10.0).round() as i64);
+            let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
+            if pick < BOSS_CHANCE || pick % 3 != 0 || !matches!(site.kind, "castle" | "watchtower" | "colonnade" | "shrine" | "desert ruins" | "pyramid") {
+                return None;
+            }
+            let [fx, fy] = site.facing;
+            let length = (fx * fx + fy * fy).sqrt().max(1e-3);
+            let at = [site.position[0] + fx / length * 12.0, site.position[1] + fy / length * 12.0, site.position[2]];
+            Some(game::DemiLair { position: to_voxels(at), heading: (fy as f64).atan2(fx as f64), key: demis::keyed(key, demis::TOMB) })
+        });
+        let demis: Vec<game::DemiLair> = ravines.chain(ruins).collect();
+        self.game.set_demis(&self.world, &|x, y| water.surface_at(x, y), demis);
+        self.game.set_shrines(&self.world, shrines);
+        self.place_omens();
 
         let (chests, props): (Vec<&worldgen::Prop>, Vec<&worldgen::Prop>) = landscape.props.iter().partition(|p| p.kind == worldgen::PropKind::Chest);
         self.game.set_props(props.iter().map(|p| (animals::Look::of_prop(p.kind), to_voxels(p.position), p.heading as f64)).collect());
@@ -2817,6 +3780,10 @@ impl App {
                 })
                 .collect(),
         );
+        // The wing shrines on the peaks, a pair of wings in each one's nest, see worldgen\aeries.rs
+        let shrines = landscape.sites.iter().filter(|s| s.kind == worldgen::SHRINE);
+        let key = |p: [f32; 3]| [(p[0] * 10.0).round() as i64, (p[1] * 10.0).round() as i64, worldgen::SHRINE_KEY];
+        self.game.set_aeries(shrines.map(|s| (key(s.position), to_voxels(s.position))).collect(), self.world.voxels_per_meter as f64);
     }
 
     /// Blows a hole in the world `radius` meters round `center`, in voxels of it: the voxels go,
@@ -2877,9 +3844,11 @@ impl App {
         }
     }
 
-    /// Sends what's been carved and painted since last time to the GPU, all at once: each time
-    /// waits for the frame being drawn to finish, so a burst of holes and stains costs one wait
-    /// rather than one each
+    /// Makes ready what's been carved and painted since last time to go over to the GPU with the
+    /// next frame, all at once, see record_edits(). Nothing waits for the frames being drawn: what
+    /// goes over is copied from host memory of its own, and the frame's copies come after
+    /// everything sent to the GPU before, as each command buffer's first use of the world comes
+    /// after all that, so no frame still being drawn sees a brick half written.
     fn flush_edits(&mut self) {
         if self.edited.is_empty() && self.edited_ground.is_none() {
             return;
@@ -2890,85 +3859,83 @@ impl App {
         let mut cells = std::mem::take(&mut self.edited);
         cells.sort_unstable();
         cells.dedup();
-        // The frames still being drawn read what's about to change, so let them finish
-        if let Some(rcx) = &mut self.rcx {
-            wait_for_frames(rcx, &self.device);
+        if grew {
+            // Out of room for more bricks: a bigger buffer, the ones there copied over with the
+            // next frame before what's changed goes in, see grow_with_frame()
+            self.voxel_set.grow_with_frame(needed, spare_bricks(), &self.memory_allocator, &self.descriptor_set_allocator, &self.render_pipeline);
         }
-        // Bricks still to be copied over into more room for them go first, see grow_with_frame()
-        self.voxel_set.settle(&self.command_buffer_allocator, &self.queue);
-        if needed > self.voxel_set.capacity {
-            // Out of room for more bricks: a bigger buffer, the ones there are copied over on the GPU
-            self.voxel_set.grow(needed, &self.memory_allocator, &self.command_buffer_allocator, &self.descriptor_set_allocator, &self.render_pipeline, &self.queue);
-        }
-        if !cells.is_empty() {
-            self.upload_bricks(&cells);
-        }
-        if let Some((lo, hi)) = self.edited_ground.take() {
-            self.water.sync_ground(&self.world, lo, hi, &self.memory_allocator, &self.command_buffer_allocator, &self.queue);
-        }
-        // Screenshot runs say when sending what changed held a frame up
-        if self.capture.is_some() && (grew || start.elapsed().as_secs_f64() > 0.004) {
-            println!("Edits sent in {:.1} ms: {} bricks{}", start.elapsed().as_secs_f64() * 1000.0, cells.len(), if grew { ", after making more room" } else { "" });
-        }
-    }
-
-    /// Sends the brick grid `cells` of the main world to the GPU, along with their bricks
-    fn upload_bricks(&mut self, cells: &[usize]) {
-        let grid = self.voxel_set.grid.clone();
-        let mut data: Vec<u32> = cells.iter().map(|&c| self.world.brick_grid[c]).collect();
-        let grid_regions: Vec<BufferImageCopy> = cells
+        // The cells of the grid that changed, then their bricks, where they're kept in the room
+        // there is, see World::cell()
+        let mut words: Vec<u32> = cells.iter().map(|&c| self.world.brick_grid[c]).collect();
+        let grid = cells
             .iter()
             .enumerate()
-            .map(|(k, &c)| BufferImageCopy {
-                buffer_offset: (k * 4) as u64,
-                image_subresource: grid.subresource_layers(),
-                // Where it's kept in the room there is, see World::cell()
-                image_offset: self.world.cell_at(c),
-                image_extent: [1, 1, 1],
-                ..Default::default()
-            })
+            .map(|(k, &c)| BufferImageCopy { buffer_offset: (k * 4) as u64, image_offset: self.world.cell_at(c), image_extent: [1, 1, 1], ..Default::default() })
             .collect();
-        let mut brick_regions = Vec::new();
-        for &c in cells {
-            if let Some((index, words)) = self.world.brick_words(c) {
-                brick_regions.push(BufferCopy {
-                    src_offset: (data.len() * 4) as u64,
+        let mut bricks = Vec::new();
+        for &c in &cells {
+            if let Some((index, brick)) = self.world.brick_words(c) {
+                bricks.push(BufferCopy {
+                    src_offset: (words.len() * 4) as u64,
                     dst_offset: (index * worldgen::BRICK_WORDS * 4) as u64,
                     size: (worldgen::BRICK_WORDS * 4) as u64,
                     ..Default::default()
                 });
-                data.extend_from_slice(words);
+                words.extend_from_slice(brick);
             }
         }
-        let staging = Buffer::from_iter(
-            self.memory_allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            data,
-        )
-        .unwrap();
-        let mut builder = AutoCommandBufferBuilder::primary(self.command_buffer_allocator.clone(), self.queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
-        builder
-            .copy_buffer_to_image(CopyBufferToImageInfo {
-                regions: grid_regions.into(),
-                ..CopyBufferToImageInfo::buffer_image(staging.clone(), grid)
-            })
-            .unwrap();
-        if !brick_regions.is_empty() {
-            builder
-                .copy_buffer(CopyBufferInfo {
-                    regions: brick_regions.into(),
-                    ..CopyBufferInfo::buffers(staging, self.voxel_set.bricks.clone())
+        let ground = match self.edited_ground.take() {
+            // The ground, and where the water was laid on it, for each part of the room
+            Some((lo, hi)) => self
+                .water
+                .take_ground(&self.world, lo, hi)
+                .into_iter()
+                .map(|p| {
+                    let region = |at: [u32; 2], extent: [u32; 2]| BufferImageCopy { image_offset: [at[0], at[1], 0], image_extent: [extent[0], extent[1], 1], ..Default::default() };
+                    (
+                        (host_words(&self.memory_allocator, p.ground), region(p.at, p.extent)),
+                        (host_words(&self.memory_allocator, p.rest), region(p.rest_at, p.rest_extent)),
+                    )
                 })
-                .unwrap();
+                .collect(),
+            None => Vec::new(),
+        };
+        if words.is_empty() && ground.is_empty() {
+            return;
         }
-        builder.build().unwrap().execute(self.queue.clone()).unwrap().then_signal_fence_and_flush().unwrap().wait(None).unwrap();
+        // An empty buffer can't be made, so a word for nothing when only the ground changed
+        let words = if words.is_empty() { vec![0] } else { words };
+        self.edit_uploads.push(EditUpload { words: host_words(&self.memory_allocator, words), grid, bricks, ground });
+        // Screenshot runs say when making them ready took a while
+        if self.capture.is_some() && (grew || start.elapsed().as_secs_f64() > 0.004) {
+            println!("Edits made ready in {:.1} ms: {} bricks{}", start.elapsed().as_secs_f64() * 1000.0, cells.len(), if grew { ", after making more room" } else { "" });
+        }
+    }
+
+    /// Copies `edits`, what flush_edits() made ready, over to the GPU with the frame being recorded
+    /// into the world `voxel_set` and the ground of `water`, after the bricks there were if there's
+    /// more room for them now and before anything's drawn
+    fn record_edits(edits: &mut Vec<EditUpload>, voxel_set: &GpuWorld, water: &Water, builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>) {
+        if edits.is_empty() {
+            return;
+        }
+        let grid = voxel_set.grid.clone();
+        let images = water.images();
+        for edit in std::mem::take(edits) {
+            if !edit.grid.is_empty() {
+                let regions: Vec<BufferImageCopy> = edit.grid.into_iter().map(|r| BufferImageCopy { image_subresource: grid.subresource_layers(), ..r }).collect();
+                builder.copy_buffer_to_image(CopyBufferToImageInfo { regions: regions.into(), ..CopyBufferToImageInfo::buffer_image(edit.words.clone(), grid.clone()) }).unwrap();
+            }
+            if !edit.bricks.is_empty() {
+                builder.copy_buffer(CopyBufferInfo { regions: edit.bricks.into(), ..CopyBufferInfo::buffers(edit.words, voxel_set.bricks.clone()) }).unwrap();
+            }
+            for pair in edit.ground {
+                for ((words, region), image) in [(pair.0, &images.ground), (pair.1, &images.rest)] {
+                    let region = BufferImageCopy { image_subresource: image.subresource_layers(), ..region };
+                    builder.copy_buffer_to_image(CopyBufferToImageInfo { regions: [region].into(), ..CopyBufferToImageInfo::buffer_image(words, image.clone()) }).unwrap();
+                }
+            }
+        }
     }
 
     /// The wind, the water nearby and the birds in the trees, louder or quieter for where the
@@ -2996,10 +3963,36 @@ impl App {
         // Windier high up
         let height = (eye.z - self.world.sea_level.unwrap_or(0.0) as f64) / vpm;
         let wind = 0.45 + 0.55 * ((height - 15.0) / 30.0).clamp(0.0, 1.0);
-        let birds = outdoors && self.sun_elevation > 5.0 && self.game.leaves_falling() > 4;
+        let birds = outdoors && self.sky().sun.z > 0.09 && self.game.leaves_falling() > 4;
         let quiet = if outdoors { 1.0 } else { 0.35 };
         if let Some(sound) = &mut self.audio {
             sound.ambience(wind as f32 * quiet, ((wet / all) as f32 * 1.6).min(1.0) * quiet, birds, &view, dt);
+        }
+    }
+
+    /// The sky as it's drawn now: going round with the day, or held where the settings put the sun
+    fn sky(&self) -> daynight::Sky {
+        if self.fixed_sun { daynight::DayNight::fixed_sky(self.sun_azimuth as f64, self.sun_elevation as f64) } else { self.cycle.sky() }
+    }
+
+    /// The day's turned to `part`: the dusk's warned of with a bell, as the monsters will come
+    /// once it's dark, see raids.rs
+    fn day_turned(&mut self, part: daynight::Part) {
+        let message = match part {
+            daynight::Part::Dusk => "The sun's going down. Monsters come out at night: get behind walls.",
+            daynight::Part::Night => "Night has fallen.",
+            daynight::Part::Dawn => "Dawn breaks.",
+            daynight::Part::Day => return,
+        };
+        self.game.say(message);
+        if matches!(part, daynight::Part::Dusk | daynight::Part::Dawn) {
+            let view = self.view();
+            if let Some(sound) = &mut self.audio {
+                sound.play(audio::Cue::here(audio::Sound::Toll, if part == daynight::Part::Dusk { 0.55 } else { 0.35 }).pitched(if part == daynight::Part::Dusk { 0.85 } else { 1.1 }), &view);
+            }
+        }
+        if let Some(capture) = &self.capture {
+            println!("DAY TURNED to {part:?} at frame {}, {:.2} o'clock", capture.frame_times.len(), self.cycle.hour());
         }
     }
 
@@ -3332,10 +4325,16 @@ impl App {
             None => (world, None),
         };
         drop(landscape);
-        // What was there before isn't drawn with any more
+        // What was there before isn't drawn with any more, nor what was still to go over of it
         if let Some(rcx) = &mut self.rcx {
             wait_for_frames(rcx, &self.device);
         }
+        self.edited.clear();
+        self.edited_ground = None;
+        self.edit_uploads.clear();
+        self.pending_craters.clear();
+        self.pending_ripples.clear();
+        self.pending_stains.clear();
         self.voxel_set = get_voxel_set(
             self.memory_allocator.clone(),
             self.command_buffer_allocator.clone(),
@@ -3417,6 +4416,39 @@ impl App {
             }
         }
         self.look_from(eye, target);
+    }
+
+    /// Something going into the water at `at`, splashing `size`, 1 for a spell's, see
+    /// Combat::waves: the water knocked down there at once, a dip that rolls out as a ring of
+    /// wave, and let back a moment later, spread wider, so the wave goes on out and none of it's
+    /// lost. As much as is there to knock down in shallows, so it never takes the bottom dry.
+    fn ripple(&mut self, at: Vector3<f64>, size: f64, origin: Vector3<f64>) {
+        let vpm = self.world.voxels_per_meter as f64;
+        let radius = (0.7 + 0.45 * size) * vpm;
+        let there = self.water.volume_near(at.x, at.y, radius);
+        let volume = (RIPPLE_VOLUME * size.powf(1.5) * vpm.powi(3)).min(0.6 * there);
+        if volume < 0.05 * vpm.powi(3) {
+            return;
+        }
+        self.pending_ripples.push((0.0, at + origin, radius, -volume));
+        self.pending_ripples.push((RIPPLE_REFILL_SECONDS, at + origin, radius * 1.9, volume));
+        // At most a few dozen waiting, the oldest let go, as a hail of shots into the sea needs
+        // only so many waves
+        if self.pending_ripples.len() > 48 {
+            self.pending_ripples.drain(..self.pending_ripples.len() - 48);
+        }
+    }
+
+    /// The first of what's waiting in pending_ripples that's due, if any, into the water
+    fn let_ripples_out(&mut self, dt: f64, origin: Vector3<f64>) {
+        for r in &mut self.pending_ripples {
+            r.0 -= dt;
+        }
+        if let Some(k) = self.pending_ripples.iter().position(|r| r.0 <= 0.0) {
+            let (_, at, radius, volume) = self.pending_ripples.remove(k);
+            let at = at - origin;
+            self.water.pour(at.x, at.y, radius, volume);
+        }
     }
 
     /// Fills the bucket from the water the camera looks at
@@ -3526,7 +4558,8 @@ impl App {
     fn view_tree(&mut self, foot: Vector3<f64>, height: f64, reach: f64, distance: f64) {
         let vpm = self.world.voxels_per_meter as f64;
         let target = foot + Vector3::new(0.0, 0.0, height * 0.5 * vpm);
-        let sun = (self.sun_azimuth as f64).to_radians();
+        let key = self.sky().key;
+        let sun = key.y.atan2(key.x);
         let mut best = (usize::MAX, target);
         for turn in 0..12 {
             // Starting from the side the sun's on, so it's lit
@@ -3555,6 +4588,12 @@ impl App {
     }
 
     fn update(&mut self, event_loop: &ActiveEventLoop) {
+        // The camera back at the player's eye from following behind them, see chase_camera()
+        if let Some((off, pitch)) = self.chase.take() {
+            let scale = self.world.size.iter().copied().max().unwrap_or(1) as f64;
+            self.camera.position -= off / scale;
+            self.camera.rotation.x = pitch;
+        }
         let now = Instant::now();
         if now.duration_since(self.last_second) > Duration::from_secs(1) {
             self.fps = self.frames_since_last_second;
@@ -3569,15 +4608,75 @@ impl App {
         let delta_time = self.capture.as_ref().and_then(|c| c.step).unwrap_or(delta_time);
 
         if self.input.close_requested() {
+            self.save_game(true);
             event_loop.exit();
             return;
+        }
+        // What was picked from the menu last frame, and saving as the game goes on
+        if let Some(action) = self.session.action.take() {
+            self.menu_picked(action, event_loop);
+        }
+        if let Some(pick) = self.session.creator_pick.take() {
+            self.creator_picked(pick);
+        }
+        // `--set pick=new:freeroam@120` or `continue:realms@120` in a screenshot run starts that
+        // game at that frame, as its button would, a new one with the character the settings make,
+        // and says how long it took till its world was there to play in
+        static PICK: std::sync::OnceLock<Option<(bool, save::Mode, usize)>> = std::sync::OnceLock::new();
+        static PICKED: std::sync::Mutex<Option<Instant>> = std::sync::Mutex::new(None);
+        let pick = *PICK.get_or_init(|| {
+            let v = settings_from_args().into_iter().find(|(k, _)| k == "pick")?.1;
+            let (what, at) = v.split_once('@')?;
+            let (which, mode) = what.split_once(':')?;
+            Some((which == "new", save::Mode::parse(mode)?, at.parse().ok()?))
+        });
+        if let (Some((new, mode, at)), Some(frame)) = (pick, self.capture.as_ref().map(|c| c.frame_times.len()))
+            && frame == at
+        {
+            *PICKED.lock().unwrap_or_else(|e| e.into_inner()) = Some(Instant::now());
+            let save = if new { None } else { self.session.saves.saved(mode).cloned() };
+            self.begin(mode, save);
+        }
+        self.update_session(delta_time.min(0.25));
+        let mut picked = PICKED.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(when) = *picked
+            && !self.session.arriving
+            && !self.session.find_ground
+        {
+            println!("PICKED: the world there to play in, the loading screen gone, {:.0} ms after the game was started", when.elapsed().as_secs_f64() * 1000.0);
+            *picked = None;
+        }
+        drop(picked);
+        // `--set save_at=300` saves at that frame of a screenshot run, saying what it saved
+        static SAVE_AT: std::sync::OnceLock<Option<usize>> = std::sync::OnceLock::new();
+        let save_at = *SAVE_AT.get_or_init(|| settings_from_args().into_iter().find(|(k, _)| k == "save_at").and_then(|(_, v)| v.parse().ok()));
+        if let Some(frame) = self.capture.as_ref().map(|c| c.frame_times.len())
+            && save_at == Some(frame)
+        {
+            self.save_game(true);
+            println!("STATE saved at frame {frame}: {}", self.state_line());
         }
 
         // Screenshot runs from the command line ignore input, so they always show the same view
         let interactive = self.capture.is_none();
 
-        if interactive && self.input.key_pressed(KeyCode::Escape) {
-            if self.game.shopping() {
+        // A key being changed in the Controls window takes what's pressed, Esc too, and nothing
+        // else does meanwhile, see bindings.rs
+        let rebinding = interactive && self.keys.take(&self.input);
+        if interactive && !rebinding && self.input.key_pressed(KeyCode::Escape) && !editor::is_app() {
+            if self.keys.open {
+                self.keys.close();
+                if !self.menu_open && !self.inventory_open {
+                    self.set_focus(true);
+                }
+            } else if self.session.gate_open {
+                self.session.gate_action = Some(session::GateAction::Close);
+            } else if self.skills_open {
+                self.skills_open = false;
+                self.set_focus(true);
+            } else if self.map.open {
+                self.toggle_map();
+            } else if self.game.shopping() {
                 self.game.close_shop();
                 if !self.inventory_open {
                     self.set_focus(true);
@@ -3585,86 +4684,139 @@ impl App {
             } else if self.inventory_open {
                 self.inventory_open = false;
                 self.set_focus(true);
+            } else if self.menu_open && self.session.creator.is_some() {
+                // Back from painting to making a new character, or from that to the menu
+                if !self.session.creator.as_mut().is_some_and(|c| c.close_paint()) {
+                    self.session.creator = None;
+                }
             } else if self.menu_open && self.started {
                 self.menu_open = false;
                 self.set_focus(true);
             } else {
                 self.menu_open = true;
                 self.set_focus(false);
+                // Saved whenever the menu's opened, should the game be left from it
+                self.save_game(false);
             }
         }
-        let playing = interactive && !self.menu_open;
-        if playing && !self.game.shopping() && (self.input.key_pressed(KeyCode::KeyI) || self.input.key_pressed(KeyCode::Tab)) {
+        use bindings::Action;
+        // Nor while the Controls window's open, the world held still behind it
+        let playing = interactive && !self.menu_open && !self.keys.open;
+        if playing && !self.game.shopping() && !self.skills_open && self.pressed(Action::Inventory) {
             self.inventory_open = !self.inventory_open;
             self.set_focus(!self.inventory_open);
         }
-        if playing && self.input.key_pressed(KeyCode::F1) {
+        // The skill web, see skills.rs: over everything, the world held still behind it
+        if std::mem::take(&mut self.skills_closed) {
+            self.set_focus(true);
+        }
+        if playing && !self.game.shopping() && self.loaded_scene.is_terrain() && self.pressed(Action::Skills) {
+            self.skills_open = !self.skills_open;
+            self.inventory_open = false;
+            self.set_focus(!self.skills_open);
+        }
+        // The model editor's own app is the editor, open from the start, see editor.rs
+        if editor::is_app() && !self.editor.open {
+            let eye = camera_to_voxels(self.camera.position, self.world.size);
+            self.editor.toggle(&self.world, eye, &mut self.game);
+            self.set_focus(false);
+        }
+        let playing = playing && !self.editor.open;
+        if playing && self.pressed(Action::Settings) {
             self.show_settings = !self.show_settings;
+        }
+        if playing && self.pressed(Action::Map) {
+            self.toggle_map();
         }
 
         let eye = camera_to_voxels(self.camera.position, self.world.size);
         let look = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz().normalize();
         // Scripts fight by themselves, see run_script()
         let mut controls = std::mem::take(&mut self.script_controls);
-        if playing && !self.focused && !self.inventory_open && !self.game.shopping() && self.input.mouse_pressed(MouseButton::Left) {
+        if playing && !self.focused && !self.inventory_open && !self.game.shopping() && !self.session.gate_open && self.input.mouse_pressed(MouseButton::Left) {
             self.set_focus(true);
         } else if playing && self.focused && !self.game.dead() {
+            // Gathering with G, and building with B, which takes the mouse and the keys for picking
+            // what to build, see building.rs
+            let building = self.loaded_scene.is_terrain() && self.update_building(delta_time);
             let bucket = self.game.holding_bucket() && !self.game.has_target();
-            let armed = self.game.holding_weapon();
-            if armed {
+            let armed = self.game.holding_weapon() && !building;
+            if building {
+            } else if armed {
                 controls = combat::Controls {
-                    attack: self.input.mouse_pressed(MouseButton::Left),
-                    holding: self.input.mouse_held(MouseButton::Left),
-                    heavy: self.input.mouse_pressed(MouseButton::Right),
-                    aiming: self.input.mouse_held(MouseButton::Right),
-                    special: self.input.key_pressed(KeyCode::KeyR) || self.input.mouse_pressed(MouseButton::Middle),
+                    attack: self.pressed(Action::Attack),
+                    holding: self.held(Action::Attack),
+                    heavy: self.pressed(Action::Heavy),
+                    aiming: self.held(Action::Heavy),
+                    special: self.pressed(Action::Special),
+                    reload: self.pressed(Action::Reload),
                 };
-            } else if self.input.mouse_pressed(MouseButton::Left) {
+            } else if self.pressed(Action::Attack) {
                 if bucket {
                     self.scoop_water(eye, look);
+                } else if self.game.holding_hook() && !self.game.has_target() {
+                    // The grappling hook thrown, see rope.rs
+                    self.throw_hook();
                 } else {
                     self.game.primary(eye);
                 }
             }
-            if self.input.key_pressed(KeyCode::KeyT) {
+            if self.pressed(Action::Ammo) {
                 self.game.switch_ammo();
             }
-            if self.input.key_pressed(KeyCode::KeyE) {
+            // Building, E mends what's damaged
+            if self.pressed(Action::Mend) && building {
+                self.mend_here();
+            } else if self.pressed(Action::Interact) && !building && !self.door_here() && !self.furnace_here() && !self.hearth_here() {
                 self.game.interact(eye);
                 // Trading with a merchant frees the mouse for their stall
                 if self.game.shopping() {
                     self.set_focus(false);
                 }
             }
-            if self.input.mouse_pressed(MouseButton::Right) && !armed {
+            if self.pressed(Action::Heavy) && !armed && !building {
                 if self.game.holding_bucket() {
                     self.pour_water(eye, look);
                 } else {
                     self.game.eat_selected();
                 }
             }
-            let digits = [
-                KeyCode::Digit1, KeyCode::Digit2, KeyCode::Digit3, KeyCode::Digit4, KeyCode::Digit5,
-                KeyCode::Digit6, KeyCode::Digit7, KeyCode::Digit8, KeyCode::Digit9,
-            ];
-            if let Some(slot) = digits.iter().position(|&k| self.input.key_pressed(k)) {
+            if let Some(slot) = self.keys.map.hotbar_pressed(&self.input).filter(|_| !building) {
                 self.game.select(slot);
             }
             // On foot the wheel goes through what's carried, flying it zooms
             let wheel = self.input.scroll_diff().1;
-            if self.focused && self.player.is_some() && wheel != 0.0 {
+            if self.focused && self.player.is_some() && wheel != 0.0 && !building {
                 self.game.scroll(if wheel < 0.0 { 1 } else { -1 });
             }
         }
 
-        // The world stands still while the menu is open
-        if !self.menu_open && self.animals_on && self.loaded_scene.is_terrain() {
+        // The world stands still while the menu is open, and while it's built afresh round the
+        // player behind the dark, as on going through to another realm, so nothing that was about
+        // them, a night's raiders least of all, can fall on them unseen meanwhile
+        if !self.menu_open && !self.editor.open && !self.skills_open && !self.held_still() && self.animals_on && self.loaded_scene.is_terrain() {
             let feet = self.player.as_ref().map(|p| p.position);
             let view = self.view();
-            let water = &self.water;
             let start = Instant::now();
+            self.tell_sea();
+            self.game.show_falling_leaves(self.falling_leaves);
+            let water = &self.water;
             self.game.update(&self.world, &|x, y| water.surface_at(x, y), feet, &view, controls, delta_time.min(0.1));
             self.slow("the fighting, animals and such", start);
+            // A tool's blow landing gathers what it struck, see tools.rs
+            self.update_tools(delta_time.min(0.1));
+            // Trees coming down, see felling.rs
+            self.update_felling(delta_time.min(0.1));
+            // The fires burning down, smoking and warming whoever's by them, see hearths.rs
+            self.update_hearths(delta_time.min(0.1));
+            // Monsters coming at night, and what's built taking their blows, see night.rs
+            let start = Instant::now();
+            self.update_raid(delta_time.min(0.1));
+            self.slow("the night's raid", start);
+            // The merchants living at the base, see merchants.rs
+            self.update_merchants(delta_time.min(0.1));
+            // The old foundations of the gate in a new game of Realms, see gates.rs
+            self.lay_ruins();
             // A shot kicking the view up, springing back down
             let kick = self.game.kick();
             self.camera.rotation.x += kick - self.kicked;
@@ -3675,17 +4827,45 @@ impl App {
                     sound.play(cue, &view);
                 }
             }
-            // Explosions blowing holes in the world, and splashing stains on it, sent to the GPU
-            // all together
+            // Explosions blowing holes in the world, a few milliseconds' worth a frame and the rest
+            // left for the frames after, so a burst of them doesn't hold one up, kept by where they
+            // are in the whole landscape meanwhile; then splashing stains on it, which are quick,
+            // once the holes before them are blown, so they're on the ground the holes leave; all
+            // sent to the GPU together
             self.batching = true;
-            for (center, radius) in self.game.take_craters() {
-                self.blast(center, radius);
+            let origin = Vector3::new(self.world.origin[0] as f64, self.world.origin[1] as f64, 0.0);
+            let craters = self.game.take_craters();
+            self.pending_craters.extend(craters.into_iter().map(|(center, radius)| (center + origin, radius)));
+            // Water knocked down where things went into it, as they go in, before they've got
+            // to the bottom
+            for (at, size) in self.game.take_waves() {
+                self.ripple(at, size, origin);
             }
-            let start = Instant::now();
-            for (center, radius, material, burn) in self.game.take_stains() {
-                self.stain(center, radius, material, burn);
+            self.let_ripples_out(delta_time.min(0.1), origin);
+            let stains = self.game.take_stains();
+            self.pending_stains.extend(stains.into_iter().map(|(center, radius, material, burn)| (center + origin, radius, material, burn)));
+            // What's blown and splashed this frame, for what's built to take the blows, see below
+            let mut struck = Vec::new();
+            // At least a quarter of those waiting, so however many come they never fall far behind
+            let (start, least) = (Instant::now(), 1 + self.pending_craters.len() / 4);
+            let mut blown = 0;
+            while (blown < least || start.elapsed().as_secs_f64() < CARVE_SECONDS)
+                && let Some((at, radius)) = self.pending_craters.pop_front()
+            {
+                self.blast(at - origin, radius);
+                struck.push((at - origin, radius, true));
+                blown += 1;
             }
-            self.slow("splashing stains", start);
+            if self.pending_craters.is_empty() {
+                let start = Instant::now();
+                for (at, radius, material, burn) in std::mem::take(&mut self.pending_stains) {
+                    self.stain(at - origin, radius, material, burn);
+                    struck.push((at - origin, radius, false));
+                }
+                self.slow("splashing stains", start);
+            }
+            // What's built is damaged by blasts rather than holed, see building.rs
+            self.blasted(&struck);
             self.batching = false;
             let start = Instant::now();
             self.flush_edits();
@@ -3694,6 +4874,10 @@ impl App {
             let push = self.game.take_knockback();
             if let Some(player) = &mut self.player {
                 player.push(push);
+                // Carried off in the roc's talons, see game\aerie.rs
+                if let Some(haul) = self.game.take_haul() {
+                    player.haul(haul);
+                }
             }
             // Slain, the player lies there until they rise again, at the last place they stood
             // safe. Screenshot runs rise by themselves.
@@ -3702,7 +4886,7 @@ impl App {
             {
                 println!("DIED at frame {}: {}", capture.frame_times.len(), self.game.last_message().unwrap_or(""));
             }
-            let rise = (interactive && self.focused && (self.input.key_pressed(KeyCode::Space) || self.input.mouse_pressed(MouseButton::Left)))
+            let rise = (interactive && self.focused && (self.pressed(Action::Jump) || self.pressed(Action::Attack)))
                 || (self.capture.is_some() && self.game.dead_for() > 4.0);
             if self.game.can_rise() && rise {
                 let spot = self.game.rise();
@@ -3728,22 +4912,92 @@ impl App {
                 self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
                 println!("LEAPT at frame {} 150 m on", capture.frame_times.len());
             }
+            // `--set loot_look_at=N` brings the player at frame N of a screenshot run to stand
+            // `loot_look_from=4` meters back from the rarest weapon dropped near, looking at it,
+            // as at a boss's hoard spilled out, see game\drops.rs
+            static LOOT_LOOK: std::sync::OnceLock<Option<(usize, f64)>> = std::sync::OnceLock::new();
+            let loot_look = *LOOT_LOOK.get_or_init(|| {
+                let settings = settings_from_args();
+                let at = settings.iter().find(|(k, _)| k == "loot_look_at").and_then(|(_, v)| v.parse().ok())?;
+                Some((at, settings.iter().find(|(k, _)| k == "loot_look_from").and_then(|(_, v)| v.parse().ok()).unwrap_or(4.0)))
+            });
+            if let (Some(capture), Some((at, back))) = (&self.capture, loot_look)
+                && at == capture.frame_times.len()
+            {
+                let eye = camera_to_voxels(self.camera.position, self.world.size);
+                let marks = self.game.drop_marks(eye);
+                if !marks.is_empty() {
+                    let vpm = self.world.voxels_per_meter as f64;
+                    // The rarest weapon among it, or the rarest of anything
+                    let middle = self.game.rarest_weapon_dropped(eye, game::DROP_MARKED).unwrap_or_else(|| marks.iter().rev().max_by_key(|m| m.1).map_or(eye, |m| m.0));
+                    let away = Vector3::new(eye.x - middle.x, eye.y - middle.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+                    let to = middle + away * back * vpm + Vector3::new(0.0, 0.0, 0.5 * vpm);
+                    match &mut self.player {
+                        Some(player) => {
+                            player.position = to;
+                            self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
+                        }
+                        None => self.camera.position = voxels_to_camera(to + Vector3::new(0.0, 0.0, (0.5 * back).max(1.2) * vpm), self.world.size),
+                    }
+                    self.camera.look_at(voxels_to_camera(middle, self.world.size));
+                    println!("LOOKING at {} things dropped from {back} m, at frame {at}", marks.len());
+                }
+            }
         }
         self.ambience(delta_time);
 
-        if playing && self.input.key_pressed(KeyCode::KeyF) {
+        // The day goes round, except while the menu holds the world still
+        if !self.menu_open && self.loaded_scene.is_terrain() && !self.fixed_sun {
+            // `--set day_speed=30` goes round that much faster, to see the sun moving costs nothing
+            static DAY_SPEED: std::sync::OnceLock<f64> = std::sync::OnceLock::new();
+            let speed = *DAY_SPEED.get_or_init(|| settings_from_args().into_iter().find(|(k, _)| k == "day_speed").and_then(|(_, v)| v.parse().ok()).unwrap_or(1.0));
+            if let Some(part) = self.cycle.advance(delta_time.min(0.25) * speed) {
+                self.day_turned(part);
+            }
+        }
+
+        if playing && self.pressed(Action::Fly) {
             self.player = match self.player {
                 Some(_) => None,
                 None => Some(Player::new(camera_to_voxels(self.camera.position, self.world.size), &self.world)),
             };
         }
 
+        // The grappling hook hauling the player along its rope, which jump lets go of, wings
+        // spread while jump's held in the air, and the winds bringing the player back after a
+        // fall below the sky isles, see rope.rs
+        let scripted_jump = self.scripted_jump && !self.game.dead();
+        let jump_held = (self.focused && interactive && !self.game.dead() && self.held(Action::Jump)) || scripted_jump;
+        let let_go = (self.focused && interactive && self.pressed(Action::Jump)) || (scripted_jump && !self.scripted_jump_was);
+        self.scripted_jump_was = scripted_jump;
+        self.update_hook(delta_time.min(0.05), let_go);
+        self.update_fall();
+        let gliding = self.gliding(jump_held || self.session.trial_glides());
+        if let Some(player) = &mut self.player {
+            player.gliding = gliding;
+        }
+        // The wings worn spreading and folding, beating on a flap, and what they leave behind, see
+        // wings.rs. Worn on the back, they leave the hands free for what's in them.
+        // A flap is jump pressed in the air, a dash Shift, for wings that do, and wings that truly
+        // fly beat while it's held too
+        let tried = self.session.trial_flaps();
+        let shift = self.focused && interactive && self.pressed(Action::Run);
+        self.update_wings(delta_time.min(0.05), gliding, let_go || tried, jump_held, shift || tried);
+        // The realm's raid bosses warded while its guardians stand, see guardians.rs
+        self.update_guardians(delta_time.min(0.05));
+
         // The dead don't walk
         let alive = !self.game.dead();
-        let t = |k: KeyCode| (self.focused && interactive && alive && self.input.key_held(k)) as u8 as f64;
+        let t = |a: Action| (self.focused && interactive && alive && self.keys.map.held(&self.input, a)) as u8 as f64;
+        // Which way they're walking, and whether they jump, as the keys have it
+        let walk = if self.focused && interactive && alive { self.keys.map.walk(&self.input) } else { bindings::Walk::default() };
+        let running = self.focused && self.held(Action::Run);
         let mut footstep = None;
         // Nor does anyone while the world's built afresh round them, see stream.rs
         let held = self.held_still();
+        // How much of a step out towards each edge of the world flying on wings may take, no more
+        // than the world keeps up with as it moves on a strip at a time, see stream.rs
+        let room = [Vector3::x(), -Vector3::x(), Vector3::y(), -Vector3::y()].map(|d| self.keep_up(d).norm());
         if let Some(player) = &mut self.player
             && !held
         {
@@ -3751,7 +5005,7 @@ impl App {
             let yaw = self.camera.rotation.z;
             let forward = Vector2::new(-yaw.sin(), yaw.cos());
             let right = Vector2::new(yaw.cos(), yaw.sin());
-            let mut wish = forward * (t(KeyCode::KeyW) - t(KeyCode::KeyS)) + right * (t(KeyCode::KeyD) - t(KeyCode::KeyA));
+            let mut wish = forward * walk.forward + right * walk.right;
             if self.scripted_walk && alive {
                 wish = forward;
             }
@@ -3760,12 +5014,19 @@ impl App {
             }
             // Slowed by frost
             wish *= self.game.pace();
-            let jump = t(KeyCode::Space) > 0.0;
-            let sprint = alive && (self.focused && self.input.held_shift() || self.scripted_sprint);
+            let jump = walk.jump || (self.scripted_jump && alive);
+            let sprint = alive && (running || self.scripted_sprint);
             // Long hitches, like generating a world, shouldn't fling the player through the floor
             let water = &self.water;
             let before = player.position;
             player.update(&self.world, &|x, y| water.surface_at(x, y), wish, jump, sprint, delta_time.min(0.05));
+            if player.flight.is_some() {
+                let mut step = player.position - before;
+                for axis in 0..2 {
+                    step[axis] *= room[2 * axis + (step[axis] < 0.0) as usize];
+                }
+                player.position = before + step;
+            }
             // Fallen dead, the view sinks to the ground
             let fallen = Vector3::new(0.0, 0.0, 1.0 * self.game.fallen() * self.world.voxels_per_meter as f64);
             self.camera.position = voxels_to_camera(player.eye(&self.world) - fallen, self.world.size);
@@ -3783,6 +5044,12 @@ impl App {
             self.last_feet = Some(feet);
             let wading = self.water.depth_at(feet.x, feet.y) > 0.1 * vpm;
             self.wake = (wading && !self.menu_open).then_some(([feet.x, feet.y], [moved.x, moved.y]));
+            // And a shark's fin cutting the top of the water, see seas.rs
+            if let Some(fin) = self.game.fin_wake(feet)
+                && (self.wake.is_none() || seas::fin_turn())
+            {
+                self.wake = Some(fin);
+            }
 
             // How fast they're going over the ground and how far they've walked, to bob what's in hand
             let over_ground = if player.on_ground() { (feet - before).xy().norm() / vpm } else { 0.0 };
@@ -3804,10 +5071,9 @@ impl App {
             self.wake = None;
             self.walk_speed = 0.0;
             if self.focused && interactive {
-                let v = Vector3::new(KeyCode::KeyD, KeyCode::KeyW, KeyCode::KeyQ).map(t)
-                    - Vector3::new(KeyCode::KeyA, KeyCode::KeyS, KeyCode::KeyE).map(t);
+                let v = Vector3::new(t(Action::Right) - t(Action::Left), t(Action::Forward) - t(Action::Back), t(Action::FlyUp) - t(Action::FlyDown));
 
-                let sprint = if self.input.held_shift() { 4.0 } else { 1.0 };
+                let sprint = if running { 4.0 } else { 1.0 };
                 let step = (self.camera.rotation_matrix() * v.push(0.0) * delta_time * self.move_speed * sprint).xyz();
                 // No faster out to the edge of the world than it moves on, see stream.rs
                 let scale = self.world.size.iter().copied().max().unwrap_or(1) as f64;
@@ -3837,6 +5103,32 @@ impl App {
             }
         }
 
+        // The model editor's view, turned about what it shows
+        if self.editor.open && !interactive {
+            self.editor.update(delta_time, &editor::Controls::default(), &mut self.game);
+        } else if self.editor.open {
+            let (dx, dy) = self.input.mouse_diff();
+            let (left, right) = (self.input.mouse_held(MouseButton::Left), self.input.mouse_held(MouseButton::Right));
+            let keys = [(KeyCode::Space, ' '), (KeyCode::KeyX, 'x'), (KeyCode::KeyY, 'y'), (KeyCode::KeyZ, 'z'), (KeyCode::KeyG, 'g'), (KeyCode::KeyQ, 'q'), (KeyCode::KeyE, 'e'), (KeyCode::KeyK, 'k'), (KeyCode::Delete, 'd')];
+            let controls = editor::Controls {
+                drag: if left { (dx as f64, dy as f64) } else { (0.0, 0.0) },
+                turn: if right { (dx as f64, dy as f64) } else { (0.0, 0.0) },
+                scroll: self.input.scroll_diff().1 as f64,
+                keys: keys.iter().filter(|(k, _)| self.input.key_pressed(*k)).map(|(_, c)| *c).collect(),
+            };
+            self.editor.update(delta_time, &controls, &mut self.game);
+        }
+        if self.editor.open {
+            let vpm = self.world.voxels_per_meter as f64;
+            let (target, yaw, pitch, distance) = self.editor.camera(vpm);
+            self.camera.rotation = Vector3::new(pitch, 0.0, yaw);
+            self.camera.fov = 60.0;
+            let forward = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let mut eye = target - forward * distance;
+            eye.z = eye.z.min(self.world.size[2] as f64 - 2.0 * vpm);
+            self.camera.position = voxels_to_camera(eye, self.world.size);
+        }
+        let sky_key = self.sky().key;
         let view = [
             self.camera.position.x,
             self.camera.position.y,
@@ -3845,8 +5137,8 @@ impl App {
             self.camera.rotation.y,
             self.camera.rotation.z,
             self.camera.fov,
-            self.sun_azimuth as f64,
-            self.sun_elevation as f64,
+            sky_key.x + 2.0 * sky_key.z,
+            sky_key.y,
             self.shadows as u8 as f64,
             self.ambient_occlusion as u8 as f64,
             self.bounce_light as u8 as f64,
@@ -3859,6 +5151,40 @@ impl App {
             self.screenshot_requested = true;
         }
         self.run_script();
+        self.chase_camera();
+    }
+
+    /// For seeing the player's wings from behind in screenshot runs, `--set chase=5,1.5,1.2,12`:
+    /// the camera that many meters back from the player's eye, up and to the right, looking the
+    /// way they look but that many degrees further down, the player's own body and wings seen
+    /// there and nothing held before the eye. Taken back to the eye at the start of the next
+    /// update, so all else goes on as it would.
+    fn chase_camera(&mut self) {
+        static CHASE: std::sync::OnceLock<Option<[f64; 4]>> = std::sync::OnceLock::new();
+        let chase = *CHASE.get_or_init(|| {
+            let v = settings_from_args().into_iter().find(|(k, _)| k == "chase")?.1;
+            let n: Vec<f64> = v.split(',').filter_map(|n| n.trim().parse().ok()).collect();
+            let or = |i: usize, default: f64| n.get(i).copied().unwrap_or(default);
+            Some([or(0, 5.0), or(1, 1.5), or(2, 1.0), or(3, 12.0)])
+        });
+        let followed = chase.filter(|_| self.capture.is_some() && self.player.is_some() && !self.menu_open);
+        self.game.set_seen_from_behind(followed.is_some());
+        let Some([back, up, side, tilt]) = followed else {
+            return;
+        };
+        let pitch = self.camera.rotation.x;
+        let vpm = self.world.voxels_per_meter as f64;
+        let rotation = self.camera.rotation_matrix();
+        let forward = (rotation * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+        let flat = Vector3::new(forward.x, forward.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::y());
+        let right = flat.cross(&Vector3::z());
+        let mut off = (-flat * back + right * side + Vector3::z() * up) * vpm;
+        let eye = camera_to_voxels(self.camera.position, self.world.size);
+        off.z = off.z.min(self.world.size[2] as f64 - 2.0 * vpm - eye.z);
+        let scale = self.world.size.iter().copied().max().unwrap_or(1) as f64;
+        self.camera.position += off / scale;
+        self.camera.rotation.x = pitch - tilt.to_radians();
+        self.chase = Some((off, pitch));
     }
 
     /// Sets everything a quality preset does, as when one's picked in the settings
@@ -3872,12 +5198,15 @@ impl App {
         self.bounce_light = s.bounce_light;
         self.smooth_shading = s.smooth_shading;
         self.wind = s.wind;
+        // Unless they've been turned on or off themselves
+        self.falling_leaves = quality::kept_leaves().unwrap_or(s.falling_leaves);
         self.denoise = s.denoise;
         self.bloom = s.bloom;
         self.view_distance = s.view_distance;
         self.reflections = s.reflections;
         self.fast_upscale = s.fast_upscale;
         self.shafts.quality = s.sun_shafts;
+        baked::set_live(s.live_npcs);
         water::set_flowing_area((s.flowing_water_m * self.world.voxels_per_meter as f32) as u32);
     }
 
@@ -3901,6 +5230,8 @@ impl App {
             ("play", f) => self.play_step(f, run_time, eye),
             ("bucket", 1) => self.stand_in_water(0.6, false),
             ("wade", 1) => self.stand_in_water(0.5, true),
+            // Out in the water among the fish, and a shark, see seas.rs
+            ("sea", f) => self.sea_step(f),
             ("bucket", 40) => {
                 let depth = |w: &Water| w.raycast(&self.world, eye, look, game::REACH * vpm).map(|(p, _)| w.depth_at(p.x, p.y) / vpm);
                 println!("frame {frame}: water depth where looking {:?} m, bucket {:.2} m³", depth(&self.water), self.game.bucket());
@@ -3912,6 +5243,35 @@ impl App {
                 println!("frame {frame}: poured, bucket now {:.2} m³", self.game.bucket());
             }
             ("wade", 2) => self.scripted_walk = true,
+            // Keeps still `--set drift_after=20` seconds, then a shot, then moves `--set drift=40`
+            // meters to the right and `drift_back` meters back, still looking the same way, for the
+            // water that's been flowing to be seen beside the still water past it, see water.rs
+            ("drift", f) => {
+                let setting = |key: &str, default: f64| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                // The camera, not someone walking about
+                if f == 1 {
+                    self.player = None;
+                }
+                // A shot of how it is before moving off
+                if self.play.flown == 0.0
+                    && run_time >= setting("drift_after", 20.0) - 1.0
+                    && let Some(capture) = &mut self.capture
+                {
+                    self.play.flown = 1.0;
+                    capture.shots.push(f + 2);
+                }
+                if self.play.leg == 0 && run_time >= setting("drift_after", 20.0) {
+                    self.play.leg = 1;
+                    let right = Vector3::new(look.y, -look.x, 0.0).try_normalize(1e-9).unwrap_or(Vector3::x());
+                    let back = -Vector3::new(look.x, look.y, 0.0).try_normalize(1e-9).unwrap_or(Vector3::y());
+                    let eye = eye + (right * setting("drift", 40.0) + back * setting("drift_back", 0.0)) * vpm;
+                    self.camera.position = voxels_to_camera(eye, self.world.size);
+                    println!("frame {f}: drifted to {:.0}, {:.0}", eye.x / vpm, eye.y / vpm);
+                    if let Some(capture) = &mut self.capture {
+                        capture.shots.push(f + 2);
+                    }
+                }
+            }
             // Runs straight on and on, saying now and then how far the edge of the world is ahead,
             // to see the next piece of the landscape is ready before the edge is reached
             ("trek", f) => {
@@ -3925,6 +5285,177 @@ impl App {
                     let edge = eye.x.min(eye.y).min(sx - eye.x).min(sy - eye.y) / vpm;
                     let at = [self.world.origin[0] as f64 / vpm + eye.x / vpm, self.world.origin[1] as f64 / vpm + eye.y / vpm];
                     println!("frame {frame}: at {:.0}, {:.0}, edge {edge:.0} m off, a strip coming in: {}", at[0], at[1], self.stream.as_ref().is_some_and(|s| s.busy()));
+                }
+            }
+            // Goes round the views `--set tour=x,y,up,face,pitch;...`, in meters of the landscape, `up`
+            // over the ground or the water there, facing `face` degrees round as `--set face=` does
+            // and `pitch` degrees up, holding each `--set tour_hold=3` seconds with a shot at its
+            // end. With `--set tour_speed=20` it flies there that many meters a second, so the world
+            // moves on a strip at a time on the way, rather than going there at once. For looking the
+            // water over from everywhere it's seen, see water.rs. A view of just `x,y` looks at the
+            // tree nearest there, whole, as `--set view_tree=` does.
+            ("tour", f) => {
+                let settings = settings_from_args();
+                let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+                let views: Vec<Vec<f64>> = setting("tour").unwrap_or_default().split(';').map(|v| v.split(',').filter_map(|n| n.trim().parse().ok()).collect::<Vec<f64>>()).filter(|v| v.len() == 5 || v.len() == 2).collect();
+                let hold = setting("tour_hold").and_then(|v| v.parse().ok()).unwrap_or(3.0);
+                let speed: Option<f64> = setting("tour_speed").and_then(|v| v.parse().ok());
+                if f <= 1 {
+                    self.player = None;
+                    self.play.leg = 0;
+                    self.play.leg_end = f64::INFINITY;
+                    self.play.fly_last = run_time;
+                }
+                let dt = (run_time - self.play.fly_last).clamp(0.0, 0.1);
+                self.play.fly_last = run_time;
+                let Some(view) = views.get(self.play.leg as usize) else {
+                    return;
+                };
+                let origin = [self.world.origin[0] as f64, self.world.origin[1] as f64];
+                let spot = Vector3::new(view[0] * vpm - origin[0], view[1] * vpm - origin[1], 0.0);
+                let top = |x: f64, y: f64| {
+                    let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(x as i64, y as i64, z))).map_or(0.0, |z| z as f64 + 1.0);
+                    ground.max(self.water.surface_at(x, y))
+                };
+                let trees = view.len() == 2;
+                let (up, face, pitch) = if trees { (6.0, 0.0, 0.0) } else { (view[2], view[3], view[4]) };
+                let there = Vector3::new(spot.x, spot.y, top(spot.x, spot.y) + up * vpm);
+                let to = there - eye;
+                let arrived = self.play.leg_end.is_finite();
+                if !arrived {
+                    let step = match speed {
+                        Some(s) if to.xy().norm() > s * vpm * dt => self.keep_up(Vector3::new(to.x, to.y, 0.0).normalize() * s * vpm * dt),
+                        _ => Vector3::new(to.x, to.y, 0.0),
+                    };
+                    let mut at = eye + step;
+                    // Over the land on the way, and down to the view's height once there
+                    at.z = if step.xy().norm() < to.xy().norm() { (top(at.x, at.y) + up.max(6.0) * vpm).min(self.world.size[2] as f64 - 2.0 * vpm) } else { there.z };
+                    self.camera.position = voxels_to_camera(at, self.world.size);
+                    self.camera.rotation.z = face.to_radians() - std::f64::consts::FRAC_PI_2;
+                    self.camera.rotation.x = pitch.to_radians();
+                    if (at - there).xy().norm() < 0.5 && !self.stream.as_ref().is_some_and(|s| s.teleport.is_some()) {
+                        self.play.leg_end = run_time + hold;
+                        println!("frame {frame}: tour view {} at {:.1}, {:.1}, {:.1} m up", self.play.leg, view[0], view[1], at.z / vpm);
+                        if trees && let Some(&(foot, height, reach)) = self.trees_near(there, 12.0).first() {
+                            println!("looking at a tree {height:.1} m high, {reach:.1} m round");
+                            self.view_tree(foot, height, reach, (height * 1.1).max(reach * 2.0) + 3.0);
+                        }
+                    }
+                } else if !trees {
+                    // Kept there, as the water under it may still be moving
+                    self.camera.position = voxels_to_camera(Vector3::new(there.x, there.y, eye.z), self.world.size);
+                }
+                if arrived {
+                    if run_time >= self.play.leg_end {
+                        if let Some(capture) = &mut self.capture {
+                            capture.shots.push(f + 2);
+                        }
+                        println!("frame {frame}: tour shot {} at frame {}, {} leaves falling", self.play.leg, f + 2, self.game.leaves_falling());
+                        self.water.report(&self.command_buffer_allocator, &self.queue);
+                        self.play.leg += 1;
+                        self.play.leg_end = f64::INFINITY;
+                        if self.play.leg as usize >= views.len()
+                            && let Some(capture) = &mut self.capture
+                        {
+                            capture.frames = (f + 4) as u32;
+                        }
+                    }
+                }
+            }
+            // Takes off on wings that truly fly, `--set wings=seraph`, see wings::Lift: stands a
+            // moment, then holds jump looking `wf_pitch=14` degrees up till `wf_climb=30` meters
+            // over where they took off, then flies on looking `wf_look=-8` degrees, beating now and
+            // then to hold their height, for `wf_cruise=240` frames before letting go to come down.
+            // With `wf_tap=1` it takes off pressing jump twice rather than holding it, and with
+            // `wf_tire=1` it beats on till the wings tire, then holds jump to glide down, or with
+            // `wf_tire=2` lets go and falls.
+            ("wingfly", f) => {
+                static START: std::sync::Mutex<Option<(f64, usize, usize, usize)>> = std::sync::Mutex::new(None);
+                let settings = settings_from_args();
+                let number = |key: &str, default: f64| settings.iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                let mut start = START.lock().unwrap();
+                // Walking in the world first seen, with no game begun
+                if self.player.is_none() && self.session.mode.is_none() {
+                    self.player = Some(Player::new(eye, &self.world));
+                }
+                // Once the world's there to play in, the wings put on if they're not yet
+                let Some(feet) = self.player.as_ref().map(|p| p.position).filter(|_| !self.session.arriving && !self.held_still()) else {
+                    *start = None;
+                    return;
+                };
+                if self.game.worn_wings().is_none()
+                    && let Some(k) = settings.iter().find(|(k, _)| k == "wings").and_then(|(_, v)| wings::by_id(v))
+                {
+                    self.game.find_once(game::Item::Wings(k), "Wings, to try out.");
+                }
+                let ground = (0..feet.z.max(0.0) as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(feet.x as i64, feet.y as i64, z))).map_or(0.0, |z| z as f64 + 1.0);
+                // Phases: 0 standing, 1 climbing, 2 flying on, 3 coming down
+                let (from, phase, since, began) = start.get_or_insert((feet.z, 0, f, f));
+                let up = (feet.z - *from) / vpm;
+                // `wf_shots=60,120` takes shots so many frames after the world's there
+                let shots: Vec<usize> = settings.iter().find(|(k, _)| k == "wf_shots").map_or(Vec::new(), |(_, v)| v.split(',').filter_map(|n| n.trim().parse().ok()).collect());
+                if shots.contains(&(f - *began))
+                    && let Some(capture) = &mut self.capture
+                {
+                    capture.shots.push(f + 2);
+                    println!("frame {frame}: WINGFLY shot at frame {}", f + 2);
+                }
+                // And `wf_end=400` ends the run so many frames after
+                if f - *began == number("wf_end", 1e9) as usize
+                    && let Some(capture) = &mut self.capture
+                {
+                    capture.frames = (f + 4) as u32;
+                }
+                let (tap, tire) = (number("wf_tap", 0.0) > 0.0, number("wf_tire", 0.0) > 0.0);
+                let next = match *phase {
+                    0 if f >= *since + 40 => {
+                        *from = feet.z;
+                        Some(1)
+                    }
+                    1 if !tire && up >= number("wf_climb", 30.0) => Some(2),
+                    1 if tire && self.wings.beats.tired => Some(3),
+                    2 if f >= *since + number("wf_cruise", 240.0) as usize => Some(3),
+                    _ => None,
+                };
+                if let Some(next) = next {
+                    *phase = next;
+                    *since = f;
+                    println!("frame {frame}: WINGFLY phase {next}, {up:.1} m up");
+                }
+                let into = f - *since;
+                self.camera.rotation.x = match *phase {
+                    1 => number("wf_pitch", 14.0),
+                    2 => number("wf_look", -8.0),
+                    3 => -6.0,
+                    _ => 0.0,
+                }
+                .to_radians();
+                self.scripted_jump = match *phase {
+                    // Pressing jump twice: a jump, then again in the air; or held from the ground
+                    1 if tap && into < 20 => into < 4 || (8..12).contains(&into),
+                    1 => true,
+                    // Beating now and then to hold the height reached
+                    2 => up < number("wf_climb", 30.0) - 1.0 && into % 10 < 2,
+                    // Coming down, gliding if the wings tired, or falling with `wf_tire=2`
+                    3 => tire && number("wf_tire", 0.0) < 2.0,
+                    _ => false,
+                };
+                if f % 10 == 0
+                    && let Some(player) = &self.player
+                {
+                    let beats = &self.wings.beats;
+                    println!(
+                        "frame {frame}: WINGFLY phase {} {up:.1} m up, {:.1} m over the ground, wind {:.2}{}{}, airspeed {:.1}, climbing {:.1} m/s, on the ground {}, health {:.0}",
+                        *phase,
+                        (feet.z - ground) / vpm,
+                        beats.wind,
+                        if beats.up { " flying" } else { "" },
+                        if beats.tired { " tired" } else { "" },
+                        player.airspeed() / vpm,
+                        player.velocity().z / vpm,
+                        player.on_ground(),
+                        self.game.vitals().0
+                    );
                 }
             }
             // Flies over the land `--set fly_speed=27` meters a second, as flying with shift held is,
@@ -3978,11 +5509,27 @@ impl App {
                     );
                 }
             }
+            // The model editor, see editor.rs: opened, then a creature in a pose, a dragon's bone
+            // keyed, a weapon held and one part of it, and a pair of wings, a shot of each
+            ("editor", f) => {
+                if f == 10 && !self.editor.open {
+                    self.editor.toggle(&self.world, eye, &mut self.game);
+                    self.set_focus(false);
+                }
+                if self.editor.open && self.editor.scripted(f, &mut self.game)
+                    && let Some(capture) = &mut self.capture
+                {
+                    capture.shots.push(f + 2);
+                }
+            }
+            ("summons", f) => self.summons_step(f, eye),
             ("hunt", 20) => {
                 println!("frame {frame}: aiming at something: {}", self.game.has_target());
                 self.game.primary(eye);
                 println!("frame {frame}: carrying {}", self.game.carried());
             }
+            // Every kind of special ammo flying slowly across the view in rows, for a contact sheet
+            ("ammo_sheet", 5) => self.game.ammo_sheet(eye, look),
             ("hunt", 40) => {
                 self.game.interact(eye);
                 println!("frame {frame}: carrying {}", self.game.carried());
@@ -4028,14 +5575,52 @@ impl App {
                 if f == 1 || f <= when {
                     match if pack { self.game.nearest_foe(eye) } else { self.game.nearest_boss(eye) } {
                         Some(target) => self.camera.look_at(voxels_to_camera(target, self.world.size)),
-                        None if f == 1 => self.camera.rotation.x = -0.35,
+                        // `--set special_pitch=-0.12` looks further off, at the ground there
+                        None if f == 1 => self.camera.rotation.x = settings_from_args().iter().find(|(k, _)| k == "special_pitch").and_then(|(_, v)| v.parse().ok()).unwrap_or(-0.35),
                         None => {}
                     }
                 }
-                self.script_controls = combat::Controls { special: f == when, ..Default::default() };
+                // `--set special_key=right` uses its power on right click instead, as a player would
+                self.script_controls = if settings_from_args().iter().any(|(k, v)| k == "special_key" && v == "right") {
+                    let t = (f as f64 - when as f64) / 60.0;
+                    let mut c = self.game.power_controls(t, 1.0 / 60.0);
+                    // `--set power_hold=1.2` keeps right click held aiming that long, as a priest
+                    // charges the great spear
+                    let hold = settings_from_args().into_iter().find(|(k, _)| k == "power_hold").and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(0.0);
+                    if t >= 0.0 && t < hold {
+                        c.aiming = true;
+                    }
+                    c
+                } else {
+                    // `--set special_aim=1` aims it with right click held the while, its ring showing
+                    let aiming = settings_from_args().iter().any(|(k, v)| k == "special_aim" && v == "1");
+                    combat::Controls { special: f == when, aiming, ..Default::default() }
+                };
                 if f == 29 || f == 120 || f % 50 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
+            }
+            // Stands in the shallows nearest, looking straight down into the water, to see the
+            // player's own body there, see character::body
+            ("mirror", 1) => self.stand_in_water(0.35, true),
+            // Looks down at the shadow the player's own body casts, the sun behind them
+            ("shadow", _) => {
+                let vpm = self.world.voxels_per_meter as f64;
+                let key = self.sky().key;
+                let away = -Vector3::new(key.x, key.y, 0.0).normalize();
+                let eye = camera_to_voxels(self.camera.position, self.world.size);
+                self.camera.look_at(voxels_to_camera(eye + away * 2.0 * vpm - Vector3::new(0.0, 0.0, 1.7 * vpm), self.world.size));
+            }
+            ("mirror", f) if f > 1 => self.camera.rotation.x = -1.35,
+            // Casts with what's in hand at the nearest of a pack `--set arrive_enemy` put there, again
+            // and again from frame `--set cast_from=40`, facing it, as a priest hurls spears
+            ("cast", f) => {
+                let from = settings_from_args().into_iter().find(|(k, _)| k == "cast_from").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(40);
+                if let Some(target) = self.game.nearest_foe(eye) {
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                let casting = f >= from && (f - from) % 40 < 6;
+                self.script_controls = combat::Controls { attack: casting, holding: casting, ..Default::default() };
             }
             // Finds the nearest water and casts into it, to see it splash
             ("splash", f) => {
@@ -4059,6 +5644,91 @@ impl App {
                 }
                 let cast = (30..33).contains(&f);
                 self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
+            }
+            // Blows a hole in the shore nearest, half in the water, to see the water flow into it,
+            // and says how deep it is in the middle of it as it does
+            ("shore", f) => {
+                let vpm = self.world.voxels_per_meter as f64;
+                // Where the nearest water ahead runs up onto the land, from the water back towards
+                // the eye till it's dry, found the first frame and kept
+                static SHORE: std::sync::Mutex<Option<[f64; 3]>> = std::sync::Mutex::new(None);
+                let mut shore: Option<Vector3<f64>> = SHORE.lock().unwrap().map(Vector3::from);
+                'rings: for ring in (4..60).filter(|_| shore.is_none()) {
+                    for k in 0..ring * 6 {
+                        let a = k as f64 / (ring * 6) as f64 * TAU;
+                        let (x, y) = (eye.x + a.cos() * ring as f64 * vpm, eye.y + a.sin() * ring as f64 * vpm);
+                        if self.water.depth_at(x, y) > 0.5 * vpm {
+                            let toward = Vector3::new(eye.x - x, eye.y - y, 0.0).normalize() * 0.25 * vpm;
+                            let mut p = Vector3::new(x, y, 0.0);
+                            while self.water.depth_at(p.x, p.y) > 0.05 * vpm {
+                                p += toward;
+                            }
+                            shore = Some(p);
+                            *SHORE.lock().unwrap() = Some(p.into());
+                            break 'rings;
+                        }
+                    }
+                }
+                match shore {
+                    None if f == 1 => println!("no water near"),
+                    None => {}
+                    Some(at) => {
+                        let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64;
+                        if f == 1 {
+                            let back = Vector3::new(at.x - eye.x, at.y - eye.y, 0.0).normalize() * 2.0 * vpm;
+                            self.camera.look_at(voxels_to_camera(Vector3::new(at.x + back.x, at.y + back.y, ground), self.world.size));
+                            println!("frame {frame}: the shore {:.0} m off, its ground {:.1} m up", (at - Vector3::new(eye.x, eye.y, 0.0)).xy().norm() / vpm, ground / vpm);
+                        }
+                        // A frost pool as a frost shot leaves one where it lands, then the hole
+                        // blown where it lies, with `--set shore_pool=1`
+                        if f == 38 && settings_from_args().iter().any(|(k, v)| k == "shore_pool" && v == "1") {
+                            self.game.lay_pool(Vector3::new(at.x, at.y, ground + 0.5), Some(weapons::Element::Frost));
+                        }
+                        if f == 40 {
+                            self.blast(Vector3::new(at.x, at.y, ground), 2.5);
+                        }
+                        if [39, 41, 50, 70, 100, 150, 220, 299].contains(&f) {
+                            let deep = |dx: f64| self.water.depth_at(at.x + dx * vpm, at.y) / vpm;
+                            println!("frame {frame}: the ground {:.2} m up; water deep {:.2} m in the middle, {:.2} m and {:.2} m a meter either way", ground / vpm, deep(0.0), deep(-1.0), deep(1.0));
+                        }
+                    }
+                }
+            }
+            // A pool of each element and one of churned earth laid out over the ground ahead, all
+            // at once, to watch them spread out, go on, die down and leave their marks, and laid
+            // out again every 250 frames, for timing them
+            ("pools", f) => {
+                if f == 1 {
+                    self.camera.rotation.x = -0.62;
+                }
+                if f >= 20 && (f - 20) % 250 == 0 {
+                    let water = &self.water;
+                    let middle = self.game.lay_pools(&self.world, &|x, y| water.surface_at(x, y), eye, look);
+                    // Looking down at the middle of them, the first time
+                    if f == 20 {
+                        self.camera.look_at(voxels_to_camera(middle, self.world.size));
+                    }
+                }
+            }
+            // One spell cast up over the land ahead, the view narrowed to follow it a long way
+            // off, to see it fly on and on
+            ("far", f) => {
+                // `--set far_turn=2` turns round that many radians first, away from what's near
+                if f == 1 {
+                    let turn = settings_from_args().into_iter().find(|(k, _)| k == "far_turn").and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(0.0);
+                    self.camera.rotation.z += turn;
+                    self.camera.rotation.x = 0.22;
+                    self.camera.fov = 30.0;
+                }
+                // Nothing near for it to home in on
+                if f <= 30 {
+                    self.game.shoo_animals(eye, 80.0);
+                }
+                let cast = (30..33).contains(&f);
+                self.script_controls = combat::Controls { attack: cast, holding: cast, ..Default::default() };
+                if f % 15 == 0 || (30..42).contains(&f) {
+                    println!("frame {frame}: {}", self.game.in_flight(eye));
+                }
             }
             // One spell cast at the ground a few meters ahead, to watch it go off and what it leaves
             ("spells", f) => {
@@ -4166,6 +5836,120 @@ impl App {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
             }
+            // The player stands where they started, for the nearest boss to fight, while the camera
+            // watches it from off to one side, to see how it moves, see src\rig.rs: `--set
+            // view_distance=12` that many meters off, `view_from=1.4` that many radians round from
+            // where the player is, `view_up=2` that many meters up, and `view_attack=1` the player
+            // attacking all the while
+            ("rig", f) => {
+                if f == 1 && self.player.is_none() {
+                    self.player = Some(Player::new(eye, &self.world));
+                }
+                let number = |key: &str, default: f64| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                let feet = self.player.as_ref().map_or(eye, |p| p.position);
+                // Placed once and held still, so what moves is only the boss, unless `view_follow=1`;
+                // and the player's kept on their feet, so the boss goes on fighting them
+                static HELD: std::sync::Mutex<Option<(Vector3<f64>, Vector3<f64>)>> = std::sync::Mutex::new(None);
+                // Or till `view_place=70`, once what's to be watched is there
+                let placing = f as f64 <= number("view_place", 20.0) || number("view_follow", 0.0) > 0.5;
+                let mut held = HELD.lock().unwrap();
+                // Or `watch=villager`, `watch=merchant` and the like, the nearest of that look, to see
+                // how townsfolk, merchants and animals move
+                let watched = match settings_from_args().into_iter().find(|(k, _)| k == "watch") {
+                    Some((_, name)) => self.game.nearest_named(feet, &name),
+                    None => self.game.nearest_boss(feet),
+                };
+                if let Some(target) = watched.filter(|_| placing) {
+                    let back = (feet - target).xy().try_normalize(1e-6).unwrap_or_else(Vector2::x);
+                    let from = number("view_from", 1.4);
+                    // `watch_distance=` in place of `view_distance=`, which also draws that many
+                    // times as far
+                    let distance = number("watch_distance", number("view_distance", 12.0));
+                    // Somewhere with nothing in the way, not in a tree: round one way and the other
+                    // from where it's asked for, and nearer
+                    let spot = |round: f64, d: f64| {
+                        let (c, s) = (round.cos(), round.sin());
+                        let way = Vector3::new(back.x * c - back.y * s, back.x * s + back.y * c, 0.0);
+                        target + way * d * vpm + Vector3::new(0.0, 0.0, number("view_up", 1.0) * vpm)
+                    };
+                    let clear = |at: Vector3<f64>| {
+                        let steps = ((at - target).norm() / (0.5 * vpm)) as usize;
+                        (0..steps.saturating_sub(5)).all(|k| {
+                            let p = at + (target - at) * (k as f64 / steps.max(1) as f64);
+                            self.world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64) == worldgen::material::AIR
+                        })
+                    };
+                    let tries = [0.0, -2.0 * from, 0.5, -2.0 * from - 0.5, -0.5, -2.0 * from + 0.5, 1.0, -2.0 * from - 1.0];
+                    let at = [1.0, 0.75, 0.55].into_iter().flat_map(|f| tries.map(|t| spot(from + t, distance * f))).find(|&at| clear(at)).unwrap_or_else(|| spot(from, distance));
+                    *held = Some((at, target));
+                    if f == 20 || f as f64 == number("view_place", 20.0) {
+                        println!("frame {frame}: watching from {:.1} m off what's at {:?}", (at - target).norm() / vpm, (target / vpm).map(|v| (v * 10.0).round() / 10.0));
+                    }
+                }
+                // Looking at its feet, or `view_look=2.5` that many meters up from them, at the middle
+                // of something that floats
+                if let Some((at, target)) = *held {
+                    self.camera.position = voxels_to_camera(at, self.world.size);
+                    self.camera.look_at(voxels_to_camera(target + Vector3::new(0.0, 0.0, number("view_look", 0.0) * vpm), self.world.size));
+                }
+                self.game.set_health(100.0);
+                let pressing = number("view_attack", 0.0) > 0.5 && f > 30;
+                self.script_controls = combat::Controls { attack: pressing, holding: pressing, ..Default::default() };
+                // `--set view_power=30` uses the power of what's in hand at that frame, as a player
+                // would with right click, as a necromancer calls up the dead (`gallery=phalanx_binding
+                // gallery_hold=1` puts one in hand), to watch them with `watch=summon`
+                let power = number("view_power", 0.0);
+                if power > 0.0 && f as f64 >= power {
+                    self.script_controls = self.game.power_controls((f as f64 - power) / 60.0, 1.0 / 60.0);
+                }
+                // `--set villager_turn=60` turns every villager about two thirds of the way round at
+                // that frame, to watch them come round as they walk
+                if number("villager_turn", 0.0) as usize == f && f > 0 {
+                    self.game.turn_villagers(2.1);
+                }
+                if f % 60 == 0 {
+                    println!("frame {frame}: {}", self.game.report(eye));
+                }
+            }
+            // Circles round the nearest dragon, looking at it, to see it from every side as it goes
+            // about: `--set view_distance=20` that many meters off rather than as far as its wings
+            // reach twice over, `--set view_turn=0.01` radians round a frame, and `--set
+            // view_up=0.3` that much of the way up
+            ("dragon", f) => {
+                let number = |key: &str, default: f64| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                if let Some((target, reach)) = self.game.nearest_dragon(eye) {
+                    let distance = number("view_distance", reach * 2.1) * vpm;
+                    let round = number("view_turn", 0.008) * f as f64 + number("view_from", 0.6);
+                    let up = number("view_up", 0.3);
+                    let at = target + Vector3::new(round.cos(), round.sin(), up) * distance;
+                    let floor = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64 + 1.5 * vpm;
+                    self.camera.position = voxels_to_camera(Vector3::new(at.x, at.y, at.z.max(floor)), self.world.size);
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                if f % 60 == 0 {
+                    println!("frame {frame}: {}", self.game.report(eye));
+                }
+            }
+            // The same round the nearest avian or gargoyle, see avians.rs, as close as `--set
+            // view_distance=` says or twice as far as its wings reach, as `view_up=` high; or with
+            // `--set view_fixed=1` from where the camera is, only looking at it
+            ("aerie", f) => {
+                let number = |key: &str, default: f64| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok()).unwrap_or(default);
+                if let Some((target, reach)) = self.game.nearest_winged(eye) {
+                    if number("view_fixed", 0.0) == 0.0 {
+                        let distance = number("view_distance", reach * 2.0) * vpm;
+                        let round = number("view_turn", 0.006) * f as f64 + number("view_from", 0.6);
+                        let up = number("view_up", 0.25);
+                        let at = target + Vector3::new(round.cos(), round.sin(), up) * distance;
+                        let floor = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64 + 1.5 * vpm;
+                        self.camera.position = voxels_to_camera(Vector3::new(at.x, at.y, at.z.max(floor)), self.world.size);
+                    }
+                    self.camera.look_at(voxels_to_camera(target, self.world.size));
+                }
+                if f % 60 == 0 {
+                    println!("frame {frame}: {}", self.game.report(eye));
+                }
+            }
             // Fights the boss near by, then walks up to the nearest weapon it dropped and looks at
             // it, to see its card. `--set take=1` picks it up once there.
             ("spoils", f) => {
@@ -4210,7 +5994,8 @@ impl App {
                 if f == 1 && self.player.is_none() {
                     self.player = Some(Player::new(eye, &self.world));
                 }
-                self.script_controls = combat::Controls { heavy: true, aiming: true, ..Default::default() };
+                // Let go now and then, for a power aimed with right click held to go off
+                self.script_controls = combat::Controls { heavy: true, aiming: f % 40 != 39, ..Default::default() };
                 if f % 40 == 0 {
                     println!("frame {frame}: {} holes blown", self.craters.len());
                 }
@@ -4247,9 +6032,40 @@ impl App {
                         None => {}
                     }
                 }
-                self.script_controls = combat::Controls { attack: f >= 30, holding: f >= 30, ..Default::default() };
+                // `--set fire_once=1` shoots once, and `fire_turn=0.2` then turns that far to the side,
+                // so where the shot lands isn't behind the gun, for shots of a shell bursting
+                let setting = |key: &str| settings_from_args().into_iter().find(|(k, _)| k == key).and_then(|(_, v)| v.parse::<f64>().ok());
+                let firing = f >= 30 && (setting("fire_once") != Some(1.0) || f <= 31);
+                self.script_controls = combat::Controls { attack: firing, holding: firing, ..Default::default() };
+                if f == 34
+                    && let Some(turn) = setting("fire_turn")
+                {
+                    self.camera.rotation.z += turn;
+                }
                 if f % 100 == 0 {
                     println!("frame {frame}: {} holes blown", self.craters.len());
+                }
+            }
+            // Three hand cannon shells coming down on the ground ahead one after another, a small,
+            // an ordinary and a big one, left to right, `--set blasts_every=60` frames apart, for
+            // shots of each size, see Combat::drop_shell()
+            ("blasts", f) => {
+                if f == 1 {
+                    self.camera.rotation.x = -0.3;
+                }
+                // Stirred too little to see, so the picture isn't built up over still frames, which
+                // would blur away a blast that's over in a moment
+                self.camera.rotation.z += if f % 2 == 0 { 1e-5 } else { -1e-5 };
+                let every = settings_from_args().into_iter().find(|(k, _)| k == "blasts_every").and_then(|(_, v)| v.parse::<usize>().ok()).unwrap_or(60);
+                for (k, size) in [0.55, 1.0, 1.5].into_iter().enumerate() {
+                    if f == 30 + every * k {
+                        let flat = Vector3::new(look.x, look.y, 0.0).normalize();
+                        let right = Vector3::new(flat.y, -flat.x, 0.0);
+                        let at = eye + flat * 10.0 * vpm + right * (k as f64 - 1.0) * 6.0 * vpm;
+                        let ground = (0..self.world.size[2] as i64).rev().find(|&z| !worldgen::is_passable(self.world.material_at(at.x as i64, at.y as i64, z))).unwrap_or(0) as f64;
+                        self.game.drop_shell(Vector3::new(at.x, at.y, ground + 1.0), size);
+                        println!("frame {frame}: a shell {size} times as big coming down");
+                    }
                 }
             }
             // Draws all the way and shoots at the ground a little way ahead, over and over
@@ -4273,6 +6089,7 @@ impl App {
                 self.camera.position = voxels_to_camera(moved, self.world.size);
                 println!("frame {frame}: hopped {side} m");
             }
+            (name, f) if building::SCRIPTS.contains(&name) => self.bases_script(name, f),
             _ => {}
         }
         if let Some(player) = &self.player
@@ -4287,6 +6104,109 @@ impl App {
             && let Some(message) = after
         {
             println!("frame {frame}: message \"{message}\"");
+        }
+    }
+
+    /// `--script summons`, a necromancer's dead raised and fighting, for contact sheets, see
+    /// combat\signatures\summons.rs: the Bone Archers, the Bone Phalanx and the Grave Colossus
+    /// raised ahead, eight of the dead, going for the nearest of a gang of bandits there. Then with
+    /// `--set summons_part=strike` the player turns to a bandit off to the right and strikes it with
+    /// a bolt of their own, and all of them turn on it; with `summons_part=behind` a crossbowman
+    /// behind shoots the player in the back, and all of them turn on that, the player turning to
+    /// see; with `summons_part=none` the same fight without them. A shot every `--set
+    /// summons_every=10` frames from frame 280 to 600, and what they're
+    /// after said every 15. Best with `--step 0.016667`.
+    fn summons_step(&mut self, f: usize, eye: Vector3<f64>) {
+        let settings = settings_from_args();
+        let setting = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        let part = setting("summons_part").unwrap_or_else(|| "strike".into());
+        let every: usize = setting("summons_every").and_then(|v| v.parse().ok()).unwrap_or(10);
+        let vpm = self.world.voxels_per_meter as f64;
+        let feet = self.player.as_ref().map_or(eye - Vector3::new(0.0, 0.0, 1.6 * vpm), |p| p.position);
+        if f == 1 {
+            if self.player.is_none() {
+                self.player = Some(Player::new(eye, &self.world));
+            }
+            self.camera.rotation.x = -0.32;
+        }
+        if f == 2 {
+            // Which way the player faces, kept for where everything's put
+            self.play.heading = self.camera.rotation.z + std::f64::consts::FRAC_PI_2;
+            let ahead = Vector3::new(self.play.heading.cos(), self.play.heading.sin(), 0.0);
+            let right = Vector3::new(ahead.y, -ahead.x, 0.0);
+            let water = &self.water;
+            let level = |x: f64, y: f64| water.surface_at(x, y);
+            let mut foes = Vec::new();
+            for k in 0..3 {
+                foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Bandit, feet + (ahead * (11.0 + k as f64) + right * (k as f64 - 1.0) * 1.6) * vpm));
+            }
+            // Further off than the gang, so it's not what they'd go for themselves
+            foes.extend(self.game.place_foe(&self.world, &level, animals::Look::Bandit, feet + (right * 16.0 + ahead * 2.0) * vpm));
+            // Behind, or behind to one side or the other if that's water
+            let behind = [0.0, 0.6, -0.6, 1.1, -1.1].into_iter().find_map(|side| self.game.place_foe(&self.world, &level, animals::Look::Crossbowman, feet + (right * side - ahead) * 16.0 * vpm));
+            if behind.is_none() {
+                println!("frame {f}: no crossbowman put down behind");
+            }
+            foes.extend(behind);
+            self.play.foes = foes;
+            println!("frame {f}: foes {:?}", self.play.foes);
+        }
+        let flat_of = |heading: f64| Vector3::new(heading.cos(), heading.sin(), 0.0);
+        // The three summonings, one after another
+        // Each used once the weapon's up in hand
+        let casting = [(4, "archers_crystal"), (90, "phalanx_binding"), (176, "colossus_focus")];
+        let mut controls = combat::Controls::default();
+        // `summons_part=none`: the same without any of the dead, to weigh what they cost to draw
+        for (from, id) in casting.into_iter().filter(|_| part != "none") {
+            if f == from && !self.game.hold_part(id) {
+                println!("frame {f}: no part {id}");
+            }
+            if (from + 1..from + 86).contains(&f) {
+                controls = self.game.power_controls((f as f64 - from as f64 - 30.0) / 60.0, 1.0 / 60.0);
+            }
+        }
+        let foe = |k: usize, app: &Self| app.play.foes.get(k).and_then(|&id| app.game.foe_at(id));
+        match part.as_str() {
+            "behind" => {
+                // Roused, shooting the player in the back, and the player turning to see a moment
+                // after
+                if f == 290
+                    && let Some(&id) = self.play.foes.get(4)
+                {
+                    self.game.rouse(id);
+                }
+                if f >= 330
+                    && let Some(at) = foe(4, self)
+                {
+                    self.camera.look_at(voxels_to_camera(at, self.world.size));
+                    self.camera.rotation.x = self.camera.rotation.x.min(-0.12);
+                }
+            }
+            _ => {
+                // Turned to the one off to the right and striking it
+                if f >= 300
+                    && let Some(at) = foe(3, self)
+                {
+                    self.camera.look_at(voxels_to_camera(at, self.world.size));
+                    if (310..322).contains(&f) {
+                        controls = combat::Controls { attack: true, holding: true, ..Default::default() };
+                    }
+                }
+            }
+        }
+        if f < 300 && f > 2 {
+            let face = flat_of(self.play.heading);
+            self.camera.look_at(voxels_to_camera(eye + face * 10.0 * vpm - Vector3::new(0.0, 0.0, 3.2 * vpm), self.world.size));
+        }
+        self.script_controls = controls;
+        if f % 15 == 0 {
+            println!("frame {f}: {}", self.game.summons_line());
+        }
+        if (280..=600).contains(&f)
+            && (f - 280) % every.max(1) == 0
+            && let Some(capture) = &mut self.capture
+        {
+            capture.shots.push(f + 2);
         }
     }
 
@@ -4345,7 +6265,8 @@ impl App {
 
         if t >= self.play.next_pack {
             self.play.next_pack = t + 120.0;
-            let monsters: Vec<animals::Look> = animals::Look::ALL.into_iter().filter(|l| l.is_monster()).collect();
+            // Not sharks, which only ever swim, see animals\sealife.rs
+            let monsters: Vec<animals::Look> = animals::Look::ALL.into_iter().filter(|l| l.is_monster() && !l.is_sea()).collect();
             if !monsters.is_empty() {
                 let look = monsters[self.play.leg as usize * 7 % monsters.len()];
                 let ahead = (self.camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
@@ -4512,6 +6433,8 @@ impl App {
             let craters = self.craters.clone();
             let stains = self.stains.clone();
             let job = std::thread::spawn(move || {
+                // Built in the background, as the strips are, giving way to the game
+                worldgen::give_way();
                 let start = Instant::now();
                 let landscape = worldgen::place_for(&settings, place_at, place_size, &rivers);
                 let mut world = landscape.build(origin, size, fine_vpm);
@@ -4564,6 +6487,7 @@ impl App {
         self.upscale_pipeline.maybe_reload();
         self.water_pipeline.maybe_reload();
         self.skips_pipeline.maybe_reload();
+        self.builds_pipeline.maybe_reload();
         if let Some(preset) = self.pending_quality.take() {
             self.apply_quality(preset);
             quality::keep(preset);
@@ -4574,6 +6498,38 @@ impl App {
         self.update_near_detail();
         // For drawing what's held, and the numbers floating over what was hit
         let view = self.view();
+        // A grappling hook's rope, see rope.rs, and the wings worn, see wings.rs
+        let mut rope = if self.hook.is_some() || self.game.holding_hook() { self.rope_instances(&view) } else { Vec::new() };
+        rope.extend(self.wing_instances(&view));
+        // The wards round raid bosses, see guardians.rs
+        rope.extend(self.ward_instances());
+        let mut rope_lights = self.rope_lights(&view);
+        // And wards breaking, see guardians.rs
+        rope_lights.extend(self.ward_lights());
+        // How white the screen is as the winds bring the player back up, see rope.rs, and whether
+        // they're gliding
+        let fallen = self.fall_dark();
+        // The look of the realm the world is, see session.rs
+        let realm_look = self.realm_look();
+        let gliding_now = self.player.as_ref().is_some_and(|p| p.gliding && !p.on_ground());
+        let flying_now = gliding_now && self.wings.beats.up;
+        // The torches and lamps built, and where what's picked to build would go, see building.rs
+        let base_lights = building::base_lights(&self.bases, &self.world);
+        let ghost = if self.building.on && !self.menu_open { self.ghost() } else { None };
+        // And what G would gather where the player's looking
+        self.update_prompt(!self.menu_open && !self.inventory_open && !self.game.shopping() && !self.session.gate_open && !self.map.open);
+        let gate_choice = self.gate_choice();
+        let hearth_note = if self.menu_open || self.building.on { None } else { self.hearth_note() };
+        let raid_note = self.raid_note();
+        // The compass in Realms, and the map, see compass.rs
+        let bearing = if self.menu_open || self.session.gate_open || self.map.open { None } else { self.compass() };
+        // And what's dropped near marked on it, see game\drops.rs
+        let drop_marks = (!self.menu_open && !self.session.gate_open && !self.map.open && self.loaded_scene.is_terrain() && self.animals_on).then(|| self.drop_marks());
+        let map_marks = (self.map.open && !self.menu_open).then(|| self.map_marks());
+        // How many of the realm's guardians are slain, for the gate's window, see guardians.rs
+        let guardians = self.guardians_slain();
+        // And hints and messages aren't half hidden behind it or any other window
+        self.game.set_covered(map_marks.is_some() || self.skills_open || self.inventory_open || self.session.gate_open || self.game.shopping());
 
         let rcx = self.rcx.as_mut().unwrap();
 
@@ -4622,6 +6578,10 @@ impl App {
         // Lower resolution while the view changes, full detail once it settles, as much as the
         // GPU's memory has room for
         self.update_render_images(window_size.into());
+        // What the map beside the menu's to show, as the menu was last frame, see loading::Backdrop
+        let map_wanted = self.backdrop.as_ref().filter(|_| self.menu_open && !self.started).map(|_| self.map_wanted());
+        // For the signposts' words, see compass.rs
+        let landscape = self.terrain_settings();
         let rcx = self.rcx.as_mut().unwrap();
 
         let acquiring = Instant::now();
@@ -4647,7 +6607,6 @@ impl App {
 
         // What the menu and inventory ask for, done once the GUI is drawn
         let mut focus_change = None;
-        let mut quit = false;
         // Under the render scale sliders: what that comes to
         let render_note = self.show_settings.then(|| {
             let [w, h, _] = rcx.images.render_image.extent();
@@ -4672,102 +6631,136 @@ impl App {
             note
         });
 
+        let mut reread_models = false;
+        // The land behind the menu's gone for good once a game's begun
+        if self.started {
+            self.backdrop = None;
+        }
         rcx.gui.immediate_ui(|gui| {
             let ctx = gui.context();
+            if self.editor.open {
+                reread_models = self.editor.ui(&ctx, &mut self.game);
+            }
 
             // Dark while the world's built afresh round the camera, gone too fast for the strips to
             // keep up, see stream.rs
-            if let Some(dark) = self.stream.as_ref().and_then(|s| s.teleport.as_ref()).map(|t| t.dark)
-                && dark > 0.0
+            if let Some(teleport) = self.stream.as_mut().and_then(|s| s.teleport.as_mut())
+                && teleport.dark > 0.0
             {
-                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("moving on")))
-                    .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((dark.clamp(0.0, 1.0) * 255.0) as u8));
+                let dark = teleport.dark.clamp(0.0, 1.0);
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("moving on")));
+                painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((dark * 255.0) as u8));
+                // Going on with a game somewhere the world wasn't, which takes a few seconds, the
+                // loading screen's shown, the land there rising on it as it's built
+                if let Some(board) = &mut teleport.board {
+                    board.paint(&ctx, dark, !self.focused);
+                }
+            }
+            // Wings spread, said under the crosshair too
+            if gliding_now && !self.menu_open {
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("gliding"))).text(
+                    ctx.screen_rect().center() + egui::vec2(0.0, 42.0),
+                    Align2::CENTER_CENTER,
+                    if flying_now { "Flying" } else { "Gliding" },
+                    egui::FontId::proportional(16.0),
+                    Color32::from_rgba_unmultiplied(235, 240, 255, 200),
+                );
+            }
+            let drops = drop_marks.unwrap_or(compass::DropMarks { heading: 0.0, raised: false, marks: Vec::new() });
+            if bearing.is_some() || drops.worth_showing() {
+                compass::draw_compass(&ctx, bearing.as_ref(), &drops);
+            }
+            if let Some(marks) = &map_marks {
+                compass::draw_map(&ctx, &mut self.map, marks);
+            }
+            // Brought back up after a fall below the sky isles, see rope.rs
+            if fallen > 0.0 {
+                ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("fallen")))
+                    .rect_filled(ctx.screen_rect(), 0.0, Color32::from_rgba_unmultiplied(225, 235, 250, (fallen * 255.0) as u8));
+            }
+            // Going through the gate or a portal: the light of its veil, then the dark
+            let leaving = self.session.leaving_dark();
+            if leaving > 0.0 {
+                let painter = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("going through")));
+                let violet = (1.0 - (leaving * 2.0 - 1.0).abs()) * 140.0;
+                painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_rgba_unmultiplied(150, 110, 255, violet as u8));
+                painter.rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha((leaving * leaving * 255.0) as u8));
             }
 
-            if self.menu_open {
+            // A new character being made, before the game they're for, see character\creator.rs
+            if self.menu_open
+                && let Some(creator) = &mut self.session.creator
+            {
+                if let Some(pick) = character::creator::window(&ctx, creator) {
+                    self.session.creator_pick = Some(pick);
+                }
+            } else if self.menu_open {
                 // Dim the world behind the menu a little
                 ctx.layer_painter(egui::LayerId::background())
                     .rect_filled(ctx.screen_rect(), 0.0, Color32::from_black_alpha(60));
-                egui::Area::new(egui::Id::new("menu"))
-                    .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
-                    .show(&ctx, |ui| {
-                        egui::Frame::new()
-                            .fill(Color32::from_black_alpha(180))
-                            .corner_radius(18.0)
-                            .inner_margin(36.0)
-                            .show(ui, |ui| {
-                                ui.set_width(340.0);
-                                ui.vertical_centered(|ui| {
-                                    ui.label(RichText::new("INNERT").size(60.0).strong().color(Color32::WHITE));
-                                    ui.add_space(26.0);
-
-                                    let button = |ui: &mut egui::Ui, text: &str| {
-                                        ui.add_sized([260.0, 44.0], egui::Button::new(RichText::new(text).size(20.0)))
-                                    };
-                                    if button(ui, if self.started { "Resume" } else { "Play" }).clicked() {
-                                        self.menu_open = false;
-                                        self.started = true;
-                                        focus_change = Some(true);
-                                    }
-                                    ui.add_space(8.0);
-                                    if button(ui, "New World").clicked() {
-                                        self.scene = Scene::Terrain;
-                                        self.generate_requested = true;
-                                        self.menu_open = false;
-                                        self.started = true;
-                                        focus_change = Some(true);
-                                    }
-                                    ui.horizontal(|ui| {
-                                        ui.add_space(70.0);
-                                        ui.add(egui::DragValue::new(&mut self.terrain.seed).prefix("Seed: "));
-                                        if ui.button("Random").clicked() {
-                                            let nanos = std::time::SystemTime::now()
-                                                .duration_since(std::time::UNIX_EPOCH)
-                                                .map_or(0, |d| d.subsec_nanos());
-                                            self.terrain.seed = nanos % 100_000;
-                                        }
-                                    });
-                                    ui.add_space(8.0);
-                                    if button(ui, if self.show_settings { "Hide Settings" } else { "Settings" }).clicked() {
-                                        self.show_settings = !self.show_settings;
-                                    }
-                                    ui.add_space(8.0);
-                                    if button(ui, "Quit").clicked() {
-                                        quit = true;
-                                    }
-                                    ui.add_space(22.0);
-                                    ui.label(
-                                        RichText::new(
-                                            "WASD move · Space jump · Shift run · F fly\n\
-                                             Click swing or cast · bow: hold right click, click to shoot\n\
-                                             Crossbow, gun: click to shoot, right click reloads · T ammo\n\
-                                             Right click heavy swing, or eat · E pick up, open, trade, pet\n\
-                                             Number keys pick what's in hand · I inventory\n\
-                                             F1 settings · Esc menu",
-                                        )
-                                        .size(13.0)
-                                        .color(Color32::from_gray(190)),
-                                    );
-                                });
-                            });
-                    });
+                // And the map of the world about to be entered over it, see loading::Backdrop
+                if let (Some(backdrop), Some(wanted)) = (&mut self.backdrop, &map_wanted) {
+                    backdrop.paint(&ctx, wanted);
+                }
+                // Resume, each mode with Continue and New, Settings and Quit, done at the start of
+                // the next frame, see menu_picked(), and how to play under them
+                session::menu_window(&ctx, map_wanted.is_some(), |ui| {
+                    let session = &mut self.session;
+                    let picked = session::menu(&mut session.menu, ui, self.started, session.mode, &session.saves, &mut self.new_seed, self.show_settings);
+                    if picked.is_some() {
+                        session.action = picked;
+                    }
+                });
             }
 
-            if !self.menu_open && self.loaded_scene.is_terrain() && self.animals_on {
+            if !self.menu_open && !self.editor.open && self.loaded_scene.is_terrain() && self.animals_on {
                 self.game.hud(&ctx, &view);
+                // Drawn only while it's open, so it costs nothing shut
+                if self.skills_open && !self.game.skill_window(&ctx) {
+                    self.skills_open = false;
+                    self.skills_closed = true;
+                }
+                if !self.fixed_sun {
+                    self.cycle.hud(&ctx, raid_note.as_deref());
+                }
+                night::hud(&self.raid, &self.bases, &self.world, &ctx, &view);
+                compass::draw_signposts(&ctx, &view, &self.world, &landscape);
+                building::hud(&self.building, &self.bases, ghost.as_ref(), gate_choice, &self.world, &ctx, &view);
+                hearths::hud(&ctx, hearth_note.as_deref());
                 // A merchant's stall closed, or walked away from: back to playing
                 let shopping = self.game.shopping() && self.game.shop_window(&ctx);
                 if self.shopping && !shopping && !self.inventory_open && self.capture.is_none() {
                     focus_change = Some(true);
                 }
                 self.shopping = shopping;
+                // The Innert Gate's window, or a portal's, see session.rs
+                if self.session.gate_open
+                    && let (Some(progress), Some(places)) = (&self.session.realms, &self.session.places)
+                {
+                    let carried = std::array::from_fn(|r| self.game.innert_blocks(r as u8));
+                    if let Some(action) = session::gate_window(&ctx, places.realm, progress, carried, guardians) {
+                        self.session.gate_action = Some(action);
+                    }
+                }
                 if !shopping && self.inventory_open {
                     let mut open = true;
-                    self.game.inventory(&ctx, &mut open);
+                    // With what's been gathered to make tools from, see tools.rs
+                    let mut crafting = tools::Crafting { open: self.building.craft_open, materials: self.bases.materials };
+                    self.game.inventory(&ctx, &mut open, &mut crafting);
+                    (self.building.craft_open, self.bases.materials) = (crafting.open, crafting.materials);
                     if !open {
                         self.inventory_open = false;
                         focus_change = Some(true);
                     }
+                }
+            }
+
+            // The Controls window, over the menu or the game, see bindings.rs; shut while playing,
+            // the mouse is taken back
+            if self.keys.open {
+                self.keys.window(&ctx);
+                if !self.keys.open && !self.menu_open && !self.inventory_open && self.capture.is_none() {
+                    focus_change = Some(true);
                 }
             }
 
@@ -4781,10 +6774,17 @@ impl App {
                         ui.selectable_value(&mut self.render_mode, mode, format!("{:?}", mode));
                     }
                 });
+                // The keys as they're bound, changed in the Controls window, see bindings.rs
+                use bindings::{Action as A, key, keys_together};
+                if ui.button(RichText::new("Controls").size(15.0)).clicked() {
+                    self.keys.open = true;
+                    focus_change = Some(false);
+                }
+                let wasd = keys_together(&[A::Forward, A::Left, A::Back, A::Right]);
                 ui.label(if self.player.is_some() {
-                    "Walking: WASD to move, Space to jump or swim up, Shift to run, F to fly"
+                    format!("Walking: {wasd} to move, {} to jump or swim up, {} to run, {} to fly. With wings on, hold {} in the air to glide.", key(A::Jump), key(A::Run), key(A::Fly), key(A::Jump))
                 } else {
-                    "Flying: WASDQE to move, Shift to go faster, F to walk"
+                    format!("Flying: {} to move, {} to go faster, {} to walk", keys_together(&[A::Forward, A::Left, A::Back, A::Right, A::FlyUp, A::FlyDown]), key(A::Run), key(A::Fly))
                 });
                 ui.separator();
                 // Sets the render scale and the lighting below, and is kept for next time
@@ -4804,19 +6804,32 @@ impl App {
                 ui.add(
                     egui::Slider::new(&mut self.move_speed, 0.01..=4.0)
                         .logarithmic(true)
-                        .text("Move Speed (hold Shift to go faster)"),
+                        .text(format!("Move Speed (hold {} to go faster)", key(A::Run))),
                 );
 
                 egui::CollapsingHeader::new("Lighting")
                     .default_open(true)
                     .show(ui, |ui| {
-                        ui.add(egui::Slider::new(&mut self.sun_azimuth, 0.0..=360.0).text("Sun Azimuth"));
-                        ui.add(egui::Slider::new(&mut self.sun_elevation, -10.0..=90.0).text("Sun Elevation"));
+                        // The day going round, or the sun held where the sliders put it
+                        ui.checkbox(&mut self.fixed_sun, "Hold the Sun Still");
+                        if self.fixed_sun {
+                            ui.add(egui::Slider::new(&mut self.sun_azimuth, 0.0..=360.0).text("Sun Azimuth"));
+                            ui.add(egui::Slider::new(&mut self.sun_elevation, -10.0..=90.0).text("Sun Elevation"));
+                        } else {
+                            let mut hour = self.cycle.hour();
+                            if ui.add(egui::Slider::new(&mut hour, 0.0..=23.99).text("Time of Day")).changed() {
+                                self.cycle.set_hour(hour);
+                            }
+                            ui.checkbox(&mut self.cycle.clock.running, "Day Goes Round");
+                        }
                         ui.checkbox(&mut self.shadows, "Shadows");
                         ui.checkbox(&mut self.ambient_occlusion, "Ambient Occlusion");
                         ui.checkbox(&mut self.bounce_light, "Bounce Light");
                         ui.checkbox(&mut self.smooth_shading, "Smooth Voxel Shading");
                         ui.checkbox(&mut self.wind, "Wind in the Leaves");
+                        if ui.checkbox(&mut self.falling_leaves, "Falling Leaves").changed() {
+                            quality::keep_leaves(self.falling_leaves);
+                        }
                         ui.add(egui::Slider::new(&mut self.haze, 0.0..=0.06).text("Haze"));
                         ui.checkbox(&mut self.grass, "Smooth Grass Blades (not voxels)");
                         ui.checkbox(&mut self.sunbeams, "Sunbeams Through the Haze");
@@ -4967,15 +6980,17 @@ impl App {
                 }
             });
         });
+        // Asked for in the model editor
+        if reread_models {
+            let allocator = self.memory_allocator.clone();
+            self.model_files.reload_all(self.game.model_lists(), move |words| model_buffer(&allocator, words));
+            anim::forget();
+        }
 
         if let Some(focused) = focus_change {
             self.focused = focused;
             grab_cursor(&rcx.window, focused);
         }
-        if quit {
-            event_loop.exit();
-        }
-
         let render_extent = rcx.images.render_image.extent();
         let resample_extent = rcx.images.resample_image.extent();
         self.camera.extent = [render_extent[0] as f64, render_extent[1] as f64];
@@ -5005,13 +7020,16 @@ impl App {
         scale_and_center.set_column(3, &(0.5 * size).push(1.0));
         let pixel_to_ray = scale_and_center * pixel_to_ray;
 
-        let (azimuth, elevation) = (self.sun_azimuth.to_radians(), self.sun_elevation.to_radians());
-        let sun_direction = [
-            elevation.cos() * azimuth.cos(),
-            elevation.cos() * azimuth.sin(),
-            elevation.sin(),
-            self.world.sea_level.unwrap_or(0.0),
-        ];
+        // Towards whichever of the sun and the moon lights the world, see daynight.rs
+        let sky = if self.fixed_sun { daynight::DayNight::fixed_sky(self.sun_azimuth as f64, self.sun_elevation as f64) } else { self.cycle.sky() };
+        let sun_direction = [sky.key.x as f32, sky.key.y as f32, sky.key.z as f32, self.world.sea_level.unwrap_or(0.0)];
+        // Changes when the sun's put somewhere else rather than moving on a step with the day, for
+        // the light kept for it to be thrown away
+        let sky_epoch = if self.fixed_sun {
+            1 << 32 | (sun_direction[0].to_bits() ^ sun_direction[1].to_bits().rotate_left(11) ^ sun_direction[2].to_bits().rotate_left(22)) as u64
+        } else {
+            self.cycle.jumps as u64
+        };
 
         let mut flags = 0;
         if self.shadows {
@@ -5023,12 +7041,13 @@ impl App {
         if self.bounce_light {
             flags |= FLAG_GI;
         }
-        // Sun shafts on High do the sunbeams' job better
-        let sunbeams = self.sunbeams && !self.shafts.in_the_haze();
+        // Sun shafts on High do the sunbeams' job better. By moonlight there are none.
+        let shafts = self.shafts.in_the_haze() && !sky.moonlit;
+        let sunbeams = self.sunbeams && !shafts;
         if sunbeams {
             flags |= FLAG_SUNBEAMS;
         }
-        if self.shafts.in_the_haze() {
+        if shafts {
             flags |= FLAG_SHAFTS;
         }
         if self.grass && self.world.grass.is_some() {
@@ -5059,20 +7078,53 @@ impl App {
             post_flags |= POST_DENOISE;
         }
 
+        // A model file saved: its models worked out again and packed on a thread of their own,
+        // then swapped in here, see assets.rs
+        let allocator = self.memory_allocator.clone();
+        let game = &self.game;
+        if let Some(done) = self.model_files.poll(|| game.model_lists(), move |words| model_buffer(&allocator, words)) {
+            if let Some(buffer) = done.made {
+                self.animal_models = buffer;
+            }
+            if let Some(wings) = done.wings {
+                self.game.set_wing_models(wings);
+            }
+            if let Some(looks) = done.weapons {
+                self.game.set_weapon_looks(looks);
+            }
+        }
+
+        // The weapon in hand drawn finer once it's made so, see game\fine.rs
+        self.game.fine_held();
         // A weapon was found, so there's a new model to draw
         if self.game.models_version() != self.models_version {
             let start = Instant::now();
             self.models_version = self.game.models_version();
-            self.weapon_models = model_buffer(&self.memory_allocator, self.game.weapon_model_words());
+            let words = self.game.weapon_model_words();
+            let packed = start.elapsed().as_secs_f64() * 1000.0;
+            self.weapon_models = model_buffer(&self.memory_allocator, words);
             if self.capture.is_some() {
-                println!("Models sent in {:.1} ms", start.elapsed().as_secs_f64() * 1000.0);
+                println!("Models sent in {:.1} ms, {packed:.1} ms of it packing them", start.elapsed().as_secs_f64() * 1000.0);
             }
         }
 
         // The weapon in hand, and the animals, food and things flying near the camera, for the
         // shader to trace
         let playing = self.loaded_scene.is_terrain() && self.animals_on;
-        let instances: Vec<AnimalInstance> = if playing { self.game.instances(&self.world, &view) } else { Vec::new() };
+        let mut instances: Vec<AnimalInstance> = if self.editor.open {
+            let eye = camera_to_voxels(self.camera.position, self.world.size);
+            self.editor.instances(&self.game, self.world.voxels_per_meter as f64, eye, self.camera.rotation.z, self.camera.rotation.x)
+        } else if playing {
+            self.game.instances(&self.world, &view)
+        } else {
+            Vec::new()
+        };
+        // A grappling hook's rope, and wings spread to glide, see rope.rs
+        if !self.editor.open {
+            instances.extend(rope);
+            // Trees coming down, see felling.rs
+            instances.extend(building::felling_instances(&self.building, &self.game, &self.world));
+        }
         if let Some(perf) = &mut self.perf {
             perf.instances = perf.instances.max(instances.len());
         }
@@ -5085,15 +7137,29 @@ impl App {
         // Light from spells and fire first, then the flames and crystals nearest the camera whose
         // light reaches it
         let camera_voxels = camera_to_voxels(self.camera.position, self.world.size).cast::<f32>();
-        let mut lights: Vec<(f32, [f32; 8])> = self
-            .lights
-            .iter()
-            .map(|l| ((Vector3::new(l[0], l[1], l[2]) - camera_voxels).norm() - l[3], *l))
-            .filter(|(d, _)| *d < 0.0)
-            .collect();
-        lights.sort_by(|a, b| a.0.total_cmp(&b.0));
-        let fighting = if playing { self.game.lights(&view) } else { Vec::new() };
-        let lights: Vec<[f32; 8]> = fighting.into_iter().chain(lights.into_iter().map(|(_, l)| l)).take(MAX_LIGHTS).collect();
+        let vpm = self.world.voxels_per_meter as f32;
+        let seconds = self.start_time.elapsed().as_secs_f32();
+        // The roads' lamps only after dark, see worldgen\roads.rs, so by day they take none of the
+        // lights there's room for
+        let day = daynight::daylight(sky.sun.z) as f32;
+        // The beams of what's dropped glow by night and stand out by day, see game\drops.rs
+        self.game.set_daylight(day as f64);
+        let lit = |l: &[f32; 8]| {
+            let k = worldgen::by_night([l[4], l[5], l[6]], day);
+            (k > 0.0).then(|| {
+                let mut l = *l;
+                for c in &mut l[4..7] {
+                    *c *= k;
+                }
+                l
+            })
+        };
+        let still = still_lights(self.lights.iter().chain(base_lights.iter()).filter_map(lit).map(|l| flicker(l, seconds, vpm)), camera_voxels, vpm);
+        let mut fighting = if playing { self.game.lights(&view, sky.night) } else { Vec::new() };
+        fighting.extend(rope_lights);
+        fighting.sort_by(|a, b| combat::light_rank(a, view.eye).total_cmp(&combat::light_rank(b, view.eye)));
+        fighting.truncate(FIGHTING_LIGHTS);
+        let lights: Vec<[f32; 8]> = fighting.into_iter().chain(still).collect();
         let light_buffer = self.instance_allocator.allocate_slice::<[f32; 8]>(lights.len().max(1) as u64).unwrap();
         light_buffer.write().unwrap()[..lights.len()].copy_from_slice(&lights);
 
@@ -5103,7 +7169,7 @@ impl App {
             .as_ref()
             .map_or(Matrix4::identity(), |last| world_to_pixel(&last.pixel_to_ray.cast()));
         let view_buffer = self.instance_allocator.allocate_sized::<View>().unwrap();
-        *view_buffer.write().unwrap() = View { pixel_to_ray: pixel_to_ray.cast(), previous_world_to_pixel: previous_world_to_pixel.cast() };
+        *view_buffer.write().unwrap() = View::new(pixel_to_ray.cast(), previous_world_to_pixel.cast(), &sky, realm_look);
 
         let animal_set = DescriptorSet::new(
             self.descriptor_set_allocator.clone(),
@@ -5135,14 +7201,18 @@ impl App {
             flags,
             haze: self.haze,
         };
-        // Last frame can be reprojected onto this one as long as only the camera moved
+        // Last frame can be reprojected onto this one as long as only the camera moved. The sun moving
+        // on a step, see daynight.rs, only changes the light a little: what was there is let go of
+        // over a few frames rather than all at once.
         let history_limit = match &self.last_view {
             _ if self.reset_accum => 0,
             Some(last) if *last == view && !instances.is_empty() => ANIMATED_HISTORY,
             Some(last) if *last == view => STILL_HISTORY,
             Some(last) if (last.sun_direction, last.render_mode, last.flags, last.haze) == (view.sun_direction, view.render_mode, view.flags, view.haze) => MOVING_HISTORY,
+            Some(last) if (last.render_mode, last.flags, last.haze) == (view.render_mode, view.flags, view.haze) && self.sky_epoch == sky_epoch => SUN_STEP_HISTORY,
             _ => 0,
         };
+        self.sky_epoch = sky_epoch;
         self.reset_accum = false;
         self.accum_count = if history_limit == STILL_HISTORY || history_limit == ANIMATED_HISTORY {
             (self.accum_count + 1).min(history_limit)
@@ -5190,8 +7260,9 @@ impl App {
             // World::wrap
             window: [self.world.origin[0] as i32, self.world.origin[1] as i32, self.world.wrap[0] as i32, self.world.wrap[1] as i32],
         };
-        // Light gathered under another sun, or in another world, is no good
-        let cache_for = (sun_direction, self.terrain.seed);
+        // Light gathered under another sun, or in another world, is no good. The sun moving on with
+        // the day only nudges it along, see daynight.rs.
+        let cache_for = (sky_epoch, self.terrain.seed);
         let clear_light_cache = self.light_cache_for != Some(cache_for);
         self.light_cache_for = Some(cache_for);
         let parity = (self.frame % 2) as usize;
@@ -5242,8 +7313,16 @@ impl App {
         self.voxel_set.copy_over(&mut builder);
         if let Some(stream) = &mut self.stream {
             stream.record_uploads(&mut builder, &self.voxel_set, &self.water, self.frame, self.frame_ms);
+        }
+        // Holes blown and stains splashed since the last frame, after what's come of strips, as
+        // they're newer
+        Self::record_edits(&mut self.edit_uploads, &self.voxel_set, &self.water, &mut builder);
+        if let Some(stream) = &mut self.stream {
             stream.skips.record(&mut builder, &self.skips_pipeline, &self.voxel_set.views[0].1, &self.descriptor_set_allocator);
         }
+        // Empty bricks round what's just been built skip no further than it, see building.rs
+        let busy = self.stream.as_ref().is_some_and(|s| s.skips.busy());
+        building::record_reskips(&mut self.building, &mut builder, &self.builds_pipeline, &self.voxel_set.views[0].1, &self.descriptor_set_allocator, &self.world, busy);
         if let Some(timer) = &mut timer {
             timer.mark(&mut builder, "strips");
         }
@@ -5267,7 +7346,10 @@ impl App {
             )
             .unwrap();
 
-        let shaded = self.render_mode == RenderMode::Shaded;
+        // The empty world Innert starts on isn't drawn at all behind its menu, which has the
+        // loading screen's page behind the map instead, see loading::Backdrop
+        let bare = self.bare && self.menu_open;
+        let shaded = self.render_mode == RenderMode::Shaded && !bare;
         // The sun map only changes with the sun or the world
         if shaded && sunbeams && self.haze > 0.0 && self.sun_map_for != Some(sun_direction) {
             let sun_map_constants = PushConstants {
@@ -5288,20 +7370,24 @@ impl App {
         builder
             .push_constants(self.render_pipeline.layout().clone(), 0, push_constants)
             .unwrap();
-        unsafe {
-            builder
-                .dispatch([
-                    render_extent[0].div_ceil(8),
-                    render_extent[1].div_ceil(8),
-                    1,
-                ])
-                .unwrap();
+        if !bare {
+            unsafe {
+                builder
+                    .dispatch([
+                        render_extent[0].div_ceil(8),
+                        render_extent[1].div_ceil(8),
+                        1,
+                    ])
+                    .unwrap();
+            }
         }
         if let Some(timer) = &mut timer {
             timer.mark(&mut builder, "trace");
         }
 
-        if shaded {
+        if shaded && sky.moonlit {
+            self.shafts.moonlit();
+        } else if shaded {
             let images = &rcx.images;
             let frame = shafts::Frame {
                 pixel_to_ray: pixel_to_ray.cast(),
@@ -5332,6 +7418,8 @@ impl App {
                 step,
                 flags: post_flags,
                 bloom: self.bloom,
+                exposure: sky.exposure as f32,
+                night: sky.night as f32,
             };
             for (i, set) in images.denoise_sets[parity].iter().enumerate() {
                 let step = 1 << i;
@@ -5536,6 +7624,22 @@ impl App {
         let gui_future = rcx
             .gui
             .draw_on_image(render_future, rcx.image_views[image_index as usize].clone());
+
+        let submitting = Instant::now();
+        // Sent to the GPU now, before the semaphore it's drawn behind and the present: left to the
+        // present, now and then it went wrong inside vulkano, which let go of the frame's hold on
+        // its images without having taken it and stopped the game ("Image was not locked for GPU
+        // write"), on AVI as it was too, a few hundred frames into a run.
+        // And before a shot's copy of the screen goes behind it, with `--set gui=1`: sent together
+        // with that, vulkano checked what the frame's commands use against the GUI's commands they
+        // were chained behind, which answer only for what they use themselves, so all the rest was
+        // checked against who holds it, and found still held by the frame before whenever the GPU
+        // wasn't done with that yet, as with `nowait`. That stopped the game ("the resource is
+        // already in use, and there is no tracking of concurrent usages"). Sent on their own, the
+        // frame's commands are checked against themselves, as on every other frame.
+        if let Err(e) = gui_future.flush() {
+            println!("Sending the frame to the GPU went wrong: {e}");
+        }
         // With `--set gui=1`, shots are of the whole screen once the GUI's drawn over the game
         let screen = rcx.image_views[image_index as usize].image().clone();
         let screen_buffer = (capture_shot.is_some() && self.capture.as_ref().is_some_and(|c| c.gui)).then(|| {
@@ -5551,19 +7655,14 @@ impl App {
             Some(buffer) => {
                 let mut copy = AutoCommandBufferBuilder::primary(self.command_buffer_allocator.clone(), self.queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
                 copy.copy_image_to_buffer(CopyImageToBufferInfo::image_buffer(screen.clone(), buffer.clone())).unwrap();
-                gui_future.then_execute(self.queue.clone(), copy.build().unwrap()).unwrap().boxed()
+                let copied = gui_future.then_execute(self.queue.clone(), copy.build().unwrap()).unwrap();
+                if let Err(e) = copied.flush() {
+                    println!("Sending the shot's copy of the screen to the GPU went wrong: {e}");
+                }
+                copied.boxed()
             }
             None => gui_future,
         };
-
-        let submitting = Instant::now();
-        // Sent to the GPU now, before the semaphore it's drawn behind and the present: left to the
-        // present, now and then it went wrong inside vulkano, which let go of the frame's hold on
-        // its images without having taken it and stopped the game ("Image was not locked for GPU
-        // write"), on AVI as it was too, a few hundred frames into a run
-        if let Err(e) = gui_future.flush() {
-            println!("Sending the frame to the GPU went wrong: {e}");
-        }
         // Shown once it's drawn, see loading::Drawn
         let drawn = loading::Drawn::after(gui_future);
         let semaphore = drawn.semaphore();
@@ -5628,10 +7727,14 @@ impl App {
 
         if let Some(buffer) = screenshot_buffer {
             let encoded = post_flags & POST_ENCODE_SRGB != 0;
-            if capture_done && let Some(capture) = self.capture.take() {
+            if capture_done && let Some(mut capture) = self.capture.take() {
                 save_screenshot(&buffer, resample_extent, encoded, &capture.path);
+                self.water.report(&self.command_buffer_allocator, &self.queue);
 
-                let mut times: Vec<f64> = capture.frame_times.iter().map(|t| t.as_secs_f64() * 1000.0).collect();
+                if capture.stats_from > 0 {
+                    println!("Frame times from frame {} on, once the world's there", capture.stats_from);
+                }
+                let mut times: Vec<f64> = capture.frame_times.iter().skip(capture.stats_from).map(|t| t.as_secs_f64() * 1000.0).collect();
                 times.sort_by(f64::total_cmp);
                 if !times.is_empty() {
                     let average = times.iter().sum::<f64>() / times.len() as f64;
@@ -5645,7 +7748,7 @@ impl App {
                         times[times.len() - 1]
                     );
                     // Hitches, leaving out the first frames while the world settles in
-                    let mut later: Vec<f64> = capture.frame_times.iter().skip(10).map(|t| t.as_secs_f64() * 1000.0).collect();
+                    let mut later: Vec<f64> = capture.frame_times.iter().skip(capture.stats_from + 10).map(|t| t.as_secs_f64() * 1000.0).collect();
                     later.sort_by(f64::total_cmp);
                     if !later.is_empty() {
                         let worst = later.len() - 1;
@@ -5656,12 +7759,17 @@ impl App {
                             later.iter().filter(|&&t| t > 25.0).count(),
                             later.iter().filter(|&&t| t > 20.0).count()
                         );
-                        let long: Vec<String> = capture.frame_times.iter().enumerate().skip(10).filter(|(_, t)| t.as_secs_f64() > 0.025).map(|(k, t)| format!("{}: {:.0} ms", k + 1, t.as_secs_f64() * 1000.0)).collect();
+                        let long: Vec<String> = capture.frame_times.iter().enumerate().skip(capture.stats_from + 10).filter(|(_, t)| t.as_secs_f64() > 0.025).map(|(k, t)| format!("{}: {:.0} ms", k + 1, t.as_secs_f64() * 1000.0)).collect();
                         println!("long frames: {}", long.join(", "));
                     }
                 }
-                if let Some(timer) = &capture.gpu {
+                if let Some(timer) = &mut capture.gpu {
                     println!("{}", timer.report());
+                }
+                // A mode being played is saved on the way out, as in play
+                if self.session.mode.is_some() {
+                    self.save_game(true);
+                    println!("STATE at the end: {}", self.state_line());
                 }
                 event_loop.exit();
             } else if let Some(path) = capture_shot {
@@ -5693,7 +7801,7 @@ fn window_attributes(out_of_sight: bool) -> winit::window::WindowAttributes {
     let mut attributes = Window::default_attributes()
         .with_inner_size(size)
         .with_window_icon(Some(load_icon(include_bytes!("../assets/icon.png"))))
-        .with_title("Innert")
+        .with_title(if editor::is_app() { "Innert Model Editor" } else { "Innert" })
         .with_visible(false);
     // Screenshot runs happen out of sight: never shown at all, so they can't take focus from
     // whatever's on the screen, like a game in fullscreen, which would minimize it. Windows
@@ -5802,6 +7910,15 @@ impl ApplicationHandler for App {
     }
 
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        // Another thread's gone wrong, and the game ends as soon as that's been said: saved first,
+        // it goes no further meanwhile, see crash.rs
+        if crash::round(|| self.emergency_save()) {
+            std::thread::sleep(Duration::from_millis(50));
+            return;
+        }
+        if let Some(capture) = &self.capture {
+            crash::test(capture.frame_times.len());
+        }
         self.input.end_step();
         let start = Instant::now();
         self.update(event_loop);
@@ -5824,11 +7941,16 @@ fn show_error(text: &str) {
         #[link(name = "user32")]
         unsafe extern "system" {
             fn MessageBoxW(window: *mut std::ffi::c_void, text: *const u16, caption: *const u16, kind: u32) -> i32;
+            fn ClipCursor(rect: *const std::ffi::c_void) -> i32;
         }
         const MB_ICONERROR: u32 = 0x10;
+        // Over the game, from whichever thread went wrong, with the mouse free to click it away
+        const MB_SETFOREGROUND: u32 = 0x10000;
+        const MB_TOPMOST: u32 = 0x40000;
         let wide = |s: &str| s.encode_utf16().chain([0]).collect::<Vec<u16>>();
         unsafe {
-            MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Innert").as_ptr(), MB_ICONERROR);
+            ClipCursor(std::ptr::null());
+            MessageBoxW(std::ptr::null_mut(), wide(text).as_ptr(), wide("Innert").as_ptr(), MB_ICONERROR | MB_SETFOREGROUND | MB_TOPMOST);
         }
     }
 }
@@ -5850,6 +7972,7 @@ fn fail(text: &str) -> ! {
 mod background_printing {
     use std::ffi::c_void;
     use std::sync::Mutex;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::thread::JoinHandle;
 
     #[link(name = "kernel32")]
@@ -5860,21 +7983,21 @@ mod background_printing {
         fn ReadFile(file: *mut c_void, buffer: *mut u8, len: u32, read: *mut u32, overlapped: *mut c_void) -> i32;
         fn WriteFile(file: *mut c_void, buffer: *const u8, len: u32, written: *mut u32, overlapped: *mut c_void) -> i32;
         fn CloseHandle(handle: *mut c_void) -> i32;
-        fn PeekNamedPipe(pipe: *mut c_void, buffer: *mut c_void, len: u32, read: *mut u32, available: *mut u32, left: *mut u32) -> i32;
     }
     const STD_OUTPUT_HANDLE: u32 = -11i32 as u32;
     /// Room in the pipe for what's printed while the file can't keep up
     const PIPE_BYTES: u32 = 8 << 20;
 
-    /// The file's handle and the pipe's ends, as numbers so they can be shared, and the thread
+    /// The file's handle and the pipe's write end, as numbers so they can be shared, and the thread
     /// writing to the file
     struct Printing {
         file: usize,
         write: usize,
-        read: usize,
         writer: JoinHandle<()>,
     }
     static STATE: Mutex<Option<Printing>> = Mutex::new(None);
+    /// Whether that thread is waiting for more to be printed, having written out all there was
+    static WAITING: AtomicBool = AtomicBool::new(false);
 
     /// From here on, what's printed goes to the file through the pipe
     pub fn start() {
@@ -5897,7 +8020,10 @@ mod background_printing {
             let mut buffer = vec![0u8; 1 << 16];
             loop {
                 let mut got = 0u32;
-                if unsafe { ReadFile(read as *mut c_void, buffer.as_mut_ptr(), buffer.len() as u32, &mut got, std::ptr::null_mut()) } == 0 || got == 0 {
+                WAITING.store(true, Ordering::SeqCst);
+                let read_ok = unsafe { ReadFile(read as *mut c_void, buffer.as_mut_ptr(), buffer.len() as u32, &mut got, std::ptr::null_mut()) };
+                WAITING.store(false, Ordering::SeqCst);
+                if read_ok == 0 || got == 0 {
                     break;
                 }
                 let mut sent = 0;
@@ -5913,7 +8039,7 @@ mod background_printing {
         });
         unsafe { SetStdHandle(STD_OUTPUT_HANDLE, write) };
         drop(printing);
-        *state = Some(Printing { file, write: write as usize, read, writer });
+        *state = Some(Printing { file, write: write as usize, writer });
     }
 
     /// Puts printing back the way it was and waits for everything printed to reach the file
@@ -5935,21 +8061,23 @@ mod background_printing {
     }
 
     /// Gives what's been printed a moment to reach the file, without taking hold of stdout, which
-    /// whatever panicked may have been in the middle of printing to
+    /// whatever panicked may have been in the middle of printing to: till the thread writing it
+    /// has been waiting for more a little while, or a second at most. Not by peeking into the pipe,
+    /// which waited for ever behind that thread's own wait for more, and the game with it.
     pub fn drain() {
-        let Some(read) = STATE.try_lock().ok().and_then(|state| state.as_ref().map(|p| p.read)) else {
+        if !STATE.try_lock().ok().is_some_and(|state| state.is_some()) {
             return;
-        };
-        for _ in 0..100 {
-            let mut waiting = 0u32;
-            let peeked = unsafe { PeekNamedPipe(read as *mut c_void, std::ptr::null_mut(), 0, std::ptr::null_mut(), &mut waiting, std::ptr::null_mut()) };
-            if peeked == 0 || waiting == 0 {
+        }
+        let since = std::time::Instant::now();
+        let mut idle = None;
+        while since.elapsed() < std::time::Duration::from_secs(1) {
+            if !WAITING.load(Ordering::SeqCst) {
+                idle = None;
+            } else if idle.get_or_insert_with(std::time::Instant::now).elapsed() > std::time::Duration::from_millis(30) {
                 break;
             }
-            std::thread::sleep(std::time::Duration::from_millis(5));
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
-        // The last of it on its way to the file
-        std::thread::sleep(std::time::Duration::from_millis(20));
     }
 }
 
@@ -5968,9 +8096,21 @@ const DRIVER_HINT: &str = "Innert needs a graphics card that supports Vulkan 1.3
 #[global_allocator]
 static ALLOCATOR: perf::Counting = perf::Counting;
 
-fn main() {
+/// The model editor's own app, innert-editor: the game's renderer on a plain studio, opening
+/// straight into the editor, see editor.rs
+pub fn editor_main() {
+    editor::set_app();
+    main();
+}
+
+/// The game
+pub fn main() {
     if std::env::args().any(|a| a == "--screenshot") {
         perf::count_heap();
+    }
+    // `--export-models <dir>` writes every model as a MagicaVoxel file and stops, see assets.rs
+    if let Some(code) = assets::export_from_args() {
+        std::process::exit(code);
     }
     startup::init();
     // `--set vram_budget=2048` takes the graphics card to have no more memory for the game than
@@ -5978,23 +8118,14 @@ fn main() {
     if let Some(megabytes) = settings_from_args().iter().find(|(k, _)| k == "vram_budget").and_then(|(_, v)| v.parse().ok()) {
         perf::cap_vram(megabytes);
     }
+    // `--set no_arena=1` builds the land without the Drowned Ring, to measure what it costs
+    if settings_from_args().iter().any(|(k, v)| k == "no_arena" && v == "1") {
+        worldgen::leave_out_arenas();
+    }
     // Decoding the sounds on a thread of their own, done long before anything's heard
     audio::preload();
-    std::panic::set_hook(Box::new(|info| {
-        let place = info.location().map_or(String::new(), |l| format!(" ({}:{})", l.file(), l.line()));
-        let what = info
-            .payload()
-            .downcast_ref::<&str>()
-            .map(|s| s.to_string())
-            .or_else(|| info.payload().downcast_ref::<String>().cloned())
-            .unwrap_or_default();
-        // Which thread, and with RUST_BACKTRACE set where it was, for screenshot runs' logs
-        let thread = std::thread::current().name().map_or(String::new(), |n| format!(" on the {n} thread"));
-        let trace = std::backtrace::Backtrace::capture();
-        let trace = if trace.status() == std::backtrace::BacktraceStatus::Captured { format!("\n\n{trace}") } else { String::new() };
-        show_error(&format!("Innert ran into a problem and has to close.\n\n{what}{place}{thread}{trace}"));
-        background_printing::drain();
-    }));
+    // A panic anywhere is said and ends the game, see crash.rs
+    crash::install();
     if std::env::args().any(|a| a == "--screenshot") {
         background_printing::start();
     }
@@ -6009,5 +8140,55 @@ fn main() {
     // What went wrong has been said already
     if !loaded {
         std::process::exit(101);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Walking down a cave lit by a torch every few meters, far more than STILL_LIGHTS of them in
+    /// sight, the lights sent never go over STILL_LIGHTS, the nearest is always lit full, and none
+    /// jumps in brightness from one step to the next: each comes and goes smoothly
+    #[test]
+    fn many_torches_come_and_go_smoothly() {
+        let vpm = 16.0f32;
+        let torch = |k: usize| [k as f32 * 4.0 * vpm, 0.0, 2.0 * vpm, 9.0 * vpm, 1.0, 0.55, 0.22, 0.0];
+        let torches: Vec<[f32; 8]> = (0..60).map(torch).collect();
+        let mut last: Option<Vec<([f32; 3], f32)>> = None;
+        for step in 0..400 {
+            let eye = Vector3::new(step as f32 * 0.25 * vpm, 0.5 * vpm, 1.7 * vpm);
+            let lights = still_lights(torches.iter().copied(), eye, vpm);
+            assert!(lights.len() <= STILL_LIGHTS);
+            let nearest = torches.iter().map(|l| (Vector3::new(l[0], l[1], l[2]) - eye).norm()).fold(f32::MAX, f32::min);
+            assert!(lights.iter().any(|l| (Vector3::new(l[0], l[1], l[2]) - eye).norm() == nearest && l[4] == 1.0), "the nearest isn't lit full {step} steps in");
+            let now: Vec<([f32; 3], f32)> = lights.iter().map(|l| ([l[0], l[1], l[2]], l[4])).collect();
+            if let Some(before) = &last {
+                for (at, bright) in torches.iter().map(|l| [l[0], l[1], l[2]]).map(|at| {
+                    let of = |v: &Vec<([f32; 3], f32)>| v.iter().find(|(p, _)| *p == at).map_or(0.0, |(_, b)| *b);
+                    (at, (of(&now), of(before)))
+                }) {
+                    assert!((bright.0 - bright.1).abs() < 0.25, "the torch at {at:?} jumps from {} to {} {step} steps in", bright.1, bright.0);
+                }
+            }
+            last = Some(now);
+        }
+    }
+
+    /// Flames flicker a little and lanterns less, round how bright they are; crystals and the glows
+    /// of fallen cities don't
+    #[test]
+    fn flames_flicker_crystals_dont() {
+        let vpm = 16.0;
+        let swing = |color: [f32; 3]| {
+            let l = [100.0, 200.0, 300.0, 144.0, color[0], color[1], color[2], 0.0];
+            let seen: Vec<f32> = (0..200).map(|k| flicker(l, k as f32 * 0.037, vpm)[4] / color[0]).collect();
+            seen.iter().copied().fold(0.0f32, f32::max) - seen.iter().copied().fold(f32::MAX, f32::min)
+        };
+        let (torch, lantern) = (swing([1.0, 0.55, 0.22]), swing([1.0, 0.71, 0.36]));
+        assert!(torch > 0.15 && torch < 0.45, "a torch flickers by {torch}");
+        assert!(lantern > 0.02 && lantern < torch * 0.5, "a lantern flickers by {lantern}, a torch by {torch}");
+        assert_eq!(swing([0.35, 0.85, 1.0]), 0.0);
+        assert_eq!(swing([-0.2, -0.3, -0.1]), 0.0);
     }
 }

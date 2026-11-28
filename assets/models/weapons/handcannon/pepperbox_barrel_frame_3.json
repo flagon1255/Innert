@@ -1,0 +1,47 @@
+{
+  "what": "Hand Cannon, barrel: Pepperbox Barrels, frame 3 of 3",
+  "voxels_per_meter": 144.0,
+  "size": [
+    75,
+    5,
+    5
+  ],
+  "pivot": [
+    -8.020800000000008,
+    2.5344,
+    2.5344
+  ],
+  "anchor": null,
+  "origin": [
+    8,
+    -3,
+    -3
+  ],
+  "points": {
+    "grip": [
+      -0.165,
+      0.0,
+      -0.06319999999999999
+    ],
+    "mover_handle": [
+      0.56,
+      0.0,
+      0.0
+    ],
+    "mover_pivot": [
+      0.56,
+      0.0,
+      0.0
+    ],
+    "tip": [
+      0.56,
+      0.0,
+      0.0
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    4226,
+    "ddde6a976de8b0c9"
+  ]
+}

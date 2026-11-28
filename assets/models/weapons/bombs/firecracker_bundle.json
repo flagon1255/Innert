@@ -1,0 +1,37 @@
+{
+  "what": "Bombs, casing: Firecracker Bundle",
+  "voxels_per_meter": 192.0,
+  "size": [
+    25,
+    24,
+    36
+  ],
+  "pivot": [
+    12.441599999999998,
+    12.1312,
+    4.108799999999998
+  ],
+  "anchor": null,
+  "origin": [
+    -12,
+    -12,
+    -4
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.033
+    ],
+    "tip": [
+      0.025,
+      0.0,
+      0.21300000000000002
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    34604,
+    "74e65894f861cf96"
+  ]
+}

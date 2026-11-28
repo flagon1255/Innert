@@ -1,0 +1,29 @@
+{
+  "what": "Dune burrower, pincer left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    3,
+    2
+  ],
+  "pivot": [
+    1.1173333333333346,
+    2.3786666666666667,
+    1.7039999999999997
+  ],
+  "anchor": [
+    0.11766666666666659,
+    -0.05491666666666667,
+    -0.10649999999999998
+  ],
+  "origin": [
+    -1,
+    -2,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1293,
+    "6ffd70094a5f88b2"
+  ]
+}

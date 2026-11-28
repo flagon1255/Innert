@@ -1,0 +1,25 @@
+{
+  "what": "Wings, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 64.0,
+  "size": [
+    69,
+    177,
+    51
+  ],
+  "pivot": [
+    34.5,
+    88.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -35,
+    -89,
+    0
+  ],
+  "note": "",
+  "written": [
+    38542,
+    "28637dc86ad5bf2e"
+  ]
+}

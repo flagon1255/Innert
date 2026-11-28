@@ -1,0 +1,29 @@
+{
+  "what": "Pyre Matriarch, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    82,
+    42,
+    52
+  ],
+  "pivot": [
+    42.24000000000001,
+    20.5128,
+    19.404
+  ],
+  "anchor": [
+    -0.07750000000000057,
+    0.030450000000000088,
+    -1.21275
+  ],
+  "origin": [
+    -42,
+    -21,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    313380,
+    "e56ffb329e6fe422"
+  ]
+}

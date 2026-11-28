@@ -1,0 +1,37 @@
+{
+  "what": "Orb, binding: Eclipse Rune",
+  "voxels_per_meter": 192.0,
+  "size": [
+    8,
+    8,
+    14
+  ],
+  "pivot": [
+    3.6000000000000014,
+    3.88153607014714,
+    -4.159999999999999
+  ],
+  "anchor": null,
+  "origin": [
+    -4,
+    -4,
+    4
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.05
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.18
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2192,
+    "a73fa33745896fce"
+  ]
+}

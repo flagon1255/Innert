@@ -1,0 +1,37 @@
+{
+  "what": "Wand, focus: Static Prongs",
+  "voxels_per_meter": 192.0,
+  "size": [
+    4,
+    5,
+    9
+  ],
+  "pivot": [
+    1.7419354838709684,
+    2.4900441801220006,
+    -56.937187096774196
+  ],
+  "anchor": null,
+  "origin": [
+    -2,
+    -2,
+    57
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.075
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.32322580645161286
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1416,
+    "704875f09a2b8c66"
+  ]
+}

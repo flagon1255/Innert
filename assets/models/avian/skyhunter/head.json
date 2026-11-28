@@ -1,0 +1,29 @@
+{
+  "what": "Skyhunter, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    5,
+    5
+  ],
+  "pivot": [
+    1.404,
+    2.0460000000000003,
+    2.2800000000000002
+  ],
+  "anchor": [
+    0.131,
+    0.028374999999999984,
+    -0.14250000000000002
+  ],
+  "origin": [
+    -1,
+    -2,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1399,
+    "3db82373f32e6cbc"
+  ]
+}

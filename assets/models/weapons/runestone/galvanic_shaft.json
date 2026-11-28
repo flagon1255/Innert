@@ -1,0 +1,37 @@
+{
+  "what": "Runestone, shaft: Galvanic Shaft",
+  "voxels_per_meter": 192.0,
+  "size": [
+    8,
+    7,
+    31
+  ],
+  "pivot": [
+    3.9303040000000014,
+    3.3759999999999994,
+    5.568
+  ],
+  "anchor": null,
+  "origin": [
+    -4,
+    -3,
+    -6
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.07
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.196
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    5151,
+    "fc3d2dc875496635"
+  ]
+}

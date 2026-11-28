@@ -1,0 +1,29 @@
+{
+  "what": "Skymane, tail 4",
+  "voxels_per_meter": 16.0,
+  "size": [
+    20,
+    5,
+    5
+  ],
+  "pivot": [
+    18.200000000000003,
+    2.24,
+    2.24
+  ],
+  "anchor": [
+    -0.5125000000000002,
+    0.016249999999999987,
+    -0.14
+  ],
+  "origin": [
+    -18,
+    -2,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1824,
+    "b06fd65dfee5138c"
+  ]
+}

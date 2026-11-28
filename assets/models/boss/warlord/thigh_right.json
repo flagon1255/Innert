@@ -1,0 +1,29 @@
+{
+  "what": "Bandit Warlord, thigh right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    5,
+    18
+  ],
+  "pivot": [
+    2.176,
+    2.176,
+    15.232
+  ],
+  "anchor": [
+    0.02024999999999999,
+    0.02024999999999999,
+    -0.952
+  ],
+  "origin": [
+    -2,
+    -2,
+    -15
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2096,
+    "d4634f0e90ed0d5e"
+  ]
+}

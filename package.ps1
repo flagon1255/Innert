@@ -16,6 +16,13 @@ New-Item -ItemType Directory -Force $out | Out-Null
 Copy-Item 'target\release\innert.exe' $out
 # Where each sound came from. They're all free to use with no conditions, but credited anyway.
 Copy-Item 'assets\sounds\CREDITS.txt' (Join-Path $out 'Sound credits.txt')
+# And the fonts the titles and headings are in, which are built into the game, with their licence
+Copy-Item 'assets\fonts\CREDITS.txt' (Join-Path $out 'Font credits.txt')
+# The installer as a script, for the zip: it checks the computer can run the game, then installs it.
+# Double-clicking the .cmd runs it, so nobody has to type anything.
+Copy-Item 'install.ps1' $out
+"@echo off`r`npowershell -NoProfile -ExecutionPolicy Bypass -File `"%~dp0install.ps1`" %*`r`npause`r`n" |
+    Set-Content -Encoding ascii -NoNewline (Join-Path $out 'Install Innert.cmd')
 
 # Microsoft allows these to be shipped next to a program, so it runs without installing them
 $studios = @("${env:ProgramFiles(x86)}\Microsoft Visual Studio", "$env:ProgramFiles\Microsoft Visual Studio") | Where-Object { Test-Path $_ }
@@ -34,26 +41,43 @@ if ($runtime) {
 INNERT
 ======
 
-To play: unzip this folder anywhere and double-click innert.exe.
-The very first start takes about 15-20 seconds while the shaders are prepared; after that it is
-about 5 seconds. The game picks a quality preset to suit your graphics card the first time.
+To play: double-click innert.exe, or the Innert shortcut if you installed it with InnertSetup.exe
+or with "Install Innert.cmd" from the zip. That one first checks the computer can run the game
+(Windows, graphics card, Vulkan, the Visual C++ runtime, room on the disk), then installs it with a
+Start menu shortcut, and it can be removed again from Windows' installed apps.
+The very first start takes about 15-20 seconds while the shaders are prepared; after that the
+menu is up in a couple of seconds, and the world is built when you start or continue a game. The
+game picks a quality preset to suit your graphics card the first time.
+
+Two ways to play: Free Roam, an endless wilderness on any seed, and Realms, a journey through
+different worlds. Pick a class when you make your character: Archer, Fighter, Priest, Mage, Rogue
+or Necromancer.
 
 You need
   - Windows 10 or 11, 64-bit
-  - A graphics card that supports Vulkan 1.3. Most NVIDIA, AMD and Intel ones from the last
-    several years do. If the game says it can't use your graphics card, install the latest
-    driver from NVIDIA, AMD or Intel.
+  - A graphics card that supports Vulkan 1.3: NVIDIA GTX 950 or newer, AMD RX 400 or newer, or
+    Intel graphics from about 2015 on. Vulkan comes with the graphics card's driver, there's
+    nothing else to install. If the game says it can't use your graphics card, install the
+    latest driver:
+      NVIDIA   https://www.nvidia.com/Download/index.aspx
+      AMD      https://www.amd.com/en/support/download/drivers.html
+      Intel    https://www.intel.com/content/www/us/en/support/detect.html
   - Windows may warn that the program is from an unknown publisher: click "More info", then
     "Run anyway".
 
-Controls
+Controls (every key can be changed: Esc, then Controls)
   Mouse                  look around
-  W A S D                walk           Shift   run          Space   jump
-  Left click             attack, shoot a drawn bow, cast a spell
-  Right click            heavy attack, draw a bow, eat, pour water
+  W A S D                walk           Shift   run          Space   jump, glide with wings
+  Left click             attack, shoot, cast a spell
+  Right click            heavy attack, aim or draw a bow, eat; a rare weapon's power
+  R                      a rare weapon's special attack
+  Q                      reload a crossbow or gun        T   change ammo
   1-9 or the mouse wheel pick what's in hand
-  E                      pick up, open chests, pet
-  I or Tab               inventory
+  E                      pick up, open chests, trade, pet
+  I or Tab               inventory and crafting
+  G                      hold at a tree, rock or clay to gather it
+  B                      build: 1-9 and 0 pick a piece, click to place, right click to take down
+  M                      map            P   skills
   F                      walk or fly
   F1                     settings: pick a lower Quality there if it runs slowly
   F12                    screenshot
@@ -65,3 +89,19 @@ if (Test-Path $zip) { Remove-Item $zip -Force }
 Compress-Archive -Path $out -DestinationPath $zip
 $size = (Get-Item $zip).Length / 1MB
 Write-Host ("Made {0} ({1:N1} MB)" -f $zip, $size)
+
+# And an installer, dist\InnertSetup.exe, with Inno Setup: see installer.iss. It can be had with
+#   winget install --id JRSoftware.InnoSetup -e --scope user
+$iscc = @("$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe", "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe", "$env:ProgramFiles\Inno Setup 6\ISCC.exe") |
+    Where-Object { Test-Path $_ } | Select-Object -First 1
+if ($iscc) {
+    $version = (Select-String -Path 'Cargo.toml' -Pattern '^version\s*=\s*"(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+    $ErrorActionPreference = 'Continue'
+    & $iscc /Q "/DAppVersion=$version" 'installer.iss' 2>&1 | ForEach-Object { "$_" }
+    if ($LASTEXITCODE -ne 0) { throw 'Making the installer failed, see above.' }
+    $ErrorActionPreference = 'Stop'
+    $setup = Join-Path $PSScriptRoot 'dist\InnertSetup.exe'
+    Write-Host ("Made {0} ({1:N1} MB)" -f $setup, ((Get-Item $setup).Length / 1MB))
+} else {
+    Write-Warning 'Inno Setup was not found, so there is no installer, only the zip: winget install --id JRSoftware.InnoSetup -e --scope user'
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Slagwright, arm right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    10,
+    10,
+    24
+  ],
+  "pivot": [
+    4.6080000000000005,
+    4.6080000000000005,
+    19.456
+  ],
+  "anchor": [
+    0.024499999999999966,
+    0.024499999999999966,
+    -1.216
+  ],
+  "origin": [
+    -5,
+    -5,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4112,
+    "f29c4c9298bd0525"
+  ]
+}

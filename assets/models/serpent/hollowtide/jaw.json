@@ -1,0 +1,29 @@
+{
+  "what": "Hollowtide, jaw",
+  "voxels_per_meter": 16.0,
+  "size": [
+    72,
+    32,
+    19
+  ],
+  "pivot": [
+    15.600000000000005,
+    15.600000000000001,
+    16.0
+  ],
+  "anchor": [
+    1.2749999999999997,
+    0.02499999999999991,
+    -1.0
+  ],
+  "origin": [
+    -16,
+    -16,
+    -16
+  ],
+  "note": "A piece placed along the serpent's body: the pivot is the point it's made round.",
+  "written": [
+    55561,
+    "0b228fc398adc93a"
+  ]
+}

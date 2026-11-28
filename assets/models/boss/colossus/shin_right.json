@@ -1,0 +1,29 @@
+{
+  "what": "Earthbreaker Colossus, shin right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    17,
+    16,
+    30
+  ],
+  "pivot": [
+    7.887999999999999,
+    7.887999999999999,
+    21.488
+  ],
+  "anchor": [
+    0.03825000000000006,
+    0.007000000000000062,
+    -1.343
+  ],
+  "origin": [
+    -8,
+    -8,
+    -21
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    18972,
+    "2cbef16cbccc1412"
+  ]
+}

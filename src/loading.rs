@@ -2,15 +2,23 @@
 //! is made on other threads, see Loaded::load(). Once it's all there the game takes over the same
 //! window, with what's drawn to it, the swapchain and the GUI, and the loading screen fades away
 //! over the menu.
+//!
+//! It's black and white as the rest of the interface, see theme.rs: the name in blackletter, and
+//! under it the very land the player will stand on rising as the world's built, see land.rs, then
+//! the bar, what's being made and a tip. The same screen's shown over the game while the world's
+//! built afresh round where it goes on, a game started or a realm gone to, see Board.
+//!
+//! The land answers the mouse, see touch.rs, and once the game's loaded it glides back behind the
+//! menu Innert starts on and stays there, dimmed, until a game's begun, see Backdrop.
 
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::TAU;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex, Weak, mpsc};
 use std::time::{Duration, Instant};
 
-use egui_winit_vulkano::egui::{self, Align2, Color32, FontId, LayerId, Mesh, Pos2, Rect, Shape, Stroke, pos2, vec2};
+use egui_winit_vulkano::egui::{self, Align2, Color32, FontId, LayerId, Mesh, Pos2, Rect, Shape, Stroke, StrokeKind, pos2, vec2};
 use egui_winit_vulkano::{Gui, GuiConfig};
 use std::ops::Range;
 
@@ -37,11 +45,20 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::{App, Capture, Gpu, Loaded, get_swapchain_images, save_screen, settings_from_args, startup, window_attributes, worldgen};
+use crate::worldgen::{self, TerrainSettings};
+use crate::{App, Capture, Gpu, Loaded, get_swapchain_images, save_screen, settings_from_args, startup, window_attributes};
+
+mod land;
+mod map;
+mod touch;
+
+use land::{Land, Phase};
+pub use map::{Realm as MapRealm, Wanted as MapWanted};
+use touch::Touch;
 
 /// The loading screen's drawn this often
 const FRAME_TIME: Duration = Duration::from_micros(16_667);
-/// How long the loading screen takes to fade in over the night sky's color the window's filled with
+/// How long the loading screen takes to fade in over the black the window's filled with
 const FADE_IN_SECONDS: f32 = 0.35;
 /// How long the loading screen takes to fade away over the menu
 const FADE_SECONDS: f32 = 0.8;
@@ -63,6 +80,9 @@ pub enum Step {
 
 const STEPS: usize = 10;
 
+/// The steps of building the world, in the order generate_terrain() goes through them
+const WORLD: [Step; 5] = [Step::Ground, Step::Rivers, Step::Land, Step::Voxels, Step::Grass];
+
 impl Step {
     const ALL: [Step; STEPS] = [
         Step::Graphics,
@@ -81,14 +101,14 @@ impl Step {
         match self {
             Step::Graphics => "Starting the graphics card",
             Step::Shaders => "Preparing the shaders",
-            Step::Ground => "Shaping the land",
-            Step::Rivers => "Carving rivers",
-            Step::Land => "Raising towns and castles",
-            Step::Voxels => "Laying down voxels",
-            Step::Grass => "Growing grass",
+            Step::Ground => "Raising the land",
+            Step::Rivers => "Carving the rivers",
+            Step::Land => "Founding towns and castles",
+            Step::Voxels => "Laying the land voxel by voxel",
+            Step::Grass => "Growing the grass and the forests",
             Step::Upload => "Sending the world to the graphics card",
-            Step::Water => "Filling the water",
-            Step::Creatures => "Carving creatures",
+            Step::Water => "Filling the seas",
+            Step::Creatures => "Waking the beasts",
         }
     }
 
@@ -127,19 +147,44 @@ const COMPILING_SHADERS_MS: u32 = 15_000;
 pub struct Progress {
     /// When each step started and finished
     times: Mutex<[(Option<Instant>, Option<Instant>); STEPS]>,
+    /// About how long each step should take, in milliseconds, see Step::expected()
+    expected: [f32; STEPS],
     /// How long the shaders should take
     shaders_ms: AtomicU32,
     /// Set once the window's closed while loading, to stop where it can
     cancelled: AtomicBool,
+    /// The land round where the player's to stand, to show it being built, once it's been read
+    /// off the landscape, see show_land()
+    land: Mutex<Option<Arc<Land>>>,
+    /// Whether it's the game starting, whose steps are timed, see startup.rs
+    starting: bool,
 }
 
 impl Progress {
     fn new() -> Self {
         Progress {
             times: Mutex::new([(None, None); STEPS]),
+            expected: Step::ALL.map(Step::expected),
             shaders_ms: AtomicU32::new(Step::Shaders.expected() as u32),
             cancelled: AtomicBool::new(false),
+            land: Mutex::new(None),
+            starting: true,
         }
+    }
+
+    /// For the world being built afresh round where a game goes on, see stream.rs: the graphics
+    /// card and the creatures are there already, and what's built goes over to it with the frames
+    pub fn arriving() -> Arc<Self> {
+        let mut progress = Progress { starting: false, ..Progress::new() };
+        progress.expected[Step::Upload as usize] = 600.0;
+        progress.expected[Step::Water as usize] = 150.0;
+        let now = Instant::now();
+        for step in [Step::Graphics, Step::Shaders, Step::Creatures] {
+            progress.expected[step as usize] = 0.0;
+            progress.times()[step as usize] = (Some(now), Some(now));
+        }
+        progress.shaders_ms.store(0, Ordering::Relaxed);
+        Arc::new(progress)
     }
 
     fn times(&self) -> std::sync::MutexGuard<'_, [(Option<Instant>, Option<Instant>); STEPS]> {
@@ -156,7 +201,10 @@ impl Progress {
         if done.is_none() {
             let now = Instant::now();
             *done = Some(now);
-            startup::finished(step.label(), now - started.unwrap_or(now));
+            let took = now - *started.get_or_insert(now);
+            if self.starting {
+                startup::finished(step.label(), took);
+            }
         }
     }
 
@@ -180,7 +228,15 @@ impl Progress {
     /// What `build` builds, with each step generate_terrain() goes through on the way counted, see
     /// worldgen::on_step()
     pub fn building_world<T>(self: &Arc<Self>, build: impl FnOnce() -> T) -> T {
-        const WORLD: [Step; 5] = [Step::Ground, Step::Rivers, Step::Land, Step::Voxels, Step::Grass];
+        self.watch_world();
+        let built = build();
+        self.world_built();
+        built
+    }
+
+    /// Has each step generate_terrain() goes through on this thread from here on counted, until
+    /// world_built()
+    pub fn watch_world(self: &Arc<Self>) {
         let progress = self.clone();
         worldgen::on_step(Some(Box::new(move |n| {
             if let Some(&before) = n.checked_sub(1).and_then(|n| WORLD.get(n)) {
@@ -190,12 +246,28 @@ impl Progress {
                 progress.begin(step);
             }
         })));
-        let built = build();
+    }
+
+    /// The world's built, see watch_world(), with all it takes besides on this thread
+    pub fn world_built(&self) {
         worldgen::on_step(None);
         for step in WORLD {
             self.end(step);
         }
-        built
+    }
+
+    /// Reads the land round `middle`, in meters from the corner of the whole landscape, off the
+    /// landscape `settings` build, on a thread of its own, to show it being built
+    pub fn show_land(self: &Arc<Self>, settings: TerrainSettings, middle: [f32; 2]) {
+        let progress = self.clone();
+        let _ = std::thread::Builder::new().name("land shown".into()).spawn(move || {
+            let land = Land::around(&settings, middle);
+            *progress.land.lock().unwrap_or_else(|e| e.into_inner()) = Some(Arc::new(land));
+        });
+    }
+
+    fn land(&self) -> Option<Arc<Land>> {
+        self.land.lock().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     fn cancel(&self) {
@@ -206,27 +278,36 @@ impl Progress {
         self.cancelled.load(Ordering::Relaxed)
     }
 
+    fn expected(&self, step: Step) -> f32 {
+        if step == Step::Shaders { self.shaders_ms.load(Ordering::Relaxed) as f32 } else { self.expected[step as usize] }
+    }
+
+    /// About how many milliseconds `step` has still to go, at `times`: what's expected less what's
+    /// gone, then less and less of what's left the longer it takes past that, so it always seems
+    /// to be getting on
+    fn left(&self, times: &[(Option<Instant>, Option<Instant>); STEPS], step: Step) -> f32 {
+        let expected = self.expected(step);
+        match times[step as usize] {
+            (_, Some(_)) => 0.0,
+            (Some(started), None) => expected * still_to_go(started.elapsed().as_secs_f32() * 1000.0 / expected.max(1.0)),
+            (None, None) => expected,
+        }
+    }
+
     /// How far along it all is, from 0 to 1, by how long what's left should take, and what's being
     /// made meanwhile
     fn estimate(&self) -> (f32, Step) {
         let times = self.times();
-        let shaders = self.shaders_ms.load(Ordering::Relaxed) as f32;
         let (mut total, mut left, mut current) = ([0.0f32; 3], [0.0f32; 3], [None; 3]);
         for step in Step::ALL {
-            let expected = if step == Step::Shaders { shaders } else { step.expected() };
             let track = step.track();
-            total[track] += expected;
-            left[track] += match times[step as usize] {
-                (_, Some(_)) => 0.0,
-                // Taking longer than expected, it's still not done
-                (Some(started), None) => (expected - started.elapsed().as_secs_f32() * 1000.0).max(expected * 0.15),
-                (None, None) => expected,
-            };
+            total[track] += self.expected(step);
+            left[track] += self.left(&times, step);
             if times[step as usize].1.is_none() && current[track].is_none() {
                 current[track] = Some(step);
             }
         }
-        let fraction = 1.0 - (left[0].max(left[1]) + left[2]) / (total[0].max(total[1]) + total[2]);
+        let fraction = 1.0 - (left[0].max(left[1]) + left[2]) / (total[0].max(total[1]) + total[2]).max(1.0);
         // Whichever of the graphics card and the world has longer to go, then the rest in turn
         let step = match current {
             [None, None, rest] => rest,
@@ -235,6 +316,28 @@ impl Progress {
         };
         (fraction.clamp(0.0, 1.0), step.unwrap_or(Step::Creatures))
     }
+
+    /// How far the land's built, see land.rs: risen as the ground, the rivers, what's on it and
+    /// its voxels are made, its woods grown with the grass, and the seas filling once that's done
+    fn phase(&self) -> Phase {
+        let times = self.times();
+        let rising = [Step::Ground, Step::Rivers, Step::Land, Step::Voxels];
+        let total: f32 = rising.iter().map(|&s| self.expected(s)).sum();
+        let left: f32 = rising.iter().map(|&s| self.left(&times, s)).sum();
+        Phase {
+            rise: 1.0 - left / total.max(1.0),
+            grow: 1.0 - self.left(&times, Step::Grass) / self.expected(Step::Grass).max(1.0),
+            fill: if times[Step::Grass as usize].1.is_some() { 1.0 } else { 0.0 },
+            built: 1.0,
+        }
+    }
+}
+
+/// How much of a step's expected time it has still to go, `x` times its expected time in: in step
+/// with the time till then, then ever less of the last part, never quite none
+fn still_to_go(x: f32) -> f32 {
+    const LAST: f32 = 0.15;
+    if x < 1.0 { 1.0 - (1.0 - LAST) * x.max(0.0) } else { LAST * (-(x - 1.0) * 1.5).exp() }
 }
 
 /// `--set loading_preview=1` in screenshot runs: the loading screen's drawn as it is in play,
@@ -414,7 +517,7 @@ impl Launcher {
         // Until the game takes over, see take_over()
         hurry(true);
         let out_of_sight = Capture::from_args().is_some();
-        let preview = previewing().then(|| Preview { path: Capture::from_args().unwrap().path, taken: 0 });
+        let preview = previewing().then(|| Preview::new(Capture::from_args().unwrap().path));
         let now = Instant::now();
         let loading = Loading {
             out_of_sight,
@@ -423,10 +526,13 @@ impl Launcher {
             drawn_once: false,
             gpu: None,
             screen: None,
-            look: Look { start: now, last: now, fraction: 0.0, step: Step::Graphics, compiling: false },
+            look: Look::new(),
             next_frame: now,
             preview,
             loaded: None,
+            cost: Cost::default(),
+            touch: Touch::default(),
+            display_frame: FRAME_TIME,
         };
         Launcher { progress, messages, loader: Some(loader), state: State::Loading(Box::new(loading)), timed: false }
     }
@@ -491,18 +597,28 @@ impl Launcher {
             return;
         };
         // The window and the graphics card are there by the time the game's loaded
-        let Loading { loaded: Some(loaded), screen: Some(screen), look, drawn, .. } = *loading else {
+        let Loading { loaded: Some(loaded), screen: Some(screen), look, drawn, cost, out_of_sight, touch, .. } = *loading else {
             event_loop.exit();
             return;
         };
+        if out_of_sight {
+            cost.say();
+        }
         let mut app = Box::new(App::new(*loaded));
         self.progress.end(Step::Creatures);
         // The game's from here on
         *WINDOW.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // The game runs as it always has
         hurry(false);
+        // Beside the menu the game starts on, if it does, still answering the mouse, and becoming
+        // the map of the world about to be entered
+        let land = self.progress.land().filter(|_| drawn);
+        if app.menu_open && !app.started && !settings_from_args().iter().any(|(k, v)| k == "menu_map" && v == "0") {
+            app.backdrop = Some(Backdrop::new(land.clone(), touch.behind_menu(), look.clone(), app.bare));
+        }
         if drawn {
-            fade_away(&screen.gui.context(), look);
+            let behind = app.backdrop.as_ref().is_some_and(|b| b.glides);
+            fade_away(&screen.gui.context(), look, land, behind);
         }
         app.attach(screen, event_loop);
         self.state = State::Playing(app);
@@ -599,10 +715,41 @@ struct Loading {
     preview: Option<Preview>,
     /// Handed to the game at the start of the next turn of the event loop, see Launcher::take_over()
     loaded: Option<Box<Loaded>>,
+    /// How long drawing it takes, said in screenshot runs
+    cost: Cost,
+    /// How the land's been touched by the mouse
+    touch: Touch,
+    /// How long a frame's shown on the screen the window's on, which it's drawn as often as while
+    /// the mouse is stirring the land
+    display_frame: Duration,
+}
+
+/// How long the loading screen's taken to draw, with the land on it, over how many frames: painting
+/// it with the GUI, and that and readying it for the graphics card
+#[derive(Default)]
+struct Cost {
+    frames: u32,
+    painting: Duration,
+    drawing: Duration,
+}
+
+impl Cost {
+    fn add(&mut self, painting: Duration, drawing: Duration) {
+        self.frames += 1;
+        self.painting += painting;
+        self.drawing += drawing;
+    }
+
+    fn say(&self) {
+        if self.frames > 0 {
+            let each = |d: Duration| d.as_secs_f64() * 1000.0 / self.frames as f64;
+            println!("Loading screen drawn {} times with the land, {:.3} ms painting it and {:.3} ms in all a frame", self.frames, each(self.painting), each(self.drawing));
+        }
+    }
 }
 
 impl Loading {
-    /// Makes the window and shows it straight away, filled with the night sky's color until the
+    /// Makes the window and shows it straight away, filled with the loading screen's black until the
     /// graphics card's going and the loading screen can be drawn in it
     fn open(&mut self, event_loop: &ActiveEventLoop, progress: &Progress) {
         if self.window.is_some() {
@@ -642,6 +789,11 @@ impl Loading {
                 ..Default::default()
             },
         );
+        // Its look, the same in every window, see theme.rs
+        crate::theme::apply(&gui.context());
+        // At most 240 times a second, and never less often than otherwise
+        let refresh = window.current_monitor().and_then(|m| m.refresh_rate_millihertz());
+        self.display_frame = refresh.map_or(FRAME_TIME, |mhz| Duration::from_secs_f64(1000.0 / mhz.max(1) as f64)).clamp(Duration::from_micros(4_167), FRAME_TIME);
         self.screen = Some(Screen {
             window: window.clone(),
             swapchain,
@@ -652,7 +804,7 @@ impl Loading {
             presented: Presented::default(),
         });
         if self.drawn {
-            // Everything moving in it starts from now, fading in over the night sky's color
+            // Everything moving in it starts from now, fading in over the black
             let now = Instant::now();
             (self.look.start, self.look.last) = (now, now);
             self.draw(progress, false);
@@ -688,7 +840,10 @@ impl Loading {
         }
         let now = Instant::now();
         if now >= self.next_frame {
-            self.next_frame = (self.next_frame + FRAME_TIME).max(now);
+            // As often as the screen shows while the mouse is stirring the land, so it follows
+            // smoothly, otherwise no more than sixty times a second, to leave the rest to loading
+            let frame = if self.touch.lively() && !self.out_of_sight { self.display_frame } else { FRAME_TIME };
+            self.next_frame = (self.next_frame + frame).max(now);
             // A window that's never shown is never asked to redraw
             if self.out_of_sight {
                 self.draw(progress, false);
@@ -740,10 +895,15 @@ impl Loading {
         }
 
         let (fraction, step) = progress.estimate();
-        self.look.advance(fraction, step, progress.shaders_compiling());
+        self.look.advance(fraction, step, progress.shaders_compiling(), progress.phase());
         let look = self.look.clone();
         let appearing = smoothstep(look.start.elapsed().as_secs_f32() / FADE_IN_SECONDS);
-        screen.gui.immediate_ui(|gui| paint(&gui.context(), &look, appearing, LayerId::background(), None));
+        let land = progress.land();
+        let words = Words { title: "Innert", subtitle: None };
+        let painting = Instant::now();
+        let touch = &mut self.touch;
+        screen.gui.immediate_ui(|gui| paint(&gui.context(), &look, appearing, LayerId::background(), None, land.as_deref().map(|land| (land, Some((touch, true)))), &words));
+        let painted = painting.elapsed();
 
         let view = screen.image_views[image_index as usize].clone();
         let image = view.image().clone();
@@ -751,12 +911,15 @@ impl Loading {
         let mut builder = AutoCommandBufferBuilder::primary(gpu.command_buffer_allocator.clone(), gpu.queue.queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
         builder
             .clear_color_image(ClearColorImageInfo {
-                clear_value: [NIGHT[0] as f32 / 255.0, NIGHT[1] as f32 / 255.0, NIGHT[2] as f32 / 255.0, 1.0].into(),
+                clear_value: [INK[0] as f32 / 255.0, INK[1] as f32 / 255.0, INK[2] as f32 / 255.0, 1.0].into(),
                 ..ClearColorImageInfo::image(image.clone())
             })
             .unwrap();
         let cleared = screen.previous_frame_end.take().unwrap().join(acquired).then_execute(gpu.queue.clone(), builder.build().unwrap()).unwrap();
         let drawn = screen.gui.draw_on_image(cleared, view);
+        if land.is_some() {
+            self.cost.add(painted, painting.elapsed());
+        }
 
         // Copied off for a shot of it, when previewed
         let shot = self.preview.as_mut().and_then(|p| p.next(look.fraction, appearing >= 1.0, last)).map(|path| {
@@ -807,28 +970,64 @@ impl Loading {
     }
 }
 
-/// Shots of the loading screen, see previewing()
+//// Shots of the loading screen, see previewing()
 struct Preview {
     /// The screenshot's, which they're named after
     path: PathBuf,
     taken: usize,
+    /// With `--set loading_shots=12`, that many shots as the bar fills, one each time it's gone
+    /// another twelfth of the way, as well as the last: for a sheet of it all through a load
+    every: usize,
+    /// With `--set loading_frames=300,310`, shots as it's drawn those times, to see it moving
+    frames: Vec<usize>,
+    /// How many times it's been drawn
+    drawn: usize,
 }
 
 impl Preview {
+    fn new(path: PathBuf) -> Self {
+        let settings = settings_from_args();
+        let get = |key: &str| settings.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+        let every = get("loading_shots").and_then(|v| v.parse().ok()).unwrap_or(0);
+        let frames = get("loading_frames").map_or(Vec::new(), |v| v.split(',').filter_map(|f| f.trim().parse().ok()).collect());
+        Preview { path, taken: 0, every, frames, drawn: 0 }
+    }
+
     /// Where the next shot goes if it's time for one: once it's faded in, once loading's halfway
-    /// and on the `last`, before the game takes over
+    /// and on the `last`, before the game takes over, or with `every` as the bar fills, or at the
+    /// frames asked for
     fn next(&mut self, fraction: f32, appeared: bool, last: bool) -> Option<PathBuf> {
-        let name = match self.taken {
-            0 if appeared && !last => "early",
-            0..3 if last => "loaded",
-            1 if fraction >= 0.45 => "middle",
-            _ => return None,
+        const DONE: usize = usize::MAX;
+        self.drawn += 1;
+        let name = if self.taken == DONE {
+            return None;
+        } else if last {
+            "loaded".to_owned()
+        } else if !self.frames.is_empty() {
+            if !self.frames.contains(&self.drawn) {
+                return None;
+            }
+            format!("f{:04}", self.drawn)
+        } else if self.every > 0 {
+            if !appeared || fraction * (self.every as f32) < self.taken as f32 {
+                return None;
+            }
+            format!("{:02}", self.taken)
+        } else {
+            match self.taken {
+                0 if appeared => "early".to_owned(),
+                1 if fraction >= 0.45 => "middle".to_owned(),
+                _ => return None,
+            }
         };
-        self.taken = if last { 3 } else { self.taken + 1 };
+        self.taken = if last { DONE } else { self.taken + 1 };
         let stem = self.path.file_stem().map_or("innert".into(), |s| s.to_string_lossy());
         Some(self.path.with_file_name(format!("{stem}-loading-{name}.png")))
     }
 }
+
+/// How many loading screens have been shown, so each starts on another tip
+static SHOWN: AtomicU32 = AtomicU32::new(0);
 
 /// What the loading screen shows, changing as loading goes on
 #[derive(Clone)]
@@ -841,23 +1040,473 @@ struct Look {
     step: Step,
     /// Whether the shaders are being compiled, which only takes so long the first time
     compiling: bool,
+    /// How far the land's built, see land.rs, following loading at a pace that can be seen
+    phase: Phase,
+    /// The tip it starts on
+    tip: usize,
 }
 
 impl Look {
-    fn advance(&mut self, target: f32, step: Step, compiling: bool) {
+    fn new() -> Self {
+        let now = Instant::now();
+        let tip = SHOWN.fetch_add(1, Ordering::Relaxed) as usize;
+        Look { start: now, last: now, fraction: 0.0, step: Step::Graphics, compiling: false, phase: Phase::default(), tip }
+    }
+
+    fn advance(&mut self, target: f32, step: Step, compiling: bool, phase: Phase) {
         let now = Instant::now();
         let dt = (now - self.last).as_secs_f32();
         self.last = now;
         self.fraction = (self.fraction + (target - self.fraction) * (1.0 - (-dt * 4.0).exp())).max(self.fraction);
         self.step = step;
         self.compiling = compiling;
+        // The land comes up, the woods grow and the seas fill no faster than this many times a
+        // second, so it's seen however quickly they're made
+        let follow = |shown: f32, wanted: f32, most: f32| (shown + ((wanted - shown) * (1.0 - (-dt * 5.0).exp())).min(most * dt)).max(shown).min(1.0);
+        self.phase = Phase { rise: follow(self.phase.rise, phase.rise, 0.8), grow: follow(self.phase.grow, phase.grow, 1.0), fill: follow(self.phase.fill, phase.fill, 0.7), built: 1.0 };
     }
 }
 
+/// The words over the loading screen: its title, in blackletter, and under it what's being loaded
+struct Words<'a> {
+    title: &'a str,
+    subtitle: Option<&'a str>,
+}
+
+/// The loading screen over the game while the world's built afresh round where it goes on, behind
+/// the dark, see stream.rs: as the one Innert starts with, with the land round where the player's
+/// to stand rising on it
+pub struct Board {
+    progress: Arc<Progress>,
+    look: Look,
+    title: String,
+    subtitle: String,
+    /// How the land's been touched by the mouse
+    touch: Touch,
+}
+
+impl Board {
+    /// Showing how far `progress` has got, under `title` and `subtitle`
+    pub fn new(progress: Arc<Progress>, title: String, subtitle: String) -> Self {
+        Board { progress, look: Look::new(), title, subtitle, touch: Touch::default() }
+    }
+
+    pub fn progress(&self) -> &Arc<Progress> {
+        &self.progress
+    }
+
+    /// Draws it over everything else in `ctx`, `alpha` of the way opaque, fading in as it's first
+    /// shown, the land answering the mouse if it's `free`, not taken by the game to look round with
+    pub fn paint(&mut self, ctx: &egui::Context, alpha: f32, free: bool) {
+        let (fraction, step) = self.progress.estimate();
+        self.look.advance(fraction, step, false, self.progress.phase());
+        let appearing = smoothstep(self.look.start.elapsed().as_secs_f32() / FADE_IN_SECONDS);
+        let land = self.progress.land();
+        let words = Words { title: &self.title, subtitle: Some(&self.subtitle) };
+        let layer = LayerId::new(egui::Order::Tooltip, egui::Id::new("loading screen"));
+        paint(ctx, &self.look, alpha * appearing, layer, None, land.as_deref().map(|land| (land, Some((&mut self.touch, free)))), &words);
+    }
+}
+
+/// How bright the land is behind the menu, against on the loading screen
+const BEHIND_BRIGHT: f32 = 0.82;
+/// How the map's looked down on from, in radians over the level, and from how much higher up
+/// while the mouse is over it, more as a map's seen
+const MAP_ELEVATION: f32 = 0.6;
+const MAP_ELEVATION_HOVERED: f32 = 0.98;
+/// How long a map takes to sink away, and the next to rise in its place, in seconds
+const SINK_SECONDS: f32 = 0.35;
+const RISE_SECONDS: f32 = 1.1;
+/// How far a drag across the map turns it, in radians a point
+const DRAG_TURN: f32 = 0.009;
+
+/// The map of the world about to be entered, beside the menu Innert starts with, see map.rs and
+/// App::render(): at first the loading screen's land, gliding aside into the room left of the menu
+/// as the loading screen gives way to it, then once it's been worked out the map in its place,
+/// a little dimmed, turning and answering the mouse, naming what's under it. As what's pointed at
+/// in the menu changes, or the seed of a new world, it's worked out afresh on threads of its own,
+/// and the one shown sinks away for the new one to rise. Gone once a game's begun, so it costs
+/// nothing while playing.
+pub struct Backdrop {
+    /// What's shown, and when it began to rise
+    shown: Option<(Shown, Instant)>,
+    /// A map to rise once what's shown has sunk away, and since when that's sinking
+    next: Option<Shown>,
+    sinking: Option<Instant>,
+    /// What's wanted, the map being worked out and the places further off round one, see map::far()
+    asked: Option<map::Wanted>,
+    building: Option<mpsc::Receiver<(map::Wanted, map::Map, Duration, bool)>>,
+    /// Set once the map being worked out isn't wanted any more
+    unwanted: Arc<AtomicBool>,
+    farther: Option<(Arc<AtomicBool>, mpsc::Receiver<(map::Wanted, Option<map::Far>, Duration)>)>,
+    /// How the land's been touched by the mouse, since the loading screen
+    touch: Touch,
+    /// The loading screen's look as it gave way, whose start the land's turning is timed from
+    look: Look,
+    /// When it was first drawn behind the menu, and last
+    began: Option<Instant>,
+    last: Option<Instant>,
+    /// How far round it's turned, how far it's tilted towards how it's seen with the mouse over it,
+    /// and whether it's being dragged round
+    turn: f32,
+    tilt: f32,
+    dragging: bool,
+    /// Whether the loading screen was seen, for the land to glide aside from it
+    glides: bool,
+    /// Whether it's on the loading screen's page rather than over the world, as when Innert starts
+    /// with no world built, see empty_world()
+    paged: bool,
+    /// How long it's taken to draw, said in screenshot runs
+    cost: Cost,
+}
+
+/// What's shown beside the menu: the loading screen's land, or a map
+enum Shown {
+    Loading(Arc<Land>),
+    /// Since `came`, when what's on it was put in
+    Map { map: Arc<map::Map>, wanted: map::Wanted, far: bool, came: Instant },
+}
+
+impl Shown {
+    fn land(&self) -> &Land {
+        match self {
+            Shown::Loading(land) => land,
+            Shown::Map { map, .. } => &map.land,
+        }
+    }
+
+    fn is(&self, wanted: &map::Wanted) -> bool {
+        matches!(self, Shown::Map { wanted: w, .. } if w == wanted)
+    }
+}
+
+impl Backdrop {
+    /// Beside the menu, the loading screen's `land` gliding aside if it was seen, touched by the
+    /// mouse as `touch` has it, the loading screen as `look`
+    fn new(land: Option<Arc<Land>>, touch: Touch, look: Look, paged: bool) -> Self {
+        let now = Instant::now();
+        let glides = land.is_some();
+        Backdrop {
+            shown: land.map(|l| (Shown::Loading(l), now)),
+            next: None,
+            sinking: None,
+            asked: None,
+            building: None,
+            unwanted: Arc::new(AtomicBool::new(false)),
+            farther: None,
+            touch,
+            turn: land::turned_by(look.start.elapsed().as_secs_f32()),
+            look,
+            began: None,
+            last: None,
+            tilt: 0.0,
+            dragging: false,
+            glides,
+            paged,
+            cost: Cost::default(),
+        }
+    }
+
+    /// Has the map `wanted` worked out, if it isn't shown or on its way, and takes up what's been
+    /// worked out
+    fn want(&mut self, wanted: &map::Wanted) {
+        if self.asked.as_ref() != Some(wanted) {
+            self.asked = Some(wanted.clone());
+            // What's on another, and further off round it, isn't wanted now
+            self.unwanted.store(true, Ordering::Relaxed);
+            if let Some((stale, _)) = &self.farther {
+                stale.store(true, Ordering::Relaxed);
+            }
+        }
+        let asked = self.asked.clone().unwrap();
+        // Its land first, which rises straight away, then what's on it, put in as it comes
+        while let Some(building) = &self.building {
+            match building.try_recv() {
+                Ok((wanted, map, took, done)) => {
+                    if Capture::from_args().is_some() {
+                        let what = if done { "what's on it" } else { "its land" };
+                        println!("Menu map of seed {} round {:.0}, {:.0}: {what} worked out in {:.0} ms, {} places on it", wanted.settings.seed, map.player[0], map.player[1], took.as_secs_f64() * 1000.0, map.places.len());
+                    }
+                    if wanted != asked {
+                        continue;
+                    }
+                    let map = Arc::new(map);
+                    if !done {
+                        // Nothing further off's worked out round it till what's on it is there
+                        self.next = Some(Shown::Map { map, wanted, far: true, came: Instant::now() });
+                        if self.shown.is_some() {
+                            self.sinking.get_or_insert_with(Instant::now);
+                        }
+                        continue;
+                    }
+                    self.building = None;
+                    for shown in self.shown.iter_mut().map(|(s, _)| s).chain(self.next.iter_mut()) {
+                        if shown.is(&wanted) {
+                            *shown = Shown::Map { map: map.clone(), wanted: wanted.clone(), far: false, came: Instant::now() };
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => self.building = None,
+            }
+        }
+        // One at a time, the latest wanted once one's done, so the seed box can be typed in as
+        // fast as it likes
+        let have = self.shown.as_ref().is_some_and(|(s, _)| s.is(&asked)) || self.next.as_ref().is_some_and(|s| s.is(&asked));
+        if self.building.is_none() && !have {
+            let (send, receive) = mpsc::channel();
+            let wanted = asked.clone();
+            let stale = Arc::new(AtomicBool::new(false));
+            let gone = stale.clone();
+            self.unwanted = stale;
+            let _ = std::thread::Builder::new().name("menu map".into()).spawn(move || {
+                worldgen::give_way();
+                let started = Instant::now();
+                let land = map::build_land(&wanted);
+                // What's on it only if it's still wanted
+                if send.send((wanted.clone(), land.clone(), started.elapsed(), false)).is_ok() && !gone.load(Ordering::Relaxed) {
+                    let full = land.with_sites();
+                    let _ = send.send((wanted, full, started.elapsed(), true));
+                }
+            });
+            self.building = Some(receive);
+        }
+        // Then what's further off round it
+        if let Some((_, receive)) = &self.farther {
+            match receive.try_recv() {
+                Ok((wanted, far, took)) => {
+                    self.farther = None;
+                    if let Some(far) = far {
+                        if Capture::from_args().is_some() {
+                            println!("Menu map of seed {}: what's further off worked out in {:.0} ms, {} roads, {} named, {} pointed to", wanted.settings.seed, took.as_secs_f64() * 1000.0, far.roads.len(), far.named.len(), far.beyond.len());
+                        }
+                        for shown in self.shown.iter_mut().map(|(s, _)| s).chain(self.next.iter_mut()) {
+                            if let Shown::Map { map, wanted: w, .. } = shown
+                                && *w == wanted
+                            {
+                                *map = Arc::new(map.with(&far));
+                            }
+                        }
+                    }
+                }
+                Err(mpsc::TryRecvError::Empty) => {}
+                Err(mpsc::TryRecvError::Disconnected) => self.farther = None,
+            }
+        }
+        if self.farther.is_none() {
+            let unfinished = self.next.iter_mut().chain(self.shown.iter_mut().map(|(s, _)| s)).find(|s| s.is(&asked) && matches!(s, Shown::Map { far: false, .. }));
+            if let Some(Shown::Map { map, wanted, far, .. }) = unfinished {
+                *far = true;
+                let (send, receive) = mpsc::channel();
+                let stale = Arc::new(AtomicBool::new(false));
+                let (map, wanted, gone) = (map.clone(), wanted.clone(), stale.clone());
+                let _ = std::thread::Builder::new().name("menu map, further off".into()).spawn(move || {
+                    worldgen::give_way();
+                    let started = Instant::now();
+                    let far = map::far(&map, &|| gone.load(Ordering::Relaxed));
+                    let _ = send.send((wanted, far, started.elapsed()));
+                });
+                self.farther = Some((stale, receive));
+            }
+        }
+        // The one shown sunk away, the next rises
+        if self.sinking.is_some_and(|s| s.elapsed().as_secs_f32() >= SINK_SECONDS) || (self.shown.is_none() && self.next.is_some()) {
+            if let Some(next) = self.next.take() {
+                self.shown = Some((next, Instant::now()));
+            }
+            self.sinking = None;
+        }
+    }
+
+    /// Draws it behind everything else in `ctx`, the map `wanted` worked out for it
+    pub fn paint(&mut self, ctx: &egui::Context, wanted: &map::Wanted) {
+        let painting = Instant::now();
+        self.want(wanted);
+        let now = Instant::now();
+        let since = self.began.get_or_insert(now).elapsed().as_secs_f32();
+        let dt = self.last.map_or(0.0, |l| (now - l).as_secs_f32()).min(0.1);
+        self.last = Some(now);
+        let painter = ctx.layer_painter(LayerId::background());
+        let screen = ctx.screen_rect();
+        let t = self.look.start.elapsed().as_secs_f32();
+        // The loading screen's page, fading away from under it as it glides back
+        let veil = if self.paged { 1.0 } else if self.glides { 1.0 - smoothstep(since / FADE_SECONDS) } else { 0.0 };
+        if veil > 0.0 {
+            page(&painter, screen, veil);
+        }
+        let glide = if self.glides { smoothstep(since / (FADE_SECONDS * 0.9)) } else { 1.0 };
+        let Some((shown, risen)) = &self.shown else {
+            return;
+        };
+        let land = shown.land();
+        // Finished as it is on the loading screen fading away, see fade_away(), or rising, and
+        // sinking away for the next
+        let phase = match shown {
+            Shown::Loading(_) => self.look.phase.towards_done(smoothstep(since / (FADE_SECONDS * 0.3))),
+            Shown::Map { came, .. } => {
+                let e = risen.elapsed().as_secs_f32() / RISE_SECONDS;
+                // What's on it springing up as it comes, if it's after the land
+                let grow = (e - 0.35) / 0.65;
+                let built = grow.min(came.elapsed().as_secs_f32() / 0.7);
+                Phase { rise: e.min(1.0), grow: grow.clamp(0.0, 1.0), fill: ((e - 0.2) / 0.6).clamp(0.0, 1.0), built: built.clamp(0.0, 1.0) }
+            }
+        };
+        let sunk = self.sinking.map_or(0.0, |s| (s.elapsed().as_secs_f32() / SINK_SECONDS).min(1.0));
+        let phase = Phase { rise: phase.rise.min(1.0 - sunk), grow: phase.grow.min(1.0 - sunk * 1.5), fill: phase.fill.min(1.0 - sunk), built: phase.built.min(1.0 - sunk * 1.5) };
+
+        // Turning slowly, and less while the mouse is over it, tilted up more as a map's seen,
+        // and turned round by a drag across it
+        let over = self.touch.over().is_some();
+        let pressed = ctx.input(|i| i.pointer.primary_pressed());
+        if pressed && over {
+            self.dragging = true;
+        }
+        if self.dragging {
+            if ctx.input(|i| i.pointer.primary_down()) {
+                self.turn -= ctx.input(|i| i.pointer.delta().x) * DRAG_TURN;
+            } else {
+                self.dragging = false;
+            }
+        }
+        let hovered = matches!(shown, Shown::Map { .. }) && (over || self.dragging);
+        self.tilt += ((if hovered { 1.0 } else { 0.0 }) - self.tilt) * (1.0 - (-dt * 3.5).exp());
+        self.turn += dt * land::TURNING * (1.0 - self.tilt).max(0.0);
+        let (from_e, to_e) = match shown {
+            Shown::Loading(_) => (land::LOOKED_AT_FROM + (MAP_ELEVATION - land::LOOKED_AT_FROM) * glide, MAP_ELEVATION_HOVERED),
+            Shown::Map { .. } => (MAP_ELEVATION, MAP_ELEVATION_HOVERED),
+        };
+        let elevation = from_e + (to_e - from_e) * smoothstep(self.tilt);
+
+        // Beside the menu, or gone where there's no room for it, its caption under it
+        let menu = ctx.memory(|m| m.area_rect(egui::Id::new("menu")));
+        let beside = beside_menu(screen, menu);
+        let room = beside.map(|b| Rect::from_min_max(b.min, pos2(b.max.x, b.max.y - 30.0)));
+        let from = land_area(screen, innert_below(screen)).filter(|_| self.glides && matches!(shown, Shown::Loading(_)));
+        let (view, alpha) = match (from, room) {
+            (Some(from), Some(room)) => (land.view(from, t).lerp(&land.seen(room, self.turn, elevation, MAP_ELEVATION_HOVERED), glide), 1.0),
+            (None, Some(room)) => (land.seen(room, self.turn, elevation, MAP_ELEVATION_HOVERED), 1.0),
+            (Some(from), None) => (land.view(from, t), 1.0 - glide),
+            (None, None) => return,
+        };
+        if alpha <= 0.0 {
+            return;
+        }
+        // Stood in a little of the loading screen's dark, so it reads over the world behind
+        let mut mesh = Mesh::default();
+        let (middle, reach) = (view.middle - vec2(0.0, view.scale * 4.0 * land.across() as f32 / 34.0), view.scale * land.across() as f32);
+        glow(&mut mesh, middle, vec2(reach * 0.95, reach * 0.7), Color32::from_black_alpha((170.0 * glide * alpha) as u8));
+        painter.add(Shape::mesh(mesh));
+        self.touch.feel(ctx, land, &view, phase, true);
+        let bright = 1.0 + (BEHIND_BRIGHT - 1.0) * glide;
+        land.paint(&painter, &view, t, phase, alpha * (1.0 - sunk * 0.6), bright, Some(&self.touch));
+        if let (Shown::Map { map, .. }, Some(room)) = (shown, room) {
+            self.mark_up(&painter, map, &view, phase, room, 1.0 - sunk);
+            // `--set menu_aim=town` in screenshot runs takes a scripted mouse onto the pin of the
+            // first town on the map once it's all there, or the first place whose kind's called that
+            if let Some(aim) = settings_from_args().iter().find(|(k, _)| k == "menu_aim").map(|(_, v)| v.to_lowercase()).filter(|_| Capture::from_args().is_some() && phase.grow >= 1.0 && sunk == 0.0) {
+                let tip = map.places.iter().find(|p| p.kind.title().to_lowercase().contains(&aim)).and_then(|p| {
+                    let top = land.top_of(&view, phase, land.column(land.columns(p.at))?, None, 0.0)?;
+                    Some(top - vec2(0.0, 10.0 + view.scale * 1.2) + vec2(1.0, 1.0))
+                });
+                self.touch.aim(tip);
+            }
+        }
+        self.touch.mark(&painter);
+        self.cost.add(painting.elapsed(), painting.elapsed());
+        if Capture::from_args().is_some() && self.cost.frames % 300 == 0 {
+            let each = self.cost.painting.as_secs_f64() * 1000.0 / self.cost.frames as f64;
+            println!("Menu map drawn {} times, {each:.3} ms a frame working it out and painting it", self.cost.frames);
+        }
+    }
+
+    /// Over `map` as it's drawn, seen as `view`, `phase` of the way built, in `room`: north, which
+    /// way the nearest towns and castles are if they're further off, what's under the mouse, and
+    /// what it's a map of under it, `alpha` of the way opaque
+    #[allow(clippy::too_many_arguments)]
+    fn mark_up(&self, painter: &egui::Painter, map: &map::Map, view: &land::View, phase: Phase, room: Rect, alpha: f32) {
+        let land = &map.land;
+        let half = land.across() as f32 * 0.5;
+        let fade = |c: Color32| c.gamma_multiply(alpha * phase.rise.clamp(0.0, 1.0));
+        // North, off the plate's edge
+        painter.text(land.on_plate(view, (0.0, half + 1.6)), Align2::CENTER_CENTER, "N", crate::theme::display(13.0), fade(crate::theme::WEAK));
+        // A pin over each place, a little diamond on a fine stem, as they spring up
+        let pinned = smoothstep(phase.built.min(phase.grow));
+        let mut pins = Vec::new();
+        if pinned > 0.0 {
+            for place in &map.places {
+                let Some((size, light)) = place.kind.pin() else { continue };
+                let Some(column) = land.column(land.columns(place.at)) else { continue };
+                let Some(top) = land.top_of(view, phase, column, Some(&self.touch), 0.0) else { continue };
+                let tip = top - vec2(0.0, (10.0 + view.scale * 1.2) * pinned);
+                painter.line_segment([top, tip], Stroke::new(1.0f32, fade(Color32::from_white_alpha(120)).gamma_multiply(pinned)));
+                let points = vec![tip + vec2(0.0, -size), tip + vec2(size * 0.8, 0.0), tip + vec2(0.0, size), tip + vec2(-size * 0.8, 0.0)];
+                let edge = if light < 128 { Color32::from_gray(235) } else { Color32::from_black_alpha(200) };
+                painter.add(Shape::convex_polygon(points, fade(Color32::from_gray(light)).gamma_multiply(pinned), Stroke::new(1.0f32, fade(edge).gamma_multiply(pinned))));
+                pins.push((tip, place));
+            }
+        }
+        // Further off, a mark at the plate's edge the way each is
+        let pointer = self.touch.pointer();
+        let mut named: Option<(Pos2, String, String)> = None;
+        for place in &map.far {
+            let (dx, dy) = land.columns(place.at);
+            let out = (half + 0.6) / dx.abs().max(dy.abs()).max(1e-3);
+            let at = land.on_plate(view, (dx * out, dy * out));
+            let hot = pointer.is_some_and(|p| (p - at).length() < 11.0);
+            let points = vec![at + vec2(0.0, -5.0), at + vec2(4.0, 0.0), at + vec2(0.0, 5.0), at + vec2(-4.0, 0.0)];
+            painter.add(Shape::convex_polygon(points, fade(if hot { crate::theme::HEADING } else { Color32::from_gray(30) }), Stroke::new(1.2f32, fade(crate::theme::ACCENT))));
+            if hot {
+                named = Some((at, place.title(), map.under_far(place)));
+            }
+        }
+        // A pin the mouse is on, for the place under it
+        if named.is_none()
+            && let Some(p) = pointer
+            && let Some((tip, place)) = pins.iter().filter(|(tip, _)| (*tip - p).length() < 9.0).min_by(|a, b| (a.0 - p).length().total_cmp(&(b.0 - p).length()))
+        {
+            let (title, about) = map.under(land.columns(place.at));
+            named = Some((*tip, title, about));
+        }
+        // What's under the mouse, over it
+        if named.is_none()
+            && let Some(spot) = self.touch.over()
+            && phase.rise >= 1.0
+        {
+            let (title, about) = map.under(spot.at);
+            let column = map.place_at(spot.at).and_then(|p| land.column(land.columns(p.at))).unwrap_or(spot.column);
+            if let Some(at) = land.top_of(view, phase, column, Some(&self.touch), 0.2) {
+                named = Some((at, title, about));
+            }
+        }
+        if let Some((at, title, about)) = named {
+            map::label(painter, at, room.expand2(vec2(0.0, 20.0)), &title, &about, alpha);
+        }
+        let below = pos2(room.center().x, room.bottom() + 14.0);
+        painter.text(below, Align2::CENTER_CENTER, &map.caption, crate::theme::display(14.0), fade(crate::theme::TEXT));
+    }
+}
+
+/// How far in from the left of the window the menu Innert starts with is, with the map to the right
+/// of it, see session::menu_window()
+pub const MENU_LEFT: f32 = 60.0;
+
+/// Where the land's drawn beside the menu, in a window `screen` big, the menu at `menu`: in the
+/// room right of it, as big as fits, with as much room either side of it as the menu has to its
+/// left, unless there's too little
+fn beside_menu(screen: Rect, menu: Option<Rect>) -> Option<Rect> {
+    let menu = menu.unwrap_or_else(|| Rect::from_min_size(pos2(screen.left() + MENU_LEFT, screen.top()), vec2(436.0, screen.height())));
+    let gap = (menu.left() - screen.left()).clamp(24.0, MENU_LEFT);
+    let (left, right) = (menu.right() + gap, screen.right() - gap);
+    let tall = (screen.height() * 0.7).min((right - left) * 1.0);
+    let middle = screen.center().y + screen.height() * 0.03;
+    (right - left >= 170.0).then(|| Rect::from_min_max(pos2(left, middle - tall * 0.5), pos2(right, middle + tall * 0.5)))
+}
+
 /// Fades the loading screen away over the game's first frames: it's drawn over them by the GUI
-/// the game goes on drawing with, the bar filling up as it goes, and the name gliding over to
-/// where the menu has it
-fn fade_away(ctx: &egui::Context, look: Look) {
+/// the game goes on drawing with, the bar filling up and the land finishing as it goes, and the
+/// name gliding over to where the menu has it. With the `land` gone `behind` the menu, see
+/// Backdrop, which fades the page away from under it, only the words and the bar fade here.
+fn fade_away(ctx: &egui::Context, look: Look, land: Option<Arc<Land>>, behind: bool) {
     let began = Mutex::new(None::<Instant>);
     ctx.on_end_pass(
         "loading screen fading away",
@@ -868,17 +1517,25 @@ fn fade_away(ctx: &egui::Context, look: Look) {
                 return;
             }
             let mut look = look.clone();
-            look.fraction += (1.0 - look.fraction) * smoothstep(t / (FADE_SECONDS * 0.3));
+            let done = smoothstep(t / (FADE_SECONDS * 0.3));
+            look.fraction += (1.0 - look.fraction) * done;
+            look.phase = look.phase.towards_done(done);
             let alpha = 1.0 - smoothstep(t / FADE_SECONDS);
             // Where the menu is, see App::render(), if it's up
             let menu = ctx.memory(|m| m.area_rect(egui::Id::new("menu")));
             let glide = menu.map(|menu| (menu, t / (FADE_SECONDS * 0.55)));
-            paint(ctx, &look, alpha, LayerId::new(egui::Order::Foreground, egui::Id::new("loading screen")), glide);
+            let words = Words { title: "Innert", subtitle: None };
+            let layer = LayerId::new(egui::Order::Foreground, egui::Id::new("loading screen"));
+            if behind {
+                paint_words(ctx, &look, alpha, layer, glide, &words);
+            } else {
+                paint(ctx, &look, alpha, layer, glide, land.as_deref().map(|land| (land, None)), &words);
+            }
         }),
     );
 }
 
-/// Puts this thread ahead of the world being built while loading, which keeps every core busy,
+// Puts this thread ahead of the world being built while loading, which keeps every core busy,
 /// or back level with it. The graphics card started half again as slowly without, and the loading
 /// screen would have to wait its turn to be drawn.
 #[cfg(windows)]
@@ -898,11 +1555,11 @@ fn hurry(ahead: bool) {
 #[cfg(not(windows))]
 fn hurry(_ahead: bool) {}
 
-/// The color the window's filled with until the loading screen's drawn in it, its night sky's at
-/// the top, which it fades in over
-const NIGHT: [u8; 3] = [7, 10, 26];
+/// The near black of the loading screen, which the window's filled with until it's drawn in it,
+/// and it fades in over
+const INK: [u8; 3] = [8, 8, 8];
 
-/// Fills the window with the night sky's color, before anything can be drawn in it with the
+/// Fills the window with the loading screen's black, before anything can be drawn in it with the
 /// graphics card, so it can be shown straight away rather than with whatever's left in it
 #[cfg(windows)]
 fn fill(window: &Window) {
@@ -938,7 +1595,7 @@ fn fill(window: &Window) {
         }
         let mut rect = WinRect::default();
         GetClientRect(hwnd, &mut rect);
-        let brush = CreateSolidBrush(NIGHT[0] as u32 | (NIGHT[1] as u32) << 8 | (NIGHT[2] as u32) << 16);
+        let brush = CreateSolidBrush(INK[0] as u32 | (INK[1] as u32) << 8 | (INK[2] as u32) << 16);
         if !brush.is_null() {
             FillRect(dc, &rect, brush);
             DeleteObject(brush);
@@ -970,15 +1627,6 @@ fn rgb(c: [u8; 3]) -> Color32 {
     Color32::from_rgb(c[0], c[1], c[2])
 }
 
-/// Between `a` and `b`, `t` of the way
-fn mix(a: [u8; 3], b: [u8; 3], t: f32) -> [u8; 3] {
-    [0, 1, 2].map(|i| (a[i] as f32 + (b[i] as f32 - a[i] as f32) * t).round() as u8)
-}
-
-fn shade(c: [u8; 3], by: f32) -> [u8; 3] {
-    c.map(|v| (v as f32 * by).round().clamp(0.0, 255.0) as u8)
-}
-
 /// A glow, `color` in the middle fading out to nothing `radius` away
 fn glow(mesh: &mut Mesh, center: Pos2, radius: egui::Vec2, color: Color32) {
     const SIDES: u32 = 40;
@@ -993,203 +1641,264 @@ fn glow(mesh: &mut Mesh, center: Pos2, radius: egui::Vec2, color: Color32) {
     }
 }
 
-/// A rectangle shading from `top` to `bottom`
-fn gradient(mesh: &mut Mesh, rect: Rect, top: Color32, bottom: Color32) {
-    let first = mesh.vertices.len() as u32;
-    mesh.colored_vertex(rect.left_top(), top);
-    mesh.colored_vertex(rect.right_top(), top);
-    mesh.colored_vertex(rect.right_bottom(), bottom);
-    mesh.colored_vertex(rect.left_bottom(), bottom);
-    mesh.add_triangle(first, first + 1, first + 2);
-    mesh.add_triangle(first, first + 2, first + 3);
+/// Tips shown along the foot of the loading screen, a few seconds each
+const TIPS: [&str; 12] = [
+    "Hold G at a tree, rock or clay to gather it. Tools gather two to four times as fast.",
+    "Press B to build, then 1 to 9 and 0 to pick a piece, its cost beside it. R turns it.",
+    "Once you have wings, jump, then hold Space in the air to glide.",
+    "Merchants sell wings, and bosses and chests leave them.",
+    "Press E to pick things up, open chests, trade and pet animals.",
+    "Right click swings heavily, or eats what's in your hand.",
+    "A legendary weapon has a special on R, and right click calls on its power.",
+    "Crossbows and guns reload with Q or right click. T changes what they shoot.",
+    "Press I for your inventory, and craft tools there. M opens the map.",
+    "Draw a bow by holding right click, then click to loose the arrow.",
+    "Shift runs and F flies. F1 opens the settings, Esc the menu.",
+    "In Realms, beat a realm's three raid bosses for its Innert blocks, and set them in the gate.",
+];
+/// How long each tip's shown, in seconds
+const TIP_SECONDS: f32 = 7.0;
+
+/// How far down the loading screen the bar is
+const BAR_Y: f32 = 0.82;
+
+/// Draws the loading screen over the whole window in `layer`, `alpha` of the way opaque: on near
+/// black, framed as a printed page, the title in blackletter, under it `land` rising as it's
+/// built, answering the mouse as its touch has it if that's given, and if it's free, not taken by
+/// the game, then the bar, what's being made and a tip. With `glide`, the menu and how far from 0
+/// to 1 the name's moved over to where it has it, staying solid until it's there.
+fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Option<(Rect, f32)>, land: Option<(&Land, Option<(&mut Touch, bool)>)>, words: &Words) {
+    let painter = ctx.layer_painter(layer);
+    let screen = ctx.screen_rect();
+    page(&painter, screen, alpha);
+
+    // The land being built, in what's left between the title and the bar, under the words should
+    // a column lifted by the mouse reach them
+    let (.., below) = heading(screen, words, glide.is_some());
+    if let Some((land, touch)) = land
+        && let Some(area) = land_area(screen, below)
+    {
+        let t = look.start.elapsed().as_secs_f32();
+        // Coming later and gone sooner than the rest as it fades in and away, so it isn't seen
+        // through the menu or the game, the more so over the menu
+        let shown = if glide.is_some() { alpha.powi(3) } else { alpha * alpha };
+        let view = land.view(area, t);
+        let touch = touch.map(|(touch, free)| -> &Touch {
+            touch.feel(ctx, land, &view, look.phase, free);
+            touch
+        });
+        land.paint(&painter, &view, t, look.phase, shown, 1.0, touch);
+        if let Some(touch) = touch {
+            touch.mark(&painter);
+        }
+    }
+    paint_words(ctx, look, alpha, layer, glide, words);
 }
 
-/// Draws the loading screen over the whole window in `layer`, `alpha` of the way opaque. Night
-/// gives way to dawn over a blocky landscape as loading goes on, with a little cube turning over
-/// the name. With `glide`, the menu and how far from 0 to 1 the name's moved over to where it has
-/// it, staying solid until it's there.
-fn paint(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Option<(Rect, f32)>) {
+/// The loading screen's page in `screen`, `alpha` of the way opaque: near black, lit a little
+/// behind the land, framed in two fine rules as a printed page
+fn page(painter: &egui::Painter, screen: Rect, alpha: f32) {
+    let (w, h) = (screen.width(), screen.height());
+    let fade = |c: Color32| c.gamma_multiply(alpha);
+    painter.rect_filled(screen, 0.0, fade(rgb(INK)));
+    let mut mesh = Mesh::default();
+    glow(&mut mesh, pos2(w * 0.5, h * 0.5), vec2(w * 0.46, h * 0.42), fade(Color32::from_gray(18)));
+    painter.add(Shape::mesh(mesh));
+    let page = page_rect(screen);
+    painter.rect_stroke(page, 0.0, Stroke::new(1.0f32, fade(Color32::from_white_alpha(40))), StrokeKind::Inside);
+    painter.rect_stroke(page.shrink(4.0), 0.0, Stroke::new(1.0f32, fade(Color32::from_white_alpha(16))), StrokeKind::Inside);
+}
+
+/// Where the page's frame is, in `screen`
+fn page_rect(screen: Rect) -> Rect {
+    screen.shrink((screen.width().min(screen.height()) * 0.025).clamp(10.0, 22.0))
+}
+
+/// Where the loading screen's title is, `words` its words, in a window `screen` big: how big, how
+/// far down its middle is, how far down the ornament under it is, and how far down all that's
+/// under it reaches, the subtitle too. Gliding over to the menu, it's the menu's own name.
+fn heading(screen: Rect, words: &Words, gliding: bool) -> (f32, f32, f32, f32) {
+    let innert = gliding || words.title == "Innert";
+    let size = if innert { crate::session::TITLE_SIZE } else { (crate::session::TITLE_SIZE * 0.7).min(screen.width() / (words.title.len() as f32 * 0.42).max(1.0)) };
+    let y = (screen.height() * 0.15).max(size * 0.5 + 24.0);
+    // Under its letters' tails
+    let ornament = y + size * if innert { 0.5 } else { 0.62 } + 6.0;
+    let below = if words.subtitle.is_some_and(|s| !s.is_empty()) { ornament + 20.0 } else { ornament };
+    (size, y, ornament, below)
+}
+
+/// How far down what's under the name Innert reaches on the loading screen Innert starts with
+fn innert_below(screen: Rect) -> f32 {
+    heading(screen, &Words { title: "Innert", subtitle: None }, false).3
+}
+
+/// Where the land's drawn on a loading screen `screen` big, its title reaching `below`: in what's
+/// left between that and the bar, if there's room
+fn land_area(screen: Rect, below: f32) -> Option<Rect> {
+    let (w, h) = (screen.width(), screen.height());
+    let center = w * 0.5;
+    let top = below + 16.0;
+    let bottom = h * BAR_Y - 24.0;
+    let across = (w * 0.64).min((bottom - top) * 1.9);
+    (bottom > top + 40.0).then(|| Rect::from_min_max(pos2(center - across * 0.5, top), pos2(center + across * 0.5, bottom)))
+}
+
+/// The loading screen's words, over the page and the land, as paint() has them: the title, the
+/// bar, what's being made and a tip
+fn paint_words(ctx: &egui::Context, look: &Look, alpha: f32, layer: LayerId, glide: Option<(Rect, f32)>, words: &Words) {
+    use crate::theme;
     let painter = ctx.layer_painter(layer);
     let screen = ctx.screen_rect();
     let (w, h) = (screen.width(), screen.height());
     let t = look.start.elapsed().as_secs_f32();
-    let dawn = smoothstep(look.fraction);
     let fade = |c: Color32| c.gamma_multiply(alpha);
-    let mut mesh = Mesh::default();
+    let page = page_rect(screen);
 
-    // The sky, night giving way to dawn
-    let horizon = h * 0.64;
-    let sky = [
-        (0.0, mix(NIGHT, [30, 46, 92], dawn)),
-        (0.42, mix([17, 24, 52], [84, 104, 158], dawn)),
-        (0.64, mix([46, 38, 74], [236, 168, 116], dawn)),
-        (1.0, mix([24, 20, 40], [120, 84, 80], dawn)),
-    ];
-    for pair in sky.windows(2) {
-        let rect = Rect::from_min_max(pos2(0.0, pair[0].0 * h), pos2(w, pair[1].0 * h));
-        gradient(&mut mesh, rect, fade(rgb(pair[0].1)), fade(rgb(pair[1].1)));
-    }
-
-    // Stars, fading as it gets light
-    let starlight = (1.0 - look.fraction * 1.4).max(0.0);
-    for i in 0..110 {
-        let at = pos2(hash(i, 1) * w, hash(i, 2).powf(1.5) * horizon * 0.95);
-        let twinkle = 0.55 + 0.45 * (t * (0.6 + hash(i, 3) * 2.2) + hash(i, 4) * TAU).sin();
-        let brightness = starlight * twinkle * (0.3 + 0.7 * hash(i, 5));
-        let size = 1.0 + (hash(i, 6) * 1.6).floor();
-        mesh.add_colored_rect(Rect::from_center_size(at, vec2(size, size)), fade(Color32::from_white_alpha((brightness * 230.0) as u8)));
-    }
-
-    // The sun, coming up off to one side, just peeking over the hills by the end
-    let sun = pos2(w * 0.8, horizon + h * (0.06 - 0.1 * dawn));
-    let reach = w.max(h);
-    glow(&mut mesh, sun, vec2(reach * 0.55, reach * 0.38), fade(Color32::from_rgba_unmultiplied(255, 180, 120, (20.0 + 70.0 * dawn) as u8)));
-    glow(&mut mesh, sun, vec2(reach * 0.12, reach * 0.12), fade(Color32::from_rgba_unmultiplied(255, 214, 160, (30.0 + 120.0 * dawn) as u8)));
-    let disc = (w.min(h) * 0.035).max(10.0);
-    glow(&mut mesh, sun, vec2(disc * 2.2, disc * 2.2), fade(Color32::from_rgba_unmultiplied(255, 236, 200, (160.0 * dawn) as u8)));
-    painter.add(Shape::mesh(std::mem::take(&mut mesh)));
-    painter.circle_filled(sun, disc, fade(Color32::from_rgba_unmultiplied(255, 238, 206, (255.0 * dawn) as u8)));
-
-    // Blocky hills drifting by, the farthest hazy with the sky's light, the nearest made of voxels
-    // with grass on top
-    struct Hills {
-        block: f32,
-        base: f32,
-        height: f32,
-        speed: f32,
-        seed: f32,
-        night: [u8; 3],
-        day: [u8; 3],
-    }
-    let layers = [
-        Hills { block: 9.0, base: 0.665, height: 0.075, speed: 4.0, seed: 1.3, night: [34, 30, 62], day: [166, 128, 140] },
-        Hills { block: 14.0, base: 0.76, height: 0.07, speed: 9.0, seed: 4.1, night: [20, 21, 44], day: [86, 84, 104] },
-        Hills { block: 22.0, base: 0.875, height: 0.06, speed: 17.0, seed: 7.7, night: [10, 12, 25], day: [36, 46, 48] },
-    ];
-    for (n, hills) in layers.iter().enumerate() {
-        let front = n == layers.len() - 1;
-        let color = mix(hills.night, hills.day, dawn);
-        let grass = mix([22, 44, 34], [86, 140, 74], dawn);
-        let scrolled = t * hills.speed;
-        let first = (scrolled / hills.block).floor();
-        let offset = scrolled - first * hills.block;
-        for k in 0..(w / hills.block) as i64 + 2 {
-            let column = first as i64 + k;
-            let x = column as f32 * hills.block;
-            let wave = 0.55 * (x * 0.0045 + hills.seed).sin() + 0.3 * (x * 0.0113 + hills.seed * 2.3).sin() + 0.15 * (x * 0.029 + hills.seed * 5.1).sin();
-            let top = ((hills.base - hills.height * wave) * h / hills.block).round() * hills.block;
-            let left = k as f32 * hills.block - offset;
-            if !front {
-                mesh.add_colored_rect(Rect::from_min_max(pos2(left, top), pos2(left + hills.block, h)), fade(rgb(color)));
-                continue;
-            }
-            // Each voxel a little lighter or darker than the next
-            let mut y = top;
-            let mut row = 0;
-            while y < h {
-                let tone = if row == 0 { grass } else { shade(color, 0.85 + 0.3 * hash(column as u32, row)) };
-                mesh.add_colored_rect(Rect::from_min_max(pos2(left, y), pos2(left + hills.block, y + hills.block)), fade(rgb(tone)));
-                y += hills.block;
-                row += 1;
-            }
-        }
-    }
-
-    // Fireflies drifting up out of the hills, fewer once it's light
-    for i in 0..30 {
-        let span = h * 0.42;
-        let speed = 6.0 + hash(i, 7) * 14.0;
-        let risen = (t * speed + hash(i, 8) * span) % span;
-        let at = pos2(hash(i, 9) * w + (t * (0.4 + hash(i, 10)) + hash(i, 11) * TAU).sin() * 14.0, h - risen);
-        let flicker = 0.6 + 0.4 * (t * (2.0 + hash(i, 12) * 3.0) + i as f32).sin();
-        let a = (risen / span * PI).sin() * flicker * (1.0 - 0.6 * dawn);
-        glow(&mut mesh, at, vec2(7.0, 7.0), fade(Color32::from_rgba_unmultiplied(255, 200, 110, (a * 60.0) as u8)));
-        mesh.add_colored_rect(Rect::from_center_size(at, vec2(2.0, 2.0)), fade(Color32::from_rgba_unmultiplied(255, 226, 150, (a * 255.0) as u8)));
-    }
-    painter.add(Shape::mesh(std::mem::take(&mut mesh)));
-
-    // The middle of the screen: the cube, the name, the bar and what's being made
-    let middle = h * 0.42;
+    // The title, gliding over to the menu's own once that's up
     let center = w * 0.5;
-    cube(&painter, pos2(center, middle - 118.0 + (t * 1.7).sin() * 3.0), t, alpha);
-    let (mut name, mut solid) = (pos2(center, middle - 18.0), alpha);
+    let (size, y, below, _) = heading(screen, words, glide.is_some());
+    let at = pos2(center, y);
+    let (mut name, mut solid) = (at, alpha);
     if let Some((menu, along)) = glide {
-        // As the menu lays them out, under its margin, see App::render()
-        let row = |size: f32| ctx.fonts(|f| f.row_height(&FontId::proportional(size)));
-        let to = pos2(menu.center().x, menu.top() + 36.0 + row(60.0) * 0.5);
-        name = name.lerp(to, smoothstep(along));
+        // Where the menu has it, see session::menu()
+        name = name.lerp(crate::session::title_at(menu), smoothstep(along));
         if along < 1.0 {
             solid = 1.0;
         }
     }
-    painter.text(name, Align2::CENTER_CENTER, "INNERT", FontId::proportional(60.0), Color32::WHITE.gamma_multiply(solid));
+    // Shadowed, as the menu has it
+    painter.text(name + vec2(2.0, 3.0), Align2::CENTER_CENTER, words.title, theme::blackletter(size), Color32::from_black_alpha((190.0 * solid) as u8));
+    painter.text(name, Align2::CENTER_CENTER, words.title, theme::blackletter(size), theme::HEADING.gamma_multiply(solid));
+    ornament(&painter, pos2(center, below), 120.0, fade(theme::ACCENT));
+    if let Some(subtitle) = words.subtitle.filter(|s| !s.is_empty()) {
+        painter.text(pos2(center, below + 20.0), Align2::CENTER_CENTER, subtitle, theme::display(16.0), fade(theme::WEAK));
+    }
 
-    let width = (w * 0.56).min(360.0);
-    let bar = Rect::from_min_size(pos2(center - width * 0.5, middle + 78.0), vec2(width, 4.0));
-    painter.rect_filled(bar.expand(2.0), 4.0, fade(Color32::from_black_alpha(70)));
-    painter.rect_filled(bar, 2.0, fade(Color32::from_white_alpha(34)));
+    // The bar, what's being made and how far along, and a tip under them
+    let bar_y = h * BAR_Y;
+    let tip_y = (h * 0.905).max(bar_y + 50.0).min(page.bottom() - 18.0);
+    let width = (w * 0.42).clamp(220.0, 440.0);
+    let bar = Rect::from_min_size(pos2(center - width * 0.5, bar_y), vec2(width, 3.0));
+    painter.rect_filled(bar.expand(2.0), 0.0, fade(Color32::from_black_alpha(200)));
+    painter.rect_stroke(bar.expand(2.0), 0.0, Stroke::new(1.0f32, fade(theme::EDGE.gamma_multiply(0.7))), StrokeKind::Outside);
     let filled = Rect::from_min_max(bar.min, pos2(bar.min.x + width * look.fraction, bar.max.y));
+    let mut mesh = Mesh::default();
     let first = mesh.vertices.len() as u32;
-    let (cool, warm) = (fade(Color32::from_rgb(236, 158, 96)), fade(Color32::from_rgb(255, 230, 176)));
+    // Grey to white, as the menu it gives way to
+    let (cool, warm) = (fade(Color32::from_gray(120)), fade(Color32::from_gray(248)));
     mesh.colored_vertex(filled.left_top(), cool);
     mesh.colored_vertex(filled.right_top(), warm);
     mesh.colored_vertex(filled.right_bottom(), warm);
     mesh.colored_vertex(filled.left_bottom(), cool);
     mesh.add_triangle(first, first + 1, first + 2);
     mesh.add_triangle(first, first + 2, first + 3);
-    glow(&mut mesh, pos2(filled.max.x, filled.center().y), vec2(16.0, 9.0), fade(Color32::from_rgba_unmultiplied(255, 220, 160, 90)));
+    // A glint running along it, so it's plainly going even while a step takes its time
+    let glint = bar.min.x + filled.width() * ((t * 0.6) % 1.0);
+    glow(&mut mesh, pos2(glint, bar.center().y), vec2(18.0, 4.0), fade(Color32::from_white_alpha(90)));
+    glow(&mut mesh, pos2(filled.max.x, filled.center().y), vec2(16.0, 9.0), fade(Color32::from_white_alpha(70)));
     painter.add(Shape::mesh(mesh));
+    theme::diamond(&painter, pos2(filled.max.x, bar.center().y), 3.5, fade(theme::ACCENT));
 
-    let below = bar.max.y + 12.0;
-    painter.text(pos2(bar.min.x, below), Align2::LEFT_TOP, format!("{}…", look.step.label()), FontId::proportional(14.0), fade(Color32::from_gray(218)));
-    painter.text(pos2(bar.max.x, below), Align2::RIGHT_TOP, format!("{:.0}%", look.fraction * 100.0), FontId::proportional(13.0), fade(Color32::from_gray(150)));
+    let words_y = bar.max.y + 12.0;
+    painter.text(pos2(bar.min.x, words_y), Align2::LEFT_TOP, format!("{}…", look.step.label()), theme::display(14.0), fade(theme::TEXT));
+    painter.text(pos2(bar.max.x, words_y), Align2::RIGHT_TOP, format!("{:.0}%", look.fraction * 100.0), FontId::proportional(13.0), fade(theme::WEAK));
     if look.compiling && look.step == Step::Shaders {
-        painter.text(pos2(center, below + 26.0), Align2::CENTER_TOP, "It only takes this long the first time", FontId::proportional(12.5), fade(Color32::from_gray(160)));
+        painter.text(pos2(center, words_y + 22.0), Align2::CENTER_TOP, "It only takes this long the first time", FontId::proportional(12.5), fade(theme::WEAK));
+    }
+
+    // A tip, each in turn, fading from one to the next
+    let turn = t / TIP_SECONDS;
+    let within = (turn.fract()) * TIP_SECONDS;
+    let shown = smoothstep(within / 0.6) * smoothstep((TIP_SECONDS - within) / 0.6);
+    let tip = TIPS[(look.tip + turn as usize) % TIPS.len()];
+    if tip_y > words_y + 30.0 {
+        painter.text(pos2(center, tip_y), Align2::CENTER_CENTER, tip, FontId::proportional(13.5), fade(theme::WEAK).gamma_multiply(shown));
     }
 }
 
-/// A cube turning slowly over the name, its sides the colors of the game's icon
-fn cube(painter: &egui::Painter, center: Pos2, t: f32, alpha: f32) {
-    let size = 24.0;
-    let (turn, tilt) = (t * 0.55, 0.5f32);
-    // Turned about the upright, then tipped towards the viewer, who's looking down +z
-    let place = |[x, y, z]: [f32; 3]| {
-        let (x, z) = (x * turn.cos() + z * turn.sin(), -x * turn.sin() + z * turn.cos());
-        let (y, z) = (y * tilt.cos() - z * tilt.sin(), y * tilt.sin() + z * tilt.cos());
-        (center + vec2(x, -y) * size, z)
-    };
-    let (red, green, blue) = ([224, 84, 72], [80, 190, 102], [78, 116, 226]);
-    let faces: [([f32; 3], [[f32; 3]; 4], [u8; 3]); 5] = [
-        ([0.0, 1.0, 0.0], [[-1.0, 1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]], blue),
-        ([1.0, 0.0, 0.0], [[1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [1.0, 1.0, 1.0], [1.0, -1.0, 1.0]], red),
-        ([-1.0, 0.0, 0.0], [[-1.0, -1.0, -1.0], [-1.0, 1.0, -1.0], [-1.0, 1.0, 1.0], [-1.0, -1.0, 1.0]], red),
-        ([0.0, 0.0, 1.0], [[-1.0, -1.0, 1.0], [1.0, -1.0, 1.0], [1.0, 1.0, 1.0], [-1.0, 1.0, 1.0]], green),
-        ([0.0, 0.0, -1.0], [[-1.0, -1.0, -1.0], [1.0, -1.0, -1.0], [1.0, 1.0, -1.0], [-1.0, 1.0, -1.0]], green),
-    ];
-
-    // Its shadow on the ground under it
+/// A printer's ornament under a title, as theme::flourish() but in `color`, to fade with the rest
+fn ornament(painter: &egui::Painter, at: Pos2, half: f32, color: Color32) {
     let mut mesh = Mesh::default();
-    glow(&mut mesh, center + vec2(0.0, size * 2.3), vec2(size * 1.7, size * 0.45), Color32::from_black_alpha((90.0 * alpha) as u8));
-    for (normal, corners, color) in faces {
-        let (_, facing) = place(normal);
-        // Only the sides facing the viewer
-        if facing <= 0.0 {
-            continue;
-        }
-        let color = rgb(shade(color, 0.55 + 0.45 * facing)).gamma_multiply(alpha);
-        let points = corners.map(|c| place(c).0);
+    for side in [-1.0, 1.0f32] {
+        let (a, b) = (at.x + side * 15.0, at.x + side * half);
         let first = mesh.vertices.len() as u32;
-        for p in points {
-            mesh.colored_vertex(p, color);
-        }
+        mesh.colored_vertex(pos2(a, at.y - 0.6), color);
+        mesh.colored_vertex(pos2(a, at.y + 0.6), color);
+        mesh.colored_vertex(pos2(b, at.y - 0.6), Color32::TRANSPARENT);
+        mesh.colored_vertex(pos2(b, at.y + 0.6), Color32::TRANSPARENT);
         mesh.add_triangle(first, first + 1, first + 2);
-        mesh.add_triangle(first, first + 2, first + 3);
+        mesh.add_triangle(first + 1, first + 3, first + 2);
     }
     painter.add(Shape::mesh(mesh));
-    // Edges, faintly
-    for (normal, corners, _) in faces {
-        if place(normal).1 > 0.0 {
-            painter.add(Shape::closed_line(corners.map(|c| place(c).0).to_vec(), Stroke::new(1.0f32, Color32::from_black_alpha((60.0 * alpha) as u8))));
+    for side in [-1.0, 1.0f32] {
+        crate::theme::diamond(painter, at + vec2(side * 9.5, 0.0), 2.0, color);
+    }
+    crate::theme::diamond(painter, at, 4.5, color);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_step_taking_longer_still_seems_to_get_on() {
+        // In step with the time at first, then ever slower, never stopping or going back
+        assert!((still_to_go(0.0) - 1.0).abs() < 1e-6);
+        assert!((still_to_go(0.5) - 0.575).abs() < 1e-3);
+        let mut last = 2.0;
+        for k in 0..400 {
+            let left = still_to_go(k as f32 * 0.025);
+            assert!(left < last && left > 0.0, "at {k}: {left} after {last}");
+            last = left;
         }
+    }
+
+    #[test]
+    fn the_bar_follows_the_steps() {
+        let progress = Progress::arriving();
+        let (fraction, step) = progress.estimate();
+        assert!(fraction < 0.05, "nothing's built yet: {fraction}");
+        assert_eq!(step, Step::Ground);
+        for step in [Step::Ground, Step::Rivers, Step::Land, Step::Voxels] {
+            progress.run(step, || ());
+        }
+        let (built, step) = progress.estimate();
+        assert!(built > fraction && built < 1.0, "{built}");
+        assert_eq!(step, Step::Grass);
+        assert_eq!(progress.phase().rise, 1.0);
+        assert_eq!(progress.phase().fill, 0.0);
+        for step in [Step::Grass, Step::Upload, Step::Water] {
+            progress.run(step, || ());
+        }
+        let (done, _) = progress.estimate();
+        assert_eq!(done, 1.0);
+        assert_eq!(progress.phase(), Phase::DONE);
+    }
+
+    #[test]
+    fn the_land_is_built_at_a_pace_that_can_be_seen() {
+        let mut look = Look::new();
+        look.last -= Duration::from_millis(100);
+        look.advance(1.0, Step::Grass, false, Phase::DONE);
+        assert!(look.phase.rise > 0.0 && look.phase.rise <= 0.081, "{:?}", look.phase);
+        assert!(look.fraction > 0.0 && look.fraction < 1.0);
+    }
+
+    #[test]
+    fn every_tip_fits_a_small_window() {
+        for tip in TIPS {
+            assert!(tip.len() < 100, "{tip}");
+        }
+    }
+
+    #[test]
+    fn previews_are_named_in_turn() {
+        let mut preview = Preview { path: PathBuf::from("shot.png"), taken: 0, every: 4, frames: Vec::new(), drawn: 0 };
+        assert!(preview.next(0.0, false, false).is_none());
+        assert_eq!(preview.next(0.0, true, false).unwrap(), PathBuf::from("shot-loading-00.png"));
+        assert!(preview.next(0.1, true, false).is_none());
+        assert_eq!(preview.next(0.3, true, false).unwrap(), PathBuf::from("shot-loading-01.png"));
+        assert_eq!(preview.next(0.4, true, true).unwrap(), PathBuf::from("shot-loading-loaded.png"));
+        assert!(preview.next(1.0, true, true).is_none());
     }
 }

@@ -1,0 +1,29 @@
+{
+  "what": "Rimestone gargoyle, upper arm",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    5,
+    12
+  ],
+  "pivot": [
+    1.008,
+    2.016,
+    10.85795070279516
+  ],
+  "anchor": [
+    0.187,
+    0.03025,
+    -0.6786219189246975
+  ],
+  "origin": [
+    -1,
+    -2,
+    -11
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1484,
+    "fcde1ba327c6f566"
+  ]
+}

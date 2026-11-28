@@ -1,0 +1,37 @@
+{
+  "what": "Spear, hilt: Ebony Crescent Hilt",
+  "voxels_per_meter": 192.0,
+  "size": [
+    18,
+    8,
+    290
+  ],
+  "pivot": [
+    8.812147027290214,
+    4.224,
+    -2.0645987988005334
+  ],
+  "anchor": null,
+  "origin": [
+    -9,
+    -4,
+    2
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.5901
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      1.9176000000000002
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    32910,
+    "ccb0deb1ce421c94"
+  ]
+}

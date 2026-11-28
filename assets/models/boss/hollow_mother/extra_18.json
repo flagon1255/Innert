@@ -1,0 +1,29 @@
+{
+  "what": "Hollow Mother, extra 18",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    5,
+    21
+  ],
+  "pivot": [
+    1.1039999999999999,
+    2.192,
+    19.119999999999997
+  ],
+  "anchor": [
+    0.024750000000000008,
+    0.01924999999999999,
+    -1.1949999999999998
+  ],
+  "origin": [
+    -1,
+    -2,
+    -19
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1520,
+    "062cb7df72f57c4a"
+  ]
+}

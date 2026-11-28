@@ -1,0 +1,29 @@
+{
+  "what": "sleetwing, hind shin",
+  "voxels_per_meter": 16.0,
+  "size": [
+    7,
+    4,
+    12
+  ],
+  "pivot": [
+    2.089739732956182,
+    1.708,
+    9.934307611318589
+  ],
+  "anchor": [
+    0.08814126669023861,
+    0.018250000000000002,
+    -0.6208942257074118
+  ],
+  "origin": [
+    -2,
+    -2,
+    -10
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1468,
+    "268a71d20c6c157c"
+  ]
+}

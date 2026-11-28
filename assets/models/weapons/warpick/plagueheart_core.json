@@ -1,0 +1,37 @@
+{
+  "what": "War Pick, core: Plagueheart",
+  "voxels_per_meter": 192.0,
+  "size": [
+    9,
+    9,
+    9
+  ],
+  "pivot": [
+    4.600000000000005,
+    4.280000000000001,
+    -110.0
+  ],
+  "anchor": null,
+  "origin": [
+    -5,
+    -4,
+    110
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.2276
+    ],
+    "tip": [
+      0.24,
+      0.0,
+      0.5526
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2898,
+    "03f5ec4e037e4e37"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "what": "Gloamfin, standing frame (1 of 21 frames)",
+  "voxels_per_meter": 48.0,
+  "size": [
+    18,
+    7,
+    7
+  ],
+  "pivot": [
+    9.0,
+    3.5,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -9,
+    -4,
+    0
+  ],
+  "note": "The standing frame. The game draws this look in baked frames, walking and attacking: what you change here is changed in every other frame the same way, where that frame has the same there. Export with --export-frames for a file per frame, which replaces that frame outright.",
+  "written": [
+    1544,
+    "5f37a64e70b63acd"
+  ]
+}

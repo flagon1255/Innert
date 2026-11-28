@@ -1,8 +1,25 @@
 [package]
 name = "innert"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.86.0"
+# The game and its model editor are each a little program over the same code, whose root stays
+# at src/main.rs, see src/bin
+autobins = false
+# What `cargo run` starts without --bin: the game, `cargo run --release --bin innert-editor` the editor
+default-run = "innert"
+
+[lib]
+name = "innert"
+path = "src/main.rs"
+
+[[bin]]
+name = "innert"
+path = "src/bin/innert.rs"
+
+[[bin]]
+name = "innert-editor"
+path = "src/bin/innert-editor.rs"
 
 [dependencies]
 vulkano = "0.35.2"

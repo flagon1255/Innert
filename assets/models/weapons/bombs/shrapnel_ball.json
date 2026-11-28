@@ -1,0 +1,37 @@
+{
+  "what": "Bombs, casing: Shrapnel Ball",
+  "voxels_per_meter": 192.0,
+  "size": [
+    27,
+    26,
+    30
+  ],
+  "pivot": [
+    13.430758840371979,
+    12.868480000000002,
+    -0.9600000000000009
+  ],
+  "anchor": null,
+  "origin": [
+    -13,
+    -13,
+    1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.0352
+    ],
+    "tip": [
+      0.025,
+      0.0,
+      0.21700000000000003
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    32596,
+    "e135aaaede48feba"
+  ]
+}

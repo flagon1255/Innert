@@ -1,0 +1,29 @@
+{
+  "what": "Lantern Widow, head",
+  "voxels_per_meter": 16.0,
+  "size": [
+    9,
+    9,
+    20
+  ],
+  "pivot": [
+    3.72,
+    4.187185399798081,
+    8.184000000000001
+  ],
+  "anchor": [
+    0.04874999999999999,
+    0.019550912512619922,
+    -0.5115000000000001
+  ],
+  "origin": [
+    -4,
+    -4,
+    -8
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2751,
+    "9f00ff348e3395c9"
+  ]
+}

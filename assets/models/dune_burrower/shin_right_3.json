@@ -1,0 +1,29 @@
+{
+  "what": "Dune burrower, shin right 3",
+  "voxels_per_meter": 16.0,
+  "size": [
+    1,
+    4,
+    9
+  ],
+  "pivot": [
+    0.7679999999999998,
+    3.5359999999999996,
+    8.464
+  ],
+  "anchor": [
+    -0.016749999999999987,
+    -0.09599999999999997,
+    -0.529
+  ],
+  "origin": [
+    -1,
+    -4,
+    -8
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1302,
+    "ca3df4c202673e80"
+  ]
+}

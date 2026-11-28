@@ -1,0 +1,29 @@
+{
+  "what": "Harpy Queen, torso",
+  "voxels_per_meter": 16.0,
+  "size": [
+    41,
+    19,
+    10
+  ],
+  "pivot": [
+    18.656,
+    9.055200000000001,
+    5.297600000000001
+  ],
+  "anchor": [
+    0.11525000000000007,
+    0.027799999999999936,
+    -0.33110000000000006
+  ],
+  "origin": [
+    -19,
+    -9,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    11299,
+    "80d184a51e37b8cd"
+  ]
+}

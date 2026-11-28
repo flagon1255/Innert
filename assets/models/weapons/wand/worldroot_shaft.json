@@ -1,0 +1,37 @@
+{
+  "what": "Wand, shaft: Worldroot",
+  "voxels_per_meter": 192.0,
+  "size": [
+    5,
+    4,
+    59
+  ],
+  "pivot": [
+    2.7586787796087675,
+    2.358277241167571,
+    1.0861714285714288
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -2,
+    -1
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.075
+    ],
+    "tip": [
+      0.012000000000000002,
+      0.0,
+      0.3205714285714286
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    1953,
+    "9e0cb5cbf6e7f944"
+  ]
+}

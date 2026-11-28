@@ -1,0 +1,29 @@
+{
+  "what": "Stormtalon, tail",
+  "voxels_per_meter": 16.0,
+  "size": [
+    19,
+    16,
+    3
+  ],
+  "pivot": [
+    16.896,
+    7.53664,
+    1.472
+  ],
+  "anchor": [
+    -0.46225000000000005,
+    0.028959999999999986,
+    -0.092
+  ],
+  "origin": [
+    -17,
+    -8,
+    -1
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2316,
+    "7fbbb49ee5c5ade0"
+  ]
+}

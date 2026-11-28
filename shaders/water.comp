@@ -44,7 +44,8 @@ layout(push_constant) uniform PushConstants {
     vec4 brush;
     // Something wading through the water: xy column, zw velocity in columns per second
     vec4 wake;
-    // x: time step, y: sea level at the world's edges (0 for none), z: voxels per meter
+    // x: time step, y: sea level at the world's edges (0 for none), z: voxels per meter, w: 1 for
+    // the surface of water just laid, see main()
     vec4 params;
     // x: stage, y: how many springs, zw: the corner of the area around the camera that's kept
     // flowing, in columns. Water further away keeps still until the camera comes near.
@@ -54,6 +55,8 @@ layout(push_constant) uniform PushConstants {
     // are in the landscape modulo the room there is, which they go round, see at(): so the water
     // just flows on as it does, with nothing moved but what comes in put where what left was.
     uvec4 room;
+    // The area around the camera that's kept flowing, from x and y to x and y, in columns
+    uvec4 flowing;
 } pc;
 
 // Top of the ground in each column, which never changes
@@ -77,6 +80,17 @@ layout(set = 0, binding = 4, r32f) uniform image2D blockImage;
 layout(set = 0, binding = 5) readonly buffer Springs {
     vec4 springs[];
 };
+// Where worldgen laid the top of the water in each column: the sea, the lakes and the rivers'
+// pools, as the still water further off keeps them, see depth(). A byte for each column, four side
+// by side in each texel, the first lowest: 0 where it laid none, LAID_SEA as high as the sea, and
+// otherwise how many voxels over the ground. See src\water.rs rest_byte().
+layout(set = 0, binding = 6, r32ui) readonly uniform uimage2D restImage;
+const uint LAID_SEA = 255;
+
+// How many seconds the water takes to settle most of the way back to where worldgen laid it, see
+// depth(): slow enough that waves still roll and splashes still spread, but too quick for what
+// rivers pour in to pile up. Has to match SETTLE in src\water.rs's tests.
+const float SETTLE = 2.0;
 
 const ivec2 DIRS[4] = ivec2[4](ivec2(-1, 0), ivec2(1, 0), ivec2(0, -1), ivec2(0, 1));
 // The flux component a neighbor in DIRS[i] uses to send water back this way
@@ -107,10 +121,21 @@ float height(ivec2 c) {
     return imageLoad(groundImage, p).r + imageLoad(depthImage, p).r;
 }
 
-// How hard water is pushed through each pipe, from how much higher it stands than its neighbor's
+// Whether column `c` is in the area kept flowing, see PushConstants::flowing
+bool flowing(ivec2 c) {
+    return all(greaterThanEqual(c, ivec2(pc.flowing.xy))) && all(lessThan(c, ivec2(pc.flowing.zw)));
+}
+
+// How hard water is pushed through each pipe, from how much higher it stands than its neighbor's.
+// The still water round the area kept flowing is as much a part of the sea, lake or river as
+// what's flowing: the columns just outside the area push water in through their pipes into it as
+// any others would, though how deep they are stays as it is till the camera comes near, so the
+// water in the area can never drain away below, or rise above, the still water round it, which
+// would leave a step in the water where the area ends. Their pipes out of the area aren't used.
 void flux(ivec2 c, ivec2 size) {
     float dt = pc.params.x;
     float gravity = 9.8 * pc.params.z;
+    bool edge = !flowing(c);
     ivec2 here = at(c);
     float depth = imageLoad(depthImage, here).r;
     vec4 f = imageLoad(fluxImage, here);
@@ -124,7 +149,7 @@ void flux(ivec2 c, ivec2 size) {
     float h = imageLoad(groundImage, here).r + depth;
     for (int i = 0; i < 4; i++) {
         ivec2 n = c + DIRS[i];
-        f[i] = inside(n, size) ? max(0, f[i] * DAMPING + dt * gravity * (h - height(n))) : 0;
+        f[i] = inside(n, size) && (!edge || flowing(n)) ? max(0, f[i] * DAMPING + dt * gravity * (h - height(n))) : 0;
     }
 
     // Whatever wades through pushes the water in front of it along, making a little bow wave,
@@ -136,7 +161,7 @@ void flux(ivec2 c, ivec2 size) {
     float fastest = 1.2 * pc.params.z;
     if (length(push) > fastest)
     push *= fastest / length(push);
-    if (closeness > 0 && length(push) > 0) {
+    if (closeness > 0 && length(push) > 0 && !edge) {
         for (int i = 0; i < 4; i++)
         f[i] = max(f[i], closeness * depth * max(dot(vec2(DIRS[i]), push), 0) * 0.5);
     }
@@ -161,21 +186,41 @@ void depth(ivec2 c, ivec2 size) {
     }
     float d = imageLoad(depthImage, here).r + dt * (inflow - (f.x + f.y + f.z + f.w));
 
+    // Only the water round the camera flows, and the still water further off is where worldgen laid
+    // it, as is the water of each strip of the world that comes in. What flows is held to there
+    // wherever worldgen laid some: what the springs and the rivers flowing in pour into a pool or a
+    // lake has nowhere else to go, but for the edge of what flows, and would pile up into a flood
+    // standing over the still water round it, and what drains out into holes, is scooped up or
+    // splashed out would leave it lower. Either way there'd be a step in the water where what flows
+    // ends, and left behind once the camera's gone on.
+    float ground = imageLoad(groundImage, here).r;
+    float sea = pc.params.y;
+    uint laid = (imageLoad(restImage, ivec2(here.x >> 2, here.y)).r >> (8 * (here.x & 3))) & 0xff;
+    bool held = laid > 0 && (laid != LAID_SEA || sea > 0);
+    float rest = laid == LAID_SEA ? sea - ground : float(laid);
+
+    // Springs keep it topped up to there, and no higher: so a waterfall always pours over full, but
+    // the pools below don't fill up and spill
     vec2 center = vec2(c) + 0.5;
-    for (uint s = 0; s < pc.info.y; s++) {
-        vec4 spring = springs[s];
-        if (distance(center, spring.xy) < spring.w)
-        d += dt * spring.z / (3.14159265 * spring.w * spring.w);
+    if (!held || d < rest) {
+        for (uint s = 0; s < pc.info.y; s++) {
+            vec4 spring = springs[s];
+            if (distance(center, spring.xy) < spring.w)
+            d += dt * spring.z / (3.14159265 * spring.w * spring.w);
+        }
     }
     // A smooth mound or dip rather than a cylinder, which would ring with ripples
     float from_brush = distance(center, pc.brush.xy);
     if (pc.brush.z > 0 && from_brush < pc.brush.z)
     d += pc.brush.w * (0.5 + 0.5 * cos(3.14159265 * from_brush / pc.brush.z));
 
+    // And it's drawn back there a little at a time, so waves still roll and splashes spread
+    if (held)
+    d += (rest - d) * (dt / SETTLE);
+
     // The edges of the world are the open sea, which takes in rivers and fills anything below it
-    float sea = pc.params.y;
     if (sea > 0 && (any(equal(c, ivec2(0))) || any(equal(c, size - 1))))
-    d = sea - imageLoad(groundImage, here).r;
+    d = sea - ground;
 
     // Thin films left behind dry up
     if (d < 0.02)
@@ -291,6 +336,17 @@ bool nearWater(ivec2 b, ivec2 size) {
     return highest >= 0;
 }
 
+// How much pours over a ledge, in square voxels a second per voxel of it, from water lying `depth`
+// deep on ground `ground` high into water or onto ground `beside` high past it, were it flowing:
+// as over a weir, the water going over as deep as two thirds of what's on the lip, as fast as a
+// wave travels in water that deep. None where the water beside stands as high.
+float stillOver(float ground, float depth, float beside) {
+    if (depth <= MIN_DEPTH || ground + depth < beside + LEDGE * pc.params.z)
+    return 0;
+    float head = min(depth, 2 * pc.params.z) * (2.0 / 3.0);
+    return sqrt(9.8 * pc.params.z * head) * head;
+}
+
 // What traverse.comp draws: the top of the water lying in a column, how white it is, and any water
 // falling through it. `g` is the first column of its group, `near_water` whether there's water in the
 // blocks round it, and `tiled` whether where the ledges are is marked in shared memory.
@@ -347,6 +403,13 @@ void surface(ivec2 c, ivec2 size, ivec2 g, bool near_water, bool tiled) {
             ivec2 lip_at = at(lip);
             float lip_ground = tiled ? lineGround(lip, g, along_x) : imageLoad(groundImage, lip_at).r;
             float over = imageLoad(fluxImage, lip_at)[i];
+            // Still water that's never flowed, as worldgen laid it further off than the area kept
+            // flowing, has nothing going over its ledges yet, though a river's falls are there: what
+            // would, so they're drawn before the camera comes near and not only once it has
+            if (over < LEAST_FALL * vpm * vpm && !flowing(lip)) {
+                ivec2 beside_at = at(lip + dir);
+                over = stillOver(lip_ground, imageLoad(depthImage, lip_at).r, imageLoad(groundImage, beside_at).r + imageLoad(depthImage, beside_at).r);
+            }
             if (over < LEAST_FALL * vpm * vpm)
             continue;
             float lip_depth = max(imageLoad(depthImage, lip_at).r, FALL_THICKNESS * vpm);
@@ -431,7 +494,11 @@ void main() {
         // A group at a time, its columns all in one block as the corner's on a block's, so every
         // invocation of it gets to the barrier
         ivec2 g = corner + ivec2(gl_WorkGroupID.xy) * GROUP;
-        bool near_water = nearWater(g / BLOCK, size);
+        // What's kept of the blocks round water that's just been laid, the whole world's at first
+        // and a strip's as it comes in, is still of what was there before, if anything: falls are
+        // looked for all over it, the once
+        bool fresh = pc.params.w > 0.5;
+        bool near_water = fresh || nearWater(g / BLOCK, size);
         bool tiled = int(FALL_REACH * pc.params.z) <= HALO;
         for (int n = int(gl_LocalInvocationIndex); n < 4 * CROSS * 2; n += GROUP * GROUP)
         s_ledges[n] = 0;
@@ -445,6 +512,9 @@ void main() {
         surface(c, size, g, near_water, tiled);
         return;
     }
+    // The pipes are worked out for a column more all round the area that flows, see flux()
+    if (stage == FLUX)
+    c -= ivec2(1);
     if (!inside(c, size))
     return;
     if (stage == FLUX)

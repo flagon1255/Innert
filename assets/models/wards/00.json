@@ -1,0 +1,29 @@
+{
+  "what": "a ward round a raid boss",
+  "voxels_per_meter": 16.0,
+  "size": [
+    195,
+    195,
+    16
+  ],
+  "pivot": [
+    97.426,
+    97.426,
+    1.008
+  ],
+  "anchor": [
+    0.004625000000000101,
+    0.004625000000000101,
+    -0.063
+  ],
+  "origin": [
+    -97,
+    -97,
+    -1
+  ],
+  "note": "Placed by its anchor as the code places it, and grows only round it. Its voxels a meter are the code's, not known here.",
+  "written": [
+    11799,
+    "14933dff4865daa0"
+  ]
+}

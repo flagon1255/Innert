@@ -1,0 +1,29 @@
+{
+  "what": "Thunder Drake, neck 1",
+  "voxels_per_meter": 16.0,
+  "size": [
+    15,
+    9,
+    11
+  ],
+  "pivot": [
+    4.16,
+    4.256,
+    4.784000000000001
+  ],
+  "anchor": [
+    0.20875,
+    0.015249999999999986,
+    -0.29900000000000004
+  ],
+  "origin": [
+    -4,
+    -4,
+    -5
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    3511,
+    "bc3f380ed6b64c77"
+  ]
+}

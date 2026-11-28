@@ -1,0 +1,37 @@
+{
+  "what": "Chakram, core: Garnet Core",
+  "voxels_per_meter": 192.0,
+  "size": [
+    8,
+    9,
+    12
+  ],
+  "pivot": [
+    3.815999999999999,
+    4.704,
+    -47.984
+  ],
+  "anchor": null,
+  "origin": [
+    -4,
+    -5,
+    48
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.014000000000000002
+    ],
+    "tip": [
+      0.0,
+      0.0,
+      0.15
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    2569,
+    "4f99ec989bd68848"
+  ]
+}

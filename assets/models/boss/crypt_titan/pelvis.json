@@ -1,0 +1,29 @@
+{
+  "what": "Crypt Titan, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    12,
+    15,
+    27
+  ],
+  "pivot": [
+    4.84,
+    7.4799999999999995,
+    23.144
+  ],
+  "anchor": [
+    0.07250000000000001,
+    0.0012500000000000289,
+    -1.4465
+  ],
+  "origin": [
+    -5,
+    -7,
+    -23
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    4529,
+    "e92f3f1320185a21"
+  ]
+}

@@ -1,0 +1,37 @@
+{
+  "what": "Bombs, casing: Glass Flask",
+  "voxels_per_meter": 192.0,
+  "size": [
+    22,
+    22,
+    16
+  ],
+  "pivot": [
+    10.8672,
+    11.209599999999998,
+    -14.959999999999999
+  ],
+  "anchor": null,
+  "origin": [
+    -11,
+    -11,
+    15
+  ],
+  "points": {
+    "grip": [
+      0.0,
+      0.0,
+      0.030250000000000003
+    ],
+    "tip": [
+      0.025,
+      0.0,
+      0.2205
+    ]
+  },
+  "note": "One part of a weapon. The scene's middle is the weapon's foot or pommel, as the part sits on its family's reference weapon; on any weapon it's drawn as it is here from where the code puts the part. The points are the code's, and stay as they are whatever the part's shape.",
+  "written": [
+    3504,
+    "80ac6bf228e51433"
+  ]
+}

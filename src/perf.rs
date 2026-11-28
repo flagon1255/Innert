@@ -291,6 +291,8 @@ pub struct Play {
     /// flown, in meters
     pub fly_last: f64,
     pub flown: f64,
+    /// Who a script put down to fight, by id, see main.rs's `summons` script
+    pub foes: Vec<u32>,
 }
 
 impl Play {
@@ -311,6 +313,7 @@ impl Play {
             rng: 0x9e37_79b9,
             fly_last: 0.0,
             flown: 0.0,
+            foes: Vec::new(),
         }
     }
 

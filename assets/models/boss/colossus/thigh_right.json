@@ -1,0 +1,29 @@
+{
+  "what": "Earthbreaker Colossus, thigh right",
+  "voxels_per_meter": 16.0,
+  "size": [
+    17,
+    17,
+    31
+  ],
+  "pivot": [
+    8.432,
+    8.432,
+    22.032
+  ],
+  "anchor": [
+    0.004249999999999976,
+    0.004249999999999976,
+    -1.377
+  ],
+  "origin": [
+    -8,
+    -8,
+    -22
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    21796,
+    "c60af236ec78ab5c"
+  ]
+}

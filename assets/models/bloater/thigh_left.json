@@ -1,0 +1,29 @@
+{
+  "what": "Bloater, thigh left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    5,
+    4,
+    8
+  ],
+  "pivot": [
+    2.5,
+    1.6799999999999997,
+    6.199999999999999
+  ],
+  "anchor": [
+    0.0,
+    0.020000000000000018,
+    -0.38749999999999996
+  ],
+  "origin": [
+    -3,
+    -2,
+    -6
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1577,
+    "f10e66a6c4e98418"
+  ]
+}

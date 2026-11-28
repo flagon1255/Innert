@@ -1,0 +1,29 @@
+{
+  "what": "Skeleton archer, forearm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    3
+  ],
+  "pivot": [
+    0.6600000000000001,
+    2.0199999999999996,
+    2.280000000000001
+  ],
+  "anchor": [
+    0.05249999999999999,
+    -0.03249999999999997,
+    -0.14250000000000007
+  ],
+  "origin": [
+    -1,
+    -2,
+    -2
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1277,
+    "aae71ad3d27ddaa2"
+  ]
+}

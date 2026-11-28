@@ -1,0 +1,29 @@
+{
+  "what": "Venom Drake, wing right inner",
+  "voxels_per_meter": 16.0,
+  "size": [
+    24,
+    22,
+    4
+  ],
+  "pivot": [
+    17.609927438106936,
+    19.6976,
+    1.552
+  ],
+  "anchor": [
+    -0.3506204648816835,
+    -0.5436000000000001,
+    -0.097
+  ],
+  "origin": [
+    -18,
+    -20,
+    -2
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    2865,
+    "af22c16d9d459a78"
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "what": "Innert block, standing frame (1 of 1 frames)",
+  "voxels_per_meter": 16.0,
+  "size": [
+    6,
+    6,
+    5
+  ],
+  "pivot": [
+    3.0,
+    3.0,
+    -0.0
+  ],
+  "anchor": null,
+  "origin": [
+    -3,
+    -3,
+    0
+  ],
+  "note": "",
+  "written": [
+    1779,
+    "dd416e02d37663ed"
+  ]
+}

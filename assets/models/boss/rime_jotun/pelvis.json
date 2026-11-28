@@ -1,0 +1,29 @@
+{
+  "what": "Rime Jotun, pelvis",
+  "voxels_per_meter": 16.0,
+  "size": [
+    20,
+    24,
+    16
+  ],
+  "pivot": [
+    9.52,
+    11.968,
+    8.976
+  ],
+  "anchor": [
+    0.030000000000000027,
+    0.0020000000000000018,
+    -0.561
+  ],
+  "origin": [
+    -10,
+    -12,
+    -9
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    15612,
+    "b14b17a51c74255e"
+  ]
+}

@@ -1,0 +1,29 @@
+{
+  "what": "Cave spider, body",
+  "voxels_per_meter": 16.0,
+  "size": [
+    8,
+    6,
+    6
+  ],
+  "pivot": [
+    5.6480000000000015,
+    3.0,
+    3.2826666666666657
+  ],
+  "anchor": [
+    -0.10300000000000009,
+    -4.625929269271486e-19,
+    -0.2051666666666666
+  ],
+  "origin": [
+    -6,
+    -3,
+    -3
+  ],
+  "note": "A piece its frames are baked from: the pivot is its joint. What you change here goes with it in every frame it's drawn in, walking and attacking.",
+  "written": [
+    1756,
+    "c1118fd8b76de564"
+  ]
+}

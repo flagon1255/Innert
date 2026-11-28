@@ -1,0 +1,29 @@
+{
+  "what": "Sunken Pharaoh, arm left",
+  "voxels_per_meter": 16.0,
+  "size": [
+    3,
+    3,
+    10
+  ],
+  "pivot": [
+    1.044,
+    1.044,
+    8.468
+  ],
+  "anchor": [
+    0.028499999999999998,
+    0.028499999999999998,
+    -0.52925
+  ],
+  "origin": [
+    -1,
+    -1,
+    -8
+  ],
+  "note": "A jointed piece: the pivot is its joint.",
+  "written": [
+    1392,
+    "23e2827c8c057e66"
+  ]
+}
