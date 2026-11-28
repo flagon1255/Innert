@@ -438,8 +438,8 @@ const BEAM_RANGE: f64 = 90.0;
 const BEAM_HEIGHTS: [f64; 6] = [2.4, 3.2, 4.2, 5.4, 8.5, 11.0];
 /// Inside this many meters a beam has faded right out, and from the next it's whole, so close by
 /// it never washes over the view
-const BEAM_GONE: f64 = 1.6;
-const BEAM_WHOLE: f64 = 4.5;
+const BEAM_GONE: f64 = 2.0;
+const BEAM_WHOLE: f64 = 7.0;
 /// How many of what's dropped nearest the camera always have room among what's drawn, whatever
 /// else is about, see Game::instances()
 const DROP_ROOM: usize = 16;
@@ -3736,6 +3736,14 @@ impl Game {
     pub fn hurt_bosses(&mut self, fraction: f64) {
         for animal in self.animals.iter_mut().filter(|a| a.look.is_boss() || a.demi.is_some()) {
             animal.health = animal.max_health * fraction.clamp(0.01, 1.0);
+        }
+    }
+
+    /// For trying it out: every boss and demi-boss about slain where it stands, to leave its hoard
+    pub fn slay_bosses(&mut self) {
+        for animal in self.animals.iter_mut().filter(|a| a.look.is_boss() || a.demi.is_some()) {
+            println!("Slain where it stands: the {}", animal.look.name());
+            animal.health = 0.0;
         }
     }
 

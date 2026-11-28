@@ -348,22 +348,29 @@ impl Game {
                 continue;
             }
             let side = vec2(-along.y, along.x).normalized();
-            let white = [0, 1, 2].map(|i| (color[i] as f32 + (255.0 - color[i] as f32) * 0.7) as u8);
-            // Its glow, its body and its bright core, each a strip of quads fading up the beam
-            let body = 0.08 + 0.022 * rare as f64;
+            let white = [0, 1, 2].map(|i| (color[i] as f32 + (255.0 - color[i] as f32) * (0.7 - 0.35 * day)) as u8);
+            let dark = color.map(|c| (c as f32 * 0.3) as u8);
+            // Its glow, a dark edge by day so it stands out against a bright sky or sand, its body
+            // and its bright core, each a strip of quads fading up the beam, by day more slowly
+            let body = 0.1 + 0.03 * rare as f64;
             let layers = [
-                (body * 3.4, 4.5, 48.0, color, 0.2 * (1.0 - 0.35 * day)),
-                (body, 1.6, 16.0, color, 0.5 + 0.2 * day),
-                (body * 0.32, 0.8, 5.0, white, 0.85),
+                (body * 3.4, 5.0, 26.0, color, 0.22 * (1.0 - 0.3 * day)),
+                (body * 1.45, 3.4 * day, 11.0, dark, 0.4 * day),
+                (body, 2.2 + 0.8 * day, 8.0, color, 0.55 + 0.35 * day),
+                (body * 0.32, 1.0, 2.5, white, 0.85),
             ];
+            let fading = 1.5 - 0.75 * day;
             const ROWS: usize = 7;
             for (radius, least, most, rgb, alpha) in layers {
+                if alpha <= 0.0 {
+                    continue;
+                }
                 let first = mesh.vertices.len() as u32;
                 for row in 0..ROWS {
                     let u = row as f32 / (ROWS - 1) as f32;
                     let half = ((wide_foot + (wide_top - wide_foot) * u) * radius as f32).clamp(least, most);
                     let at = base + along * u;
-                    let c = tint(rgb, alpha * strength * (1.0 - u).powf(1.5));
+                    let c = tint(rgb, alpha * strength * (1.0 - u).powf(fading));
                     mesh.colored_vertex(at - side * half, c);
                     mesh.colored_vertex(at + side * half, c);
                     if row > 0 {
@@ -402,7 +409,7 @@ impl Game {
         };
         let middle = ground(around);
         let rarities = self.library.rarities.len();
-        let mut weapon = |game: &mut Game, grade: usize| {
+        let weapon = |game: &mut Game, grade: usize| {
             game.rng = hash(game.rng ^ 0x5d70);
             let odds: Vec<f64> = (0..rarities).map(|g| if g == grade { 1.0 } else { 0.0 }).collect();
             let made = game.library.generate_with(game.rng, None, &odds);
@@ -415,6 +422,9 @@ impl Game {
             let side = Vector3::new(flat.y, -flat.x, 0.0);
             for g in 0..rarities {
                 let item = weapon(self, g);
+                if let Item::Weapon(w) = item {
+                    println!("drops: {} for {}", self.describe(&self.weapons[w]), self.library.rarities[g].display_name);
+                }
                 let at = ground(around + side * (g as f64 - (rarities - 1) as f64 * 0.5) * 3.0 * vpm);
                 self.pickups.push(Pickup::lying(item, at, side.y.atan2(side.x)));
             }
@@ -530,6 +540,28 @@ mod tests {
         let gull = game.shine(&Pickup::lying(Item::Wings(wings::GULL), at, 0.0)).0;
         let aurelian = game.shine(&Pickup::lying(Item::Wings(wings::AURELIAN), at, 0.0)).0;
         assert!(aurelian > gull, "{gull} {aurelian}");
+    }
+
+    /// What the models of what's dropped take, packed as they're sent to the graphics card: the
+    /// jewels' and the bucket's, which are all that's new, everything else lying about as the
+    /// models it had already, its own weapon's, its wings' kind's; and all the models with twenty
+    /// different things dropped about, against the cap. `cargo test --release
+    /// drop_models_fit -- --nocapture`
+    #[test]
+    fn drop_models_fit() {
+        let world = flat_world();
+        let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+        let mut game = Game::new(&world, &dry, 5, Vector3::new(32.0, 32.0, 16.0));
+        let mb = |words: usize| words as f64 * 4.0 / 1e6;
+        let own = mb(pack_models(&game.drop_models.iter().map(|(m, _)| m).collect::<Vec<_>>()).len());
+        let before = mb(game.model_words().len() + game.weapon_model_words().len());
+        game.strew(&world, Vector3::new(32.0, 32.0, 16.0), Vector3::y(), 20, 3.0, false);
+        let after = mb(game.model_words().len() + game.weapon_model_words().len());
+        let dropped: Vec<&Pickup> = game.pickups.iter().filter(|p| p.item != Item::Apple).collect();
+        let kinds: HashSet<String> = dropped.iter().map(|p| format!("{:?}", p.item.shape())).collect();
+        println!("drop models {own:.3} MB; all models {before:.1} MB, {after:.1} MB with {} things dropped, {} kinds of them", dropped.len(), kinds.len());
+        assert!(own < 0.5, "{own} MB");
+        assert!(after < 150.0, "{after} MB");
     }
 
     /// However much else there is about, the nearest of what's dropped are always drawn, and every

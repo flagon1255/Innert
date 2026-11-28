@@ -2763,17 +2763,29 @@ impl App {
         if let Some(what) = setting("drops") {
             let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
             let vpm = world.voxels_per_meter as f64;
+            // `drops_turn=60` strews them that many degrees round to the left of ahead
+            let turn = setting("drops_turn").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).to_radians();
             let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
-            let distance: f64 = setting("drops_at").and_then(|v| v.parse().ok()).unwrap_or(30.0);
+            let turned = |a: f64| Vector3::new(flat.x * a.cos() - flat.y * a.sin(), flat.x * a.sin() + flat.y * a.cos(), 0.0);
+            // `drops_at=10,30,60` strews a pile at each, fanned out a little either side
+            let distances: Vec<f64> = setting("drops_at").map_or(vec![30.0], |v| v.split(',').filter_map(|d| d.trim().parse().ok()).collect());
             let radius: f64 = setting("drops_radius").and_then(|v| v.parse().ok()).unwrap_or(5.0);
             let row = what == "rarities";
             let count = what.parse().unwrap_or(25);
-            let middle = game.strew(&world, start + flat * distance * vpm, flat, count, radius, row);
-            println!("drops: {} strewn {distance} m ahead", if row { 6 } else { count });
+            let mut middle = start;
+            for (k, &distance) in distances.iter().enumerate() {
+                let way = turned(turn + (k as f64 - (distances.len() - 1) as f64 * 0.5) * 14f64.to_radians());
+                middle = game.strew(&world, start + way * distance * vpm, way, count, radius, row);
+                println!("drops: {} strewn {distance} m ahead", if row { 6 } else { count });
+            }
+            let flat = turned(turn);
             if let Some(back) = setting("drops_from").and_then(|v| v.parse::<f64>().ok()) {
                 camera.position = voxels_to_camera(middle - flat * back * vpm + Vector3::new(0.0, 0.0, (0.6 * back).max(1.7) * vpm), world.size);
             }
-            if flag("drops_look", false) || setting("drops_from").is_some() {
+            if distances.len() > 1 {
+                let average = distances.iter().sum::<f64>() / distances.len() as f64;
+                camera.look_at(voxels_to_camera(Vector3::new(start.x, start.y, middle.z) + flat * average * vpm + Vector3::new(0.0, 0.0, 2.0 * vpm), world.size));
+            } else if flag("drops_look", false) || setting("drops_from").is_some() {
                 camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 0.5 * vpm), world.size));
             }
         }
@@ -2802,6 +2814,10 @@ impl App {
             // `--set boss_health=0.6` starts it hurt, to see what it does later in a fight
             if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
                 game.hurt_bosses(fraction);
+            }
+            // `--set boss_slain=1` has it fall straight away, to see its hoard spill out
+            if flag("boss_slain", false) {
+                game.slay_bosses();
             }
             // `--set boss_move=throw` has it make only that move, as soon as it's ready, wherever
             // the player is, for shots of it in a screenshot run
