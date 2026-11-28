@@ -409,10 +409,20 @@ impl Game {
         };
         let middle = ground(around);
         let rarities = self.library.rarities.len();
+        // Of that rarity: a weapon's grade comes of its parts all told, all of them of one rarity
+        // can lift it a grade, so they're of that rarity and the one under it, and a few are made
+        // till one's right
         let weapon = |game: &mut Game, grade: usize| {
-            game.rng = hash(game.rng ^ 0x5d70);
-            let odds: Vec<f64> = (0..rarities).map(|g| if g == grade { 1.0 } else { 0.0 }).collect();
-            let made = game.library.generate_with(game.rng, None, &odds);
+            let odds: Vec<f64> = (0..rarities).map(|g| if g == grade || g + 1 == grade { 1.0 } else { 0.0 }).collect();
+            let mut made = game.library.generate_with(game.rng, None, &odds);
+            for _ in 0..80 {
+                game.rng = hash(game.rng ^ 0x5d70);
+                if made.grade == grade {
+                    break;
+                }
+                made = game.library.generate_with(game.rng, None, &odds);
+            }
+            game.rng = hash(game.rng ^ 0x5d71);
             game.weapons.push(made);
             game.models_version += 1;
             Item::Weapon(game.weapons.len() - 1)
@@ -536,6 +546,11 @@ mod tests {
             assert_eq!(pickup.shines(), item != Item::Apple);
             assert!(game.shine(&pickup).0 < BEAM_HEIGHTS.len());
         }
+        // A row of every rarity's weapon, for its beam, one of each
+        game.pickups.clear();
+        game.strew(&world, at, Vector3::y(), 0, 3.0, true);
+        let grades: Vec<usize> = game.pickups.iter().map(|p| game.shine(p).0).collect();
+        assert_eq!(grades, (0..game.library.rarities.len()).collect::<Vec<_>>());
         // Wings of a rarer kind shine rarer
         let gull = game.shine(&Pickup::lying(Item::Wings(wings::GULL), at, 0.0)).0;
         let aurelian = game.shine(&Pickup::lying(Item::Wings(wings::AURELIAN), at, 0.0)).0;

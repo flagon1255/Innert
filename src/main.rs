@@ -2775,7 +2775,16 @@ impl App {
             let mut middle = start;
             for (k, &distance) in distances.iter().enumerate() {
                 let way = turned(turn + (k as f64 - (distances.len() - 1) as f64 * 0.5) * 14f64.to_radians());
-                middle = game.strew(&world, start + way * distance * vpm, way, count, radius, row);
+                let mut spot = start + way * distance * vpm;
+                // `drops_water=1` strews them over the nearest water at least 2 m deep there, to see
+                // them float up
+                if flag("drops_water", false)
+                    && let Some(deep) = animals::deep_water_near(&world, &water_level, spot, 60.0, 2.0)
+                {
+                    println!("drops: over water {:.0} m deep", (water_level(deep.x, deep.y) - deep.z) / vpm);
+                    spot = deep;
+                }
+                middle = game.strew(&world, spot, way, count, radius, row);
                 println!("drops: {} strewn {distance} m ahead", if row { 6 } else { count });
             }
             let flat = turned(turn);
@@ -4772,6 +4781,36 @@ impl App {
                 player.position.x += 150.0 * self.world.voxels_per_meter as f64;
                 self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
                 println!("LEAPT at frame {} 150 m on", capture.frame_times.len());
+            }
+            // `--set loot_look_at=N` brings the player at frame N of a screenshot run to stand
+            // `loot_look_from=4` meters back from the middle of what's dropped near, looking at it,
+            // as at a boss's hoard spilled out, see game\drops.rs
+            static LOOT_LOOK: std::sync::OnceLock<Option<(usize, f64)>> = std::sync::OnceLock::new();
+            let loot_look = *LOOT_LOOK.get_or_init(|| {
+                let settings = settings_from_args();
+                let at = settings.iter().find(|(k, _)| k == "loot_look_at").and_then(|(_, v)| v.parse().ok())?;
+                Some((at, settings.iter().find(|(k, _)| k == "loot_look_from").and_then(|(_, v)| v.parse().ok()).unwrap_or(4.0)))
+            });
+            if let (Some(capture), Some((at, back))) = (&self.capture, loot_look)
+                && at == capture.frame_times.len()
+            {
+                let eye = camera_to_voxels(self.camera.position, self.world.size);
+                let marks = self.game.drop_marks(eye);
+                if !marks.is_empty() {
+                    let vpm = self.world.voxels_per_meter as f64;
+                    let middle = marks.iter().map(|m| m.0).sum::<Vector3<f64>>() / marks.len() as f64;
+                    let away = Vector3::new(eye.x - middle.x, eye.y - middle.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+                    let to = middle + away * back * vpm + Vector3::new(0.0, 0.0, 0.5 * vpm);
+                    match &mut self.player {
+                        Some(player) => {
+                            player.position = to;
+                            self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
+                        }
+                        None => self.camera.position = voxels_to_camera(to + Vector3::new(0.0, 0.0, (0.5 * back).max(1.2) * vpm), self.world.size),
+                    }
+                    self.camera.look_at(voxels_to_camera(middle, self.world.size));
+                    println!("LOOKING at {} things dropped from {back} m, at frame {at}", marks.len());
+                }
             }
         }
         self.ambience(delta_time);
