@@ -6,18 +6,6 @@ the commit it landed in.
 
 ## Queued
 
-15. **Hand cannons held closer, without their stick** (2026-11-29, "Also, make cannons closser to
-    me, remove their stick"). RUNNING in `cannonhold`.
-    - And war fans further right in first person (2026-11-29, "War wind blowers  should be more
-      right to screen, because it covers"); read as the war fan family. Same agent, own commit.
-
-Still owed: a quiet-machine frame-time A/B of everything merged since 2026-11-24.
-
-Agents' house rules for this repo: absolute paths under their own worktree only; never `git
-stash` (shared across worktrees); never push; commit as flagon1255 with no trailers; hidden GPU
-runs only, under the GPU lock, never while League of Legends or CS2 runs; poll for the lock rather
-than ending a turn to wait.
-
 16. **Wings that take off and climb** (2026-11-29, "make some wings flyable", "i mean to get up in
     ai"). RUNNING in `wingflight`: some of the grander wings get a Flight perk; beat them to lift
     off and climb, a meter that drains while climbing, glide-only wings unchanged.
@@ -58,6 +46,11 @@ than ending a turn to wait.
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- Hand cannons without their stick, a short bed and grip, held at the hip with the muzzle 0.78 m
+  out (was 1.19), firing from an open muzzle, bell barrels hollow; war fans resting low at the
+  right, clear of the middle (5514654e, 2026-11-29). The exported handcannon .vox files still show
+  the old stock until an --export-models run.
 
 - A fresh installer: Innert 0.2.0, dist\InnertSetup.exe (13.3 MB) and dist\Innert.zip (15.6 MB),
   built 2026-11-28 22:02 from 480f6c8e, the readme brought up to date (480f6c8e). dist is not in
