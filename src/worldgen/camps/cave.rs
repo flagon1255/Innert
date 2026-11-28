@@ -20,7 +20,7 @@ pub const GHOST_FIRE_LIGHT: [f32; 3] = [0.42, 0.95, 0.8];
 
 /// Of the camps in caves, how many bandits keep and how many the dead, out of one, the rest left
 /// to no one; and how many meters under the ground a camp's deep, where the dead keep DEEPER more
-/// of them and bandits that many fewer, and shallower the other way round by half that
+/// of them and bandits that many fewer
 pub const BANDITS: f32 = 0.4;
 pub const DEAD: f32 = 0.3;
 const DEEP: f32 = 18.0;
@@ -58,7 +58,7 @@ impl Folk {
     /// Who keeps a camp, by `roll`, 0-1, `depth` meters under the ground: none of them bandits in
     /// a land no one lives in, see place_objects()
     pub fn of(roll: f32, depth: f32, peopled: bool) -> Folk {
-        let shift = if depth > DEEP { DEEPER } else { -DEEPER * 0.5 };
+        let shift = if depth > DEEP { DEEPER } else { 0.0 };
         let bandits = BANDITS - shift;
         if roll < bandits {
             if peopled { Folk::Bandits } else { Folk::Dead }
@@ -148,15 +148,21 @@ impl Hollows<'_> {
 /// way in clear
 const SLOTS: usize = 9;
 
-/// The camp at `spot`, in the hollows `hollows` cut for its cave, if there's room there for one
-pub(in crate::worldgen) fn cave_camp(settings: &TerrainSettings, hollows: &[Shape], spot: &CampSpot) -> Option<Built> {
-    let h = Hollows { near: hollows.iter().filter(|s| s.placement == Placement::Carve && !s.clear_of(spot.at, MOST_ROOM + 2.5)).collect() };
-    let [x, y, _] = spot.at;
-    let f0 = h.floor(x, y, spot.at[2])?;
-    if f0 < sea_level_m(settings) + 0.5 || !h.open([x, y, f0 + 2.6]) {
+impl<'a> Hollows<'a> {
+    /// Those of `hollows` near `at`
+    fn near(hollows: &'a [Shape], at: Vec3) -> Self {
+        Hollows { near: hollows.iter().filter(|s| s.placement == Placement::Carve && !s.clear_of(at, MOST_ROOM + 2.5)).collect() }
+    }
+}
+
+/// Where a camp's fire goes at `at`, if there's room for one there: the floor under it, out of
+/// the sea, with room over it, and how far out from it the floor's level all round
+fn site(settings: &TerrainSettings, h: &Hollows, at: Vec3) -> Option<(f32, f32)> {
+    let [x, y, _] = at;
+    let f0 = h.floor(x, y, at[2])?;
+    if f0 < sea_level_m(settings) + 0.3 || !h.open([x, y, f0 + 2.6]) {
         return None;
     }
-    // As far out as it's level all round
     let mut room = 0.0;
     for k in 0..=((MOST_ROOM - 1.2) / 0.4).round() as usize {
         let r = 1.2 + k as f32 * 0.4;
@@ -168,9 +174,20 @@ pub(in crate::worldgen) fn cave_camp(settings: &TerrainSettings, hollows: &[Shap
         }
         room = r;
     }
-    if room < LEAST_ROOM {
-        return None;
-    }
+    (room >= LEAST_ROOM).then_some((f0, room))
+}
+
+/// Whether there's room for a camp at `at` in the hollows `hollows` cut so far for its cave, see
+/// Terrain::cave_in()
+pub(in crate::worldgen) fn fits(settings: &TerrainSettings, hollows: &[Shape], at: Vec3) -> bool {
+    site(settings, &Hollows::near(hollows, at), at).is_some()
+}
+
+/// The camp at `spot`, in the hollows `hollows` cut for its cave, if there's room there for one
+pub(in crate::worldgen) fn cave_camp(settings: &TerrainSettings, hollows: &[Shape], spot: &CampSpot) -> Option<Built> {
+    let h = Hollows::near(hollows, spot.at);
+    let [x, y, _] = spot.at;
+    let (f0, room) = site(settings, &h, spot.at)?;
     let key = [(x * 10.0).round() as i32, (y * 10.0).round() as i32];
     let seed = hash3(key[0] as u32, key[1] as u32, settings.seed ^ 0xcace);
     let peopled = !matches!(land_of(settings.seed), Land::Dream | Land::Water | Land::Dragon);
@@ -503,8 +520,10 @@ mod tests {
     #[test]
     fn camps_sit_on_cave_floors_with_room_over_them() {
         let mut counts = [0usize; 3];
+        let mut spots = 0;
         for seed in [1, 2, 3] {
             for (cave, built) in caves_and_camps(seed) {
+                spots += cave.camps.len();
                 let h = Hollows { near: cave.shapes.iter().filter(|s| s.placement == Placement::Carve).collect() };
                 for b in &built {
                     let c = b.camp;
@@ -532,7 +551,9 @@ mod tests {
             }
         }
         let total: usize = counts.iter().sum();
-        println!("{total} camps: {} bandits', {} the dead's, {} left", counts[0], counts[1], counts[2]);
+        println!("{total} camps of {spots} spots: {} bandits', {} the dead's, {} left", counts[0], counts[1], counts[2]);
+        // A cavern a camp was planned for has no crystals on its roof nor spiders: it has its camp
+        assert!(total * 20 >= spots * 19, "only {total} of {spots} camps built");
         assert!(total >= 12, "only {total} camps");
         let share = |n: usize| n as f32 / total as f32;
         assert!((share(counts[0]) - BANDITS).abs() < 0.17 && (share(counts[1]) - DEAD).abs() < 0.17, "{counts:?}");

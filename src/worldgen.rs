@@ -2387,8 +2387,8 @@ impl Roof {
 const CAVE_CAMPS: usize = 3;
 const CAVE_CAMP_APART: f32 = 40.0;
 const CAVERN_CAMP_WIDE: f32 = 3.4;
-const CAVERN_CAMP_CHANCE: f32 = 0.5;
-const TUNNEL_CAMP_CHANCE: f32 = 0.2;
+const CAVERN_CAMP_CHANCE: f32 = 0.6;
+const TUNNEL_CAMP_CHANCE: f32 = 0.3;
 const TUNNEL_CAMP_RADIUS: f32 = 2.5;
 /// How thick the brick round the halls and passages of dungeons is
 const DUNGEON_WALL: f32 = 0.6;
@@ -6326,6 +6326,9 @@ impl Terrain {
         let mut next_cavern = rng.range(10.0, 18.0) as usize;
         let mut caverns = Vec::new();
         let mut lairs = Vec::new();
+        // The caverns camps are planned for, which of its camps, the crystals for their roofs and
+        // the nest each would be without its camp
+        let mut held = Vec::new();
         // Where torches go on its walls, see cave_torches(): the middle of a stretch of tunnel at
         // the height of its floor, which way it goes, and which side
         let mut torches: Vec<(Vec3, Vec3, f32)> = Vec::new();
@@ -6369,8 +6372,10 @@ impl Terrain {
                 if let Some((at, wide, roof)) = self.cavern(&mut cave, &mut inside, floor, great, &mut rng) {
                     let way = [-dir[0], -dir[1]];
                     if mouth && !great && wide >= CAVERN_CAMP_WIDE && self.camp_here(&cave.camps, at, CAVERN_CAMP_CHANCE) {
-                        // Lit by the camp's fire rather than crystals, and no spiders nest there
+                        // Lit by the camp's fire rather than crystals, and no spiders nest there,
+                        // if there's room for it once the whole cave's cut, see below
                         cave.camps.push(camps::cave::CampSpot { at, way, folk: None, chest: true });
+                        held.push((cave.camps.len() - 1, roof, (at, way, wide)));
                     } else {
                         roof.put(&mut cave, &mut inside);
                         (if great { &mut lairs } else { &mut caverns }).push((at, way, wide));
@@ -6401,13 +6406,25 @@ impl Terrain {
                 None => lairs.extend(caverns.pop()),
             }
         }
+        // A camp only where there's room for it, now the whole cave's cut, and none in a boss's
+        // lair or by where spiders nest; a cavern a camp was planned for and that can't have one
+        // is lit from its roof after all, and spiders nest there
+        let clear = |c: &camps::cave::CampSpot, (at, _, wide): &(Vec3, [f32; 2], f32), by: f32| (c.at[0] - at[0]).hypot(c.at[1] - at[1]) > wide + by || (c.at[2] - at[2]).abs() > 8.0;
+        let keep: Vec<bool> = cave.camps.iter().map(|c| lairs.iter().all(|l| clear(c, l, 10.0)) && caverns.iter().all(|n| clear(c, n, 6.0)) && camps::cave::fits(&self.settings, &cave.shapes, c.at)).collect();
+        for (k, roof, nest) in held {
+            if !keep[k] {
+                roof.put(&mut cave, &mut inside);
+                caverns.push(nest);
+            }
+        }
+        let mut k = 0;
+        cave.camps.retain(|_| {
+            k += 1;
+            keep[k - 1]
+        });
         // Only where there's a way in
         cave.nests = if mouth { caverns } else { Vec::new() };
         cave.lairs = lairs;
-        // No camp in a boss's lair or by where spiders nest
-        let clear = |c: &camps::cave::CampSpot, (at, _, wide): &(Vec3, [f32; 2], f32), by: f32| (c.at[0] - at[0]).hypot(c.at[1] - at[1]) > wide + by || (c.at[2] - at[2]).abs() > 8.0;
-        let (lairs, nests) = (&cave.lairs, &cave.nests);
-        cave.camps.retain(|c| lairs.iter().all(|l| clear(c, l, 10.0)) && nests.iter().all(|n| clear(c, n, 6.0)));
         if mouth {
             // Either side of the way into the great cavern at its end, and either side of its
             // mouth out on the hillside, so it's found in the dark

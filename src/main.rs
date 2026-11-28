@@ -2296,7 +2296,12 @@ impl Placed {
             let room = (1..=(want * vpm) as i64).take_while(|&k| worldgen::is_passable(world.material_at((low.x + way.x * k as f64) as i64, (low.y + way.y * k as f64) as i64, low.z as i64))).count() as f64;
             let eye = fire + way * (room - 0.4 * vpm).max(1.5 * vpm) + Vector3::new(0.0, 0.0, 1.65 * vpm);
             camera.position = voxels_to_camera(eye, world.size);
-            camera.look_at(voxels_to_camera(fire + Vector3::new(0.0, 0.0, 0.5 * vpm), world.size));
+            let target = voxels_to_camera(fire + Vector3::new(0.0, 0.0, 0.5 * vpm), world.size);
+            camera.look_at(target);
+            // The same view for a build without this
+            let whole = voxels_to_camera(eye + Vector3::new(origin[0] as f64, origin[1] as f64, 0.0), [widest, widest, terrain.size()[2]]);
+            let look = target - camera.position;
+            println!("Cave camp view: --set at={},{} --set camera={},{},{} --set look={},{},{}", c.fire[0], c.fire[1], whole.x, whole.y, whole.z, look.x, look.y, look.z);
         } else if let Some((inside, out)) = falls_cave {
             // Just inside the cave behind a waterfall, looking out through it
             let vpm = world.voxels_per_meter as f64;
