@@ -39,6 +39,8 @@ mod marks;
 use aim::{spot_aim, way_to};
 /// Special ammo flying each kind its own way, see ammo.rs
 mod ammo;
+/// The dead raised drawn moving smoothly, posed live from their pieces near the camera
+mod raised;
 
 pub const MAX_MANA: f64 = 100.0;
 /// Mana coming back every second
@@ -2130,6 +2132,8 @@ pub struct Combat {
     beam_tick: f64,
     beam_hum: f64,
     familiars: Vec<Familiar>,
+    /// How each of the dead raised is drawn, eased from frame to frame, see raised.rs
+    raised: Vec<raised::Drawn>,
     /// Where the slain lie, for a skull focus to raise, see signatures\faith.rs
     graves: signatures::faith::Graves,
     /// The colours of the player's gloves and sleeves, for the arms held before the eye, see
@@ -5603,6 +5607,7 @@ impl Combat {
             beam_tick: 0.0,
             beam_hum: 0.0,
             familiars: Vec::new(),
+            raised: Vec::new(),
             graves: Default::default(),
             outfit: 0,
             orbit: None,
@@ -5822,6 +5827,7 @@ impl Combat {
                 r.post -= shift;
             }
         }
+        self.recenter_raised(shift);
         for s in &mut self.stases {
             s.position -= shift;
         }
@@ -6100,6 +6106,8 @@ impl Combat {
         // Where the slain lie, for a skull focus to raise them, see faith.rs
         self.mark_graves(arena, dt);
         self.fly(arena, dt);
+        // What's drawn of the dead raised eased after what they're doing, see raised.rs
+        self.ease_raised(dt);
         // Special attacks carried out of the weapon going off where their shots got to
         for (special, at) in std::mem::take(&mut self.arrivals) {
             if let Some((_, weapon)) = weapon {
@@ -16086,6 +16094,11 @@ impl Combat {
         out
     }
 
+    /// Where each of the dead raised is, its feet, and what it was raised as, for looking at them
+    pub fn raised(&self) -> Vec<(Look, Vector3<f64>)> {
+        self.familiars.iter().filter_map(|f| f.risen.map(|r| (r.look, f.position))).collect()
+    }
+
     /// What to draw for everything flying about, and arrows stuck where they landed, with how far
     /// each is from the camera
     pub fn flying_instances(&self, view: &View) -> Vec<(f64, AnimalInstance)> {
@@ -16325,9 +16338,10 @@ impl Combat {
         // Familiars, glowing orbs bobbing where they hang, and phantoms, pillars of light
         let mut risen = Vec::new();
         for f in &self.familiars {
-            // The dead a skull focus raised, as skeletons, see faith.rs
+            // The dead a skull focus raised: the glow in their chests, their bodies drawn among the
+            // animals, see raised_bodies()
             if let Some(r) = &f.risen {
-                self.risen_instances(f, r, view, &mut risen);
+                self.risen_glow(f, r, view, &mut risen);
                 continue;
             }
             let bob = Vector3::new(0.0, 0.0, (self.time * 2.5 + f.position.x).sin() * 0.08 * vpm);
@@ -16685,8 +16699,9 @@ impl Combat {
         // The dead raised are creatures fighting alongside the player, so they're drawn before
         // the sparks, drops and shots about them, as if they were a hundredth as far off: in a
         // busy fight they were the first left out, and seemed to vanish. There are never more
-        // than MINIONS of them, two things drawn each. And the faint mark over what they're
-        // after, as a shot is.
+        // than MINIONS of them. Here it's the glow in each one's chest; their bodies are drawn
+        // among the animals, ranked the same way, see Game::instances(). And the faint mark over
+        // what they're after, as a shot is.
         out.extend(risen.into_iter().map(|(d, instance)| (d * 0.01, instance)));
         out.extend(self.mark_instances(view).into_iter().map(|(at, instance)| ((at - view.eye).norm() * 0.1, instance)));
     }

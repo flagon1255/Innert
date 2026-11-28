@@ -1625,7 +1625,7 @@ pub fn tween(look: Look, a: usize, b: usize, since: f64) -> Option<usize> {
 
 /// Seconds something posed live takes to go from one pose to another it has no frames between,
 /// eased, rather than snapping, see tween_path()
-const CROSSFADE: f64 = 0.16;
+pub const CROSSFADE: f64 = 0.16;
 
 /// What `look` goes through `since` seconds after it went from pose `a` to pose `b`, 0 being
 /// standing or walking, to pose it live, see src\baked.rs: the frames from the one to the other,
@@ -4100,7 +4100,7 @@ fn eased_turn(turn: f64, most: f64, dt: f64) -> f64 {
     turn.clamp(-rate * dt, rate * dt)
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 pub(crate) enum Mood {
     Idle,
     Walk,
@@ -4125,6 +4125,9 @@ pub struct Animal {
     stride: f64,
     gaze: [f64; 2],
     talk: f64,
+    /// How much it's posed live from its pieces rather than drawn in its baked frame, 0 to 1,
+    /// easing into it as it comes near the camera and out of it as it goes, see Game::choose_live()
+    pub(crate) live: f64,
     pub(crate) speed: f64,
     pub(crate) mood: Mood,
     timer: f64,
@@ -4225,7 +4228,9 @@ pub fn still_instance(look: Look, position: Vector3<f64>, heading: f64, world_vo
 
 /// Something of `look` walking, `phase` of the way through its stride, 0 to 1, or None standing, or
 /// winding up and striking with `strike`, 0 to 1, as a necromancer's skeletons fight, see
-/// combat\faith.rs: turned `rotation`, its feet at `position`
+/// combat\faith.rs: turned `rotation`, its feet at `position`. They're drawn eased, see
+/// combat\raised.rs; this is for the tests, to see they've the frames they need.
+#[cfg(test)]
 pub fn posed_instance(look: Look, position: Vector3<f64>, rotation: UnitQuaternion<f64>, phase: Option<f64>, strike: Option<f64>, world_voxels_per_meter: u32) -> AnimalInstance {
     let vpm = world_voxels_per_meter as f64;
     let frame = match (strike, phase) {
@@ -4235,6 +4240,18 @@ pub fn posed_instance(look: Look, position: Vector3<f64>, rotation: UnitQuaterni
         (None, None) => 0,
     };
     AnimalInstance::new(model_index(look, frame), position, rotation, vpm / look.resolution(), look.reach() * vpm, MOVING)
+}
+
+/// Something of `look` drawn in its frame `frame`, see WALK_FRAMES and POSE_WINDUP: turned
+/// `rotation`, its feet at `position`
+pub fn frame_instance(look: Look, position: Vector3<f64>, rotation: UnitQuaternion<f64>, frame: usize, world_voxels_per_meter: u32) -> AnimalInstance {
+    let vpm = world_voxels_per_meter as f64;
+    AnimalInstance::new(model_index(look, frame), position, rotation, vpm / look.resolution(), look.reach() * vpm, MOVING)
+}
+
+/// The frame of a walk nearest `phase` of the way through it, 0 to 1, see WALK_FRAMES
+pub fn walk_frame(phase: f64) -> usize {
+    1 + (phase.rem_euclid(1.0) * WALK_FRAMES as f64).round() as usize % WALK_FRAMES
 }
 
 /// The same in the player's hand, turned any way, like a grappling hook or wings spread to glide
@@ -4367,6 +4384,7 @@ impl Animal {
             stride: 0.0,
             gaze: [0.0; 2],
             talk: 0.0,
+            live: 0.0,
             speed: 0.0,
             mood: Mood::Idle,
             timer: random(&mut rng) * 3.0,
@@ -4458,6 +4476,11 @@ impl Animal {
         self.mood = Mood::Walk;
         self.timer = seconds;
         self.face(heading);
+    }
+
+    /// Setting off to turn `by` radians round to its left, as it turns of itself
+    pub fn turn_by(&mut self, by: f64) {
+        self.target_heading = self.heading + by;
     }
 
     /// Turned to face `heading`, radians round from +x
@@ -4747,6 +4770,12 @@ impl Animal {
         if self.swim.is_some() {
             return;
         }
+        // A wraith's rags never stop stirring, slowly as it hangs there, on through its drift as it
+        // goes, the one into the other rather than jumping from one to the other
+        if self.look.build() == Some(Build::Wraith) {
+            self.phase = (self.phase + dt * (0.45f64).max(self.speed / self.look.stride())).fract();
+            return;
+        }
         // A serpent's S-curve goes on just as far as it goes, so its body slides along the curve
         // and never over the ground; stopping, it lies where it stopped, still in the curve
         if self.look.is_serpent() {
@@ -4820,18 +4849,26 @@ impl Animal {
             None if self.look.walks() => (self.phase, self.stride),
             None => (0.0, 0.0),
         };
-        crate::baked::Doing { phase, stride, pose: self.boss.as_ref().and_then(Boss::pose_path), gaze: self.gaze, talk: self.talk, age: self.age, seed: self.id }
+        let boss = self.boss.as_ref();
+        crate::baked::Doing { phase, stride, pose: boss.and_then(Boss::pose_path), from: boss.and_then(Boss::pose_from), gaze: self.gaze, talk: self.talk, age: self.age, seed: self.id }
+    }
+
+    /// Whether it can be posed live from its pieces, see baked::Rig::live(): a look baked from them,
+    /// not a dragon, an avian or a fish
+    pub fn posable(&self) -> bool {
+        self.dragon.is_none() && self.winged.is_none() && self.swim.is_none() && crate::baked::posable(self.look)
     }
 
     /// For a look baked from pieces near the camera, each of its pieces posed live as it is now,
     /// into `out`, see baked::Rig::live(): false if it isn't one that can be
     pub fn live_instances(&self, world_voxels_per_meter: u32, out: &mut Vec<AnimalInstance>) -> bool {
-        if self.dragon.is_some() || self.winged.is_some() || self.swim.is_some() || !crate::baked::posable(self.look) {
+        if !self.posable() {
             return false;
         }
         let Some(rig) = crate::baked::rig(self.look) else { return false };
-        let (_, position, rotation, scale) = self.placement(world_voxels_per_meter);
-        let poses = rig.live(&self.doing());
+        let (frame, position, rotation, scale) = self.placement(world_voxels_per_meter);
+        // Partway from its baked frame as it comes near enough to be posed live, or goes too far
+        let poses = rig.live_from(&self.doing(), frame, self.live);
         if poses.is_empty() {
             return false;
         }
@@ -4968,13 +5005,15 @@ impl Animal {
             }
         }
 
-        // Thrown back by a blow, sliding to a stop
+        // Thrown back by a blow, sliding to a stop: over the ground, its feet following it, or if
+        // it's up off the ground, leaping or flying, where it is, rather than snapping down to it
         let push = self.status.push * dt;
         if push.norm() > 1e-3 {
             let (x, y) = (self.position.x + push.x, self.position.y + push.y);
             let reach = look.climb() * vpm * 2.0;
             if let Some(z) = ground_wading(world, water, x, y, self.position.z, reach, reach * 2.0, look.wade()) {
-                self.position = Vector3::new(x, y, z);
+                let aloft = self.position.z > z + 0.3 * vpm;
+                self.position = Vector3::new(x, y, if aloft { self.position.z } else { self.position.z + (z - self.position.z) * (1.0 - (-20.0 * dt).exp()) });
             } else {
                 self.status.push = Vector3::zeros();
             }
@@ -5155,7 +5194,8 @@ impl Animal {
     fn beating(&self) -> Option<f64> {
         match self.look.build() {
             Some(Build::Bat) => Some((self.age * 3.4 + self.id as f64 * 0.37).fract()),
-            Some(Build::Wraith) if self.speed <= 0.15 => Some((self.age * 0.45 + self.id as f64 * 0.37).fract()),
+            // A wraith's rags stir on from where they are as it slows, see step()
+            Some(Build::Wraith) => Some(self.phase),
             _ => None,
         }
     }
@@ -5569,6 +5609,143 @@ pub fn spawn_wilds(world: &World, water: WaterLevel, rng: &mut u32, near: Vector
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Open ground 48 m across at 8 voxels a meter, four meters of earth under four of sky
+    fn open_ground() -> World {
+        let size = [384u32, 384, 64];
+        let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+        let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+        occupancy[..tx * ty * 4].fill(u128::MAX);
+        let mut world = World::from_packed_occupancy(size, &occupancy, DIRT);
+        world.voxels_per_meter = 8;
+        world
+    }
+
+    /// Where each piece of `a` is drawn now, by its model, in meters: posed live from its pieces
+    /// if it can be, as it is near the camera, and jointed if it's drawn so
+    fn drawn_pieces(a: &Animal, vpm: u32) -> Vec<(u32, Vector3<f64>, UnitQuaternion<f64>)> {
+        let mut out = Vec::new();
+        if let Some(d) = &a.dragon {
+            crate::dragons::instances(a, d, vpm as f64, &mut out);
+        } else if let Some(w) = &a.winged {
+            crate::avians::instances(a, w, vpm as f64, &mut out);
+        } else if !a.rig_instances(vpm, &mut out) {
+            a.live_instances(vpm, &mut out);
+        }
+        // In its own frame, from its feet as it faces, so only how it's posed is seen, not how it
+        // goes about
+        let back = facing(a.drawn_heading).inverse();
+        out.iter()
+            .map(|i| {
+                let (at, turn, _) = i.placed();
+                (i.model(), back * (at - a.position) / vpm as f64, back * turn)
+            })
+            .collect()
+    }
+
+    /// How far the furthest moved of the pieces drawn both times goes from `a` to `b`, in meters,
+    /// a turn counted as far as the end of a limb half a meter long goes, and which model it was
+    fn moved_most(a: &[(u32, Vector3<f64>, UnitQuaternion<f64>)], b: &[(u32, Vector3<f64>, UnitQuaternion<f64>)]) -> (f64, u32) {
+        // Two alike pieces, a left and a right, have the same model: each goes with the nearer
+        let mut most = (0.0f64, 0);
+        for (m, at, turn) in a {
+            let went = b.iter().filter(|(n, _, _)| n == m).map(|(_, to, then)| (to - at).norm() + 0.5 * turn.angle_to(then)).fold(f64::INFINITY, f64::min);
+            if went.is_finite() && went > most.0 {
+                most = (went, *m);
+            }
+        }
+        most
+    }
+
+    /// `look` going about near the player standing in the middle of open ground, at 60 frames a
+    /// second for `seconds`: knocked back and struck every so often, and for a villager, set to
+    /// stroll and turned round now and then. Each frame, how far the furthest moved of its pieces
+    /// went from the frame before in its own frame, in meters, see moved_most(); how far its feet went
+    /// and how far round it's drawn turned, a radian counted as a meter; and what it was doing.
+    fn movement(look: Look, seconds: f64) -> (Vec<f64>, Vec<f64>, Vec<String>) {
+        let world = open_ground();
+        let vpm = 8.0;
+        let water = |_: f64, _: f64| f64::NEG_INFINITY;
+        let player = Vector3::new(24.0, 24.0, 4.0) * vpm;
+        let at = player + Vector3::new(11.0, 3.0, 0.0) * vpm;
+        let mut a = if look.build().is_some() { Animal::boss(look, at, [at.x as i64, at.y as i64, -2], 11) } else { Animal::new(look, at, 11) };
+        if look.is_villager() {
+            a.home = Some((at, 8.0));
+            a.stroll_off(1.0, 3.0);
+        }
+        a.live = 1.0;
+        let dt = 1.0 / 60.0;
+        let mut last = drawn_pieces(&a, 8);
+        let mut root = (a.position, a.drawn_heading);
+        let (mut out, mut went, mut doing) = (Vec::new(), Vec::new(), Vec::new());
+        for frame in 1..=(seconds / dt) as usize {
+            if frame % 150 == 75 {
+                let away = (a.position - player).try_normalize(1e-6).unwrap_or_else(Vector3::x);
+                a.status.push = away * 3.0 * vpm;
+                if let Some(boss) = &mut a.boss {
+                    boss.struck_by(0.04, -Vector3::x());
+                    boss.provoke();
+                }
+                if look.is_villager() {
+                    a.turn_by(2.4);
+                }
+            }
+            a.update(&world, &water, Some(player), dt);
+            let now = drawn_pieces(&a, 8);
+            let (most, model) = moved_most(&last, &now);
+            out.push(most);
+            last = now;
+            let piece = (model as usize).saturating_sub(if crate::rig::rigged(look) { RIG_MODELS_AT } else { 0 }) % crate::rig::PIECES;
+            let turned = ((a.drawn_heading - root.1 + PI).rem_euclid(TAU) - PI).abs();
+            went.push((a.position - root.0).norm() / vpm + turned);
+            root = (a.position, a.drawn_heading);
+            let what = a.boss.as_ref().map_or_else(|| format!("{:?} {:.2}", a.mood, a.speed), |b| b.describe());
+            doing.push(format!("{what}, piece {piece}"));
+        }
+        (out, went, doing)
+    }
+
+    /// The worst pop in `moved`, each frame's movement as movement() has it: a frame it moved more
+    /// than three times as far as in either the frame before or after, as it would jumping, rather
+    /// than going quickly over a few, as a blow does. How much further it moved then than either
+    /// side, in meters, and which frame.
+    fn worst_pop(moved: &[f64]) -> (f64, usize) {
+        let mut worst = (0.0, 0);
+        for i in 1..moved.len().saturating_sub(1) {
+            let side = moved[i - 1].max(moved[i + 1]);
+            let pop = moved[i] - side;
+            if moved[i] > 3.0 * side && pop > worst.0 {
+                worst = (pop, i);
+            }
+        }
+        worst
+    }
+
+    /// Townsfolk, animals, monsters, jointed bosses, avians and a dragon going about and fighting,
+    /// knocked back and struck now and then: posed as they're drawn near the camera, none of their
+    /// pieces jumps in a frame, however quick their blows, and they never jump from place to place
+    /// but as a wraith blinks and a burrower bursts up out of the sand.
+    /// `cargo test --release nothing_pops -- --nocapture` says how near each comes.
+    #[test]
+    fn nothing_pops_going_about_and_fighting() {
+        let looks = [
+            Look::Villager, Look::Townswoman, Look::Merchant, Look::Dog, Look::Bear, Look::Wolf, Look::Skeleton, Look::ArmoredSkeleton, Look::Zombie, Look::Bandit, Look::BanditBrute, Look::Crossbowman,
+            Look::Shieldbearer, Look::Spiderling, Look::DuneBurrower, Look::RimeWraith, Look::MireLurker, Look::Gloomwing, Look::Tusker, Look::Bloater, Look::Ghoul, Look::GraveBrute, Look::BoneArcher,
+            Look::Ogre, Look::GraveKnight, Look::Golem, Look::Spider, Look::Direwolf, Look::Necromancer, Look::Warlord, Look::Treant, Look::Ironhide, Look::Harpy, Look::Skyhunter, Look::Gargoyle, Look::Ashwing,
+        ];
+        for look in looks {
+            let (moved, went, doing) = movement(look, 8.0);
+            let (pop, at) = worst_pop(&moved);
+            let (lurch, at2) = worst_pop(&went);
+            let most = moved.iter().copied().fold(0.0, f64::max);
+            let around = |i: usize| doing[i.saturating_sub(1)..(i + 2).min(doing.len())].join(" | ");
+            println!("{look:?}: pose pop {pop:.3} m at {at} [{}], most {most:.3}; root pop {lurch:.3} at {at2} [{}]", around(at), around(at2));
+            assert!(pop < 0.1, "{look:?}'s pieces jump {pop:.3} m at frame {at}: {}", around(at));
+            if !matches!(look, Look::RimeWraith | Look::DuneBurrower) {
+                assert!(lurch < 0.1, "{look:?} jumps {lurch:.3} m at frame {at2}: {}", around(at2));
+            }
+        }
+    }
 
     /// A snake lying across a bump in the ground is drawn draped over it, its middle raised up over
     /// the bump rather than its body running through it in a straight line, and where it can be

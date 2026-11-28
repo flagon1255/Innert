@@ -257,12 +257,41 @@ pub fn pose(r: &mut Rig, m: &Moment, f: &Frame, gait: &Gait, want: (Stance, f64,
     ease(r.biped(), &want, rate, m.dt);
     let mut s = *r.biped();
     if m.dying.is_none() {
-        walk(&mut s, gait, m, r.shuffle, if m.doing.is_none() { 1.0 } else { free });
+        walk(&mut s, gait, m, r.shuffle, r.walking(m, free));
         idle(&mut s, m, r.clock, [r.glance[0], r.glance[1]], deep);
         flinch(&mut s, r.flinched());
     }
+    let pointing = swung(r.tool, V::from(s.tool), m.dt);
+    r.tool = Some(pointing);
+    s.tool = pointing.into();
     solve(f, &s, &mut r.bones, &mut r.sockets);
     s
+}
+
+/// How quickly what's in its hand swings round at most, in radians a second, and how short the way
+/// it's told to point can get before it's taken as no way at all
+const SWING: f64 = 40.0;
+const POINTLESS: f64 = 0.35;
+
+/// Which way what's in its hand points `dt` seconds after it pointed `was`, told to point `want`.
+/// Between two poses with it pointing opposite ways, raised behind it and brought down in front, the
+/// way it's told to point is mixed from the two and shrinks to nothing on the way, wheeling wildly
+/// round and flipping over in a frame; so as that gets short it's held where it was, and it swings
+/// round to where it's next told, over the top if that's right the other way, no quicker than SWING.
+fn swung(was: Option<V>, want: V, dt: f64) -> V {
+    let Some(was) = was else { return want.try_normalize(1e-9).unwrap_or(-V::z()) };
+    if want.norm() < POINTLESS {
+        return was;
+    }
+    let to = want.normalize();
+    let angle = was.angle(&to);
+    let most = SWING * dt;
+    if angle <= most {
+        return to;
+    }
+    // Right the other way round, it goes over the top
+    let axis = was.cross(&to).try_normalize(1e-6).filter(|_| angle < 3.0).or_else(|| was.cross(&V::z()).try_normalize(1e-6)).unwrap_or_else(V::y);
+    UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(axis), most) * was
 }
 
 /// Its pieces falling apart into a heap once it's `from` seconds into dying, done by `until`

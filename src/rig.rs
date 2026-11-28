@@ -456,6 +456,10 @@ pub struct Rig {
     seed: u32,
     /// Its pieces as they were when it started to fall apart, dying, for those that do
     fallen: Option<[Bone; PIECES]>,
+    /// Which way what's in a biped's right hand points, swung round smoothly, see biped::swung()
+    tool: Option<V>,
+    /// How free it is to walk as it goes, eased, see walking()
+    free: f64,
 }
 
 fn hash(mut x: u32) -> u32 {
@@ -502,6 +506,8 @@ impl Rig {
             shuffle: 0.0,
             seed: hash(seed ^ 0x51e5),
             fallen: None,
+            tool: None,
+            free: 1.0,
         };
         rig.step(&Moment::still(look));
         Some(rig)
@@ -557,8 +563,12 @@ impl Rig {
     /// Posed for what it's doing now, `m`, its pieces and where things come out of it worked out,
     /// with any animation file for it on top, see edit::edited()
     pub fn step(&mut self, m: &Moment) {
+        let was = self.posed.then_some(self.bones);
         self.step_code(m);
         edit::edited(self, m);
+        if let Some(was) = was {
+            steady(&was, &mut self.bones, m.dt);
+        }
     }
 
     /// Posed as the code poses it, see step()
@@ -612,6 +622,18 @@ impl Rig {
     /// How far it's flinched, for builds to lay over their pose
     fn flinched(&self) -> [f64; 3] {
         self.flinch
+    }
+
+    /// How much its walk is laid over its pose, 0 to 1: all of it going about, as much as `free`
+    /// says in the middle of a move; eased, so a move starting or ending doesn't snap its stride,
+    /// its arms swinging and its hips bobbing away or back in a frame
+    fn walking(&mut self, m: &Moment, free: f64) -> f64 {
+        let want = if m.doing.is_none() { 1.0 } else { free };
+        if !self.posed {
+            self.free = want;
+        }
+        self.free += (want - self.free) * (1.0 - (-WALK_EASE * m.dt).exp());
+        self.free
     }
 }
 
@@ -711,6 +733,48 @@ static LAYOUT: OnceLock<Vec<(V, [u32; 3])>> = OnceLock::new();
 /// and how big it is in voxels
 fn layout() -> &'static [(V, [u32; 3])] {
     LAYOUT.get_or_init(|| build_models().into_iter().map(|(m, anchor)| (anchor, m.size)).collect())
+}
+
+/// How quickly, in radians a second, a piece of a jointed boss rolls over about its own length at
+/// most; the most it turns any other way in a frame before it's taken to have flipped over, in
+/// radians, and how quickly one that has turns over to where it's going
+const ROLL: f64 = 12.0;
+/// How quickly a jointed boss's walk fades out of a move it starts and back in after, about the
+/// time it takes, inverted, see Rig::walking()
+const WALK_EASE: f64 = 10.0;
+const FLIPPED: f64 = 1.2;
+const FLIP_TURN: f64 = 14.0;
+
+/// Its pieces `now` as they were posed `dt` seconds after `was`, none of them flipping over in a
+/// frame. A limb or what's in a hand reaching straight up, down or out along where its elbow or
+/// its edge is told from has which way round it's turned about its length flip as it passes
+/// through: its blade rolling over, its forearm spinning on itself. So each rolls about its length
+/// no quicker than ROLL, which no blow needs, catching up after; and one turned any other way
+/// further in a frame than any blow swings it is turned round to where it's going quickly rather
+/// than at once. Each turns about its own joint, so where it ends, and what hangs from it, stay.
+fn steady(was: &[Bone; PIECES], now: &mut [Bone; PIECES], dt: f64) {
+    let most = FLIPPED.max(FLIP_TURN * 1.5 * dt);
+    for (then, bone) in was.iter().zip(now.iter_mut()) {
+        if !then.shown || !bone.shown {
+            continue;
+        }
+        // Its length, as its pieces are made, hanging down from its joint
+        let length = bone.turn * -V::z();
+        let side = bone.turn * V::y();
+        if let Some(before) = (then.turn * V::y() - length * length.dot(&(then.turn * V::y()))).try_normalize(1e-6) {
+            let roll = length.dot(&before.cross(&side)).atan2(before.dot(&side));
+            let rolls = ROLL * dt;
+            if roll.abs() > rolls {
+                let back = UnitQuaternion::from_axis_angle(&nalgebra::Unit::new_normalize(length), roll.signum() * rolls - roll);
+                bone.turn = back * bone.turn;
+            }
+        }
+        let turned = then.turn.angle_to(&bone.turn);
+        if turned > most {
+            let f = (FLIP_TURN * dt / turned).min(1.0);
+            bone.turn = then.turn.try_slerp(&bone.turn, f, 1e-9).unwrap_or(bone.turn);
+        }
+    }
 }
 
 /// The jointed bosses' models, to go after the frames of every look, see animals::animal_models()

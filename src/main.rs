@@ -5517,7 +5517,8 @@ impl App {
                 // Placed once and held still, so what moves is only the boss, unless `view_follow=1`;
                 // and the player's kept on their feet, so the boss goes on fighting them
                 static HELD: std::sync::Mutex<Option<(Vector3<f64>, Vector3<f64>)>> = std::sync::Mutex::new(None);
-                let placing = f <= 20 || number("view_follow", 0.0) > 0.5;
+                // Or till `view_place=70`, once what's to be watched is there
+                let placing = f as f64 <= number("view_place", 20.0) || number("view_follow", 0.0) > 0.5;
                 let mut held = HELD.lock().unwrap();
                 // Or `watch=villager`, `watch=merchant` and the like, the nearest of that look, to see
                 // how townsfolk, merchants and animals move
@@ -5528,7 +5529,9 @@ impl App {
                 if let Some(target) = watched.filter(|_| placing) {
                     let back = (feet - target).xy().try_normalize(1e-6).unwrap_or_else(Vector2::x);
                     let from = number("view_from", 1.4);
-                    let distance = number("view_distance", 12.0);
+                    // `watch_distance=` in place of `view_distance=`, which also draws that many
+                    // times as far
+                    let distance = number("watch_distance", number("view_distance", 12.0));
                     // Somewhere with nothing in the way, not in a tree: round one way and the other
                     // from where it's asked for, and nearer
                     let spot = |round: f64, d: f64| {
@@ -5546,7 +5549,7 @@ impl App {
                     let tries = [0.0, -2.0 * from, 0.5, -2.0 * from - 0.5, -0.5, -2.0 * from + 0.5, 1.0, -2.0 * from - 1.0];
                     let at = [1.0, 0.75, 0.55].into_iter().flat_map(|f| tries.map(|t| spot(from + t, distance * f))).find(|&at| clear(at)).unwrap_or_else(|| spot(from, distance));
                     *held = Some((at, target));
-                    if f == 20 {
+                    if f == 20 || f as f64 == number("view_place", 20.0) {
                         println!("frame {frame}: watching from {:.1} m off what's at {:?}", (at - target).norm() / vpm, (target / vpm).map(|v| (v * 10.0).round() / 10.0));
                     }
                 }
@@ -5559,6 +5562,18 @@ impl App {
                 self.game.set_health(100.0);
                 let pressing = number("view_attack", 0.0) > 0.5 && f > 30;
                 self.script_controls = combat::Controls { attack: pressing, holding: pressing, ..Default::default() };
+                // `--set view_power=30` uses the power of what's in hand at that frame, as a player
+                // would with right click, as a necromancer calls up the dead (`gallery=phalanx_binding
+                // gallery_hold=1` puts one in hand), to watch them with `watch=summon`
+                let power = number("view_power", 0.0);
+                if power > 0.0 && f as f64 >= power {
+                    self.script_controls = self.game.power_controls((f as f64 - power) / 60.0, 1.0 / 60.0);
+                }
+                // `--set villager_turn=60` turns every villager about two thirds of the way round at
+                // that frame, to watch them come round as they walk
+                if number("villager_turn", 0.0) as usize == f && f > 0 {
+                    self.game.turn_villagers(2.1);
+                }
                 if f % 60 == 0 {
                     println!("frame {frame}: {}", self.game.report(eye));
                 }
