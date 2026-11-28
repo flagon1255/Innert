@@ -6,42 +6,48 @@ the commit it landed in.
 
 ## Queued
 
-The menu map RUNNING from AVI 0b267383 (2026-11-27), each in `.claude\worktrees\<name>`.
+**PAUSED 2026-11-27 late evening** ("save to backlog everything, continue tomorrow"). Items 7–11
+were in progress, each on its own branch in `.claude\worktrees\<name>`. Each agent was told to
+commit its work (unfinished commits start "Unfinished:") and leave a handoff note at
+`<scratchpad>\<name>\handoff.md`, where the scratchpad is
+C:\Users\Andrej\AppData\Local\Temp\claude\c46ed4f726b1f982\23fd8364-88b7-4af6-99ec-df0cd51069f0\scratchpad.
+To continue: read each handoff, pick the branch up in its worktree (merge AVI into it first), finish,
+then merge into AVI one at a time with the full `cargo test --release`.
 
-4. **The menu's land as a map** (2026-11-27, "Could this menu be a map?", then "create a map like
-   this"). RUNNING in `menumap`.
-   - The voxel land beside the start-up menu becomes a map: a wider area of the world you're about
-     to enter (Continue: round the saved position; New: round the seed's spawn, redrawn as the seed
-     changes), towns, castles and camps marked, roads once the roads item lands, the hover naming
-     the place under the cursor. Black and white, free once playing.
-   - Then (2026-11-27, "Maybe lets not load any world at start"): no world built at launch; the
-     start-up menu opens straight after the GPU/shaders, with the map as its backdrop, and the
-     world is built behind the loading screen on New or Continue. Same agent, separate commit.
-     (2026-11-27, "dont load the world instantly, jsut show the cubes": at launch only the cubes
-     and the menu, no world behind them.)
-   - Hover reveals colour (2026-11-27, "When i hover on the cubes, they should reveal real
-     color"): grey at rest, the true surface colours fading in round the cursor and out behind it.
-   - Layout (2026-11-27, "Remove the point a place to name it drag to turn, also , move the menu
-     to left, and map to right"): no hint line; menu panel on the left, map on the right.
-   - The controls list on the start-up menu: the user takes it off the menu themselves ("ill do
-     it myself the text").
+Agents' house rules for this repo (from the brief): absolute paths under their own worktree only
+(several wrote into the main checkout by relative paths); never `git stash` (shared across
+worktrees, one agent popped the coordinator's stash); never push; commit as flagon1255 with no
+trailers; hidden GPU runs only, under the GPU lock, never while League of Legends or CS2 runs.
 
-6. **An Options window in game to see the controls and change the key bindings** (2026-11-27,
-   "Just add options windows in game, to see these", "just add options window", "to in game",
-   "To change ey bindings"). RUNNING in `controlswin` from fe9dc3f9.
-   - One bindings table for every action, saved in %LOCALAPPDATA%\Innert\, an Options window from
-     the Esc menu (and/or F1 settings) listing every control grouped with the menu's tips, click
-     to rebind, clashes shown, reset to defaults; prompts show the bound key.
+Also owed: a quiet-machine frame-time A/B of everything merged since 2026-11-24 (the first try was
+cut off by a restart).
 
 7. **More bosses, and bosses that don't get stuck** (2026-11-27, "add more bosses", "also dont
-   let bosses to get stuck in holes, let them jump out"). RUNNING in `bosses4` from a1428251.
+   let bosses to get stuck in holes, let them jump out", "add more demi bosses too"). PAUSED in
+   `bosses4` (from e438038f): 4–6 new bosses and 4–6 new demi-bosses.
+   - Boss kill sound (2026-11-27, "when whe kill bosses , dont play that sound", then "lets leave
+     only the boss sound itself"): on a boss or demi-boss kill only its own death sound plays, no
+     fanfare, level-up fanfare, loot or toll on top.
 
 8. **Smoother animation for every NPC and summon** (2026-11-27, "make smoother animations for
-   all npcs", "and summmons"). RUNNING in `npcanim` from a1428251.
+   all npcs", "and summmons"). PAUSED in `npcanim` (from e438038f): blend baked frames, cross-fade
+   actions, ease turns, interpolate between ticks, smooth ground-following, for every kind.
 
 9. **Summons that stay and fight the right foe** (2026-11-27, "summons sometimes vanish, they
-   should priotize what i attack, and if not, whoattacks me"). RUNNING in `summonai` from
-   a1428251.
+   should priotize what i attack, and if not, whoattacks me"). PAUSED (or finished, see its
+   handoff) in `summonai` (from e438038f): find why summons vanish and fix it; target what the
+   player attacks, else who attacks the player, else the nearest foe; never neutrals.
+
+10. **Camps in caves instead of the orbs** (2026-11-27, "remove the orbs in caves, instead of
+    them just make camps where a bonfire or fire burns, and there are some bandits or skeletoons
+    sometimes"). PAUSED in `cavecamps` (from e438038f).
+    - With sounds (2026-11-27, "we could add sounds"): fire crackle, camp murmurs, skeleton rattle,
+      from the existing sound files.
+
+11. **Dropped items easier to find, shown as themselves** (2026-11-27, "also dropped item beams
+    should be easier findable, and their models could be actual models"). PAUSED in
+    `lootdrops` (from 38ed7a93), just started: taller, brighter rarity-coloured beams that
+    survive the draw cap, and the dropped item shown as its real model.
 
 ## Loose ends (found along the way, not yet asked for)
 
@@ -79,6 +85,18 @@ The menu map RUNNING from AVI 0b267383 (2026-11-27), each in `.claude\worktrees\
 - `assets/models/armored_skeleton/base.vox`: a model edit.
 
 ## Done (latest first)
+
+- The menu map and no world at launch: Innert opens on the menu in ~1.3–2.2 s (was 11–13 s), the
+  menu on the left and a 480 m map of the world to be entered on the right (Continue: where the
+  save left off; New: the seed in the box, redrawn as it changes; Realms: the gate), places
+  named under the mouse, real colours round the cursor; the world built behind the loading
+  screen on New or Continue (a1428251, 2026-11-27). New Free Roam now takes ~15 s to play (it
+  used to reuse the start-up world); `--set world_at_start=1` brings back the old start.
+- An Options window with key rebinding: a Controls window from the Esc menu and F1 settings,
+  every action grouped, click to rebind, clashes swapped and shown, reset to defaults, kept in
+  %LOCALAPPDATA%\Innert\keys.txt, prompts naming the bound keys (b9aeb6e0, 2026-11-27). Still
+  saying keys in plain words: loading-screen tips, some weapon power texts ("Right click"), wing
+  perks ("Shift").
 
 - Road lamps: iron lamps with glass lanterns along the stone roads, oil lanterns on wooden poles
   along the gravel (sand only near places), within 170 m of every town and castle, along about
