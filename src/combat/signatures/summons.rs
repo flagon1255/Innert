@@ -71,6 +71,86 @@ const BONES_BLOW: f64 = 0.6;
 /// When in a blow or a draw it lands or looses
 const LANDS: f64 = 0.55;
 
+/// What the dead go for, all of them together, see Combat::choose_prey(): first what they were
+/// sent at with right click; then what the player last struck or aimed a power at, for
+/// FOCUS_SECONDS after, within FOCUS_LEASH meters of them; then what's struck the player in the
+/// last ATTACKER_SECONDS, within ATTACKER_LEASH; then what's fighting them and come within
+/// CLOSING; then the nearest thing that fights within LEASH. Once on something they keep on it
+/// till it dies or goes LEASH_SLACK times as far off, or something comes up that's more to be gone
+/// for.
+const SENT: u8 = 0;
+const FOCUS: u8 = 1;
+const ATTACKER: u8 = 2;
+const CLOSING_IN: u8 = 3;
+const NEAREST: u8 = 4;
+const FOCUS_SECONDS: f64 = 5.0;
+const ATTACKER_SECONDS: f64 = 5.0;
+const FOCUS_LEASH: f64 = 40.0;
+const ATTACKER_LEASH: f64 = 30.0;
+const CLOSING: f64 = 8.0;
+const LEASH: f64 = 24.0;
+const LEASH_SLACK: f64 = 1.5;
+/// The least time, in seconds, what the player struck stays what they're after before something
+/// else the player strikes takes its place, so blows landing on two at once never have the dead
+/// turning back and forth between them
+const HOLD: f64 = 1.0;
+/// How far behind the player one of the dead can be left, in meters, before it climbs up out of
+/// the ground beside them instead, as after a teleport or a gate; how far from the player it
+/// starts to hurry after them and how far it's hurrying all it can, and how fast that is, in
+/// meters a second, which is faster than the player sprints
+const REJOIN: f64 = 32.0;
+const HURRY_FROM: f64 = 4.0;
+const HURRY_TO: f64 = 10.0;
+const HURRY: f64 = 10.5;
+/// How far the player can go from where the phalanx stands its ground, in meters, before it comes
+/// after them to stand it again wherever they stop
+const PHALANX_LEASH: f64 = 18.0;
+/// Where the dead keep round the player with nothing to fight, behind them the way they've been
+/// going: how far round from straight behind, in radians, and out from them, in meters, for each
+/// of the first eight; the rest keep a ring further out
+const GUARD: [(f64, f64); 8] = [(0.45, 2.6), (-0.45, 2.6), (1.15, 2.8), (-1.15, 2.8), (0.0, 3.6), (1.8, 3.0), (-1.8, 3.0), (0.0, 1.9)];
+/// How far off its place by the player one of the dead lets itself be before it walks back to it,
+/// in meters, so it doesn't shuffle about with every step the player takes
+const GUARD_SLACK: f64 = 1.6;
+
+/// The dead raised, taken along as the player goes through a gate to another world, see
+/// Combat::take_raised()
+pub struct Raised(Vec<Familiar>);
+
+/// What the dead are after and why, see Combat::choose_prey()
+#[derive(Default)]
+pub(in crate::combat) struct Pack {
+    /// What the player struck since the dead last looked, by id, and what they aimed a power at
+    struck: Vec<u32>,
+    /// What the player struck or aimed at last, by id, when they first did and when they last did
+    focus: Option<(u32, f64, f64)>,
+    /// What's struck the player lately, by id, and when it last did
+    attackers: Vec<(u32, f64)>,
+    /// What they're after, by id, and how much it's to be gone for, SENT to NEAREST
+    on: Option<(u32, u8)>,
+    /// And by index, this frame, for each of them to go after
+    prey: Option<(usize, u8)>,
+    /// Whether what's striking now is one of the dead or a familiar, not the player
+    pub(in crate::combat) by_minion: bool,
+    /// The boss or monster whose doing game.rs is carrying out, by id, for whatever it throws to
+    /// be known as its, see Combat::hurl()
+    pub(in crate::combat) doer: Option<u32>,
+    /// Which way the player's been going, in radians, for where the dead keep round them, and
+    /// where their feet were last frame
+    heading: Option<f64>,
+    last_feet: Option<Vector3<f64>>,
+    /// Over the head of what they're after, for the mark showing it, see mark_instances()
+    mark: Option<Vector3<f64>>,
+}
+
+impl Pack {
+    pub(in crate::combat) fn recenter(&mut self, shift: Vector3<f64>) {
+        for at in [&mut self.last_feet, &mut self.mark].into_iter().flatten() {
+            *at -= shift;
+        }
+    }
+}
+
 /// Which of them each kind of shade raises
 fn kind_of(power: Power) -> u8 {
     match power {
@@ -110,6 +190,19 @@ pub(in crate::combat) fn summon_keys(power: Power, profile: &Profile) -> Option<
         (release + 0.12, pose([0.04, 0.62, -0.44], [0.0, 0.52, -0.85], [0.0, -0.85, -0.52]), false),
         (0.9, pose([0.2, 0.48, -0.3], [0.0, 0.55, 0.83], [0.0, 1.0, -0.1]), false),
     ])
+}
+
+/// How fast one of the dead that walks at `speed` meters a second goes after the player, `d`
+/// meters off: hurrying, faster than the player can run, once they've got ahead
+pub(in crate::combat) fn hurried(speed: f64, d: f64) -> f64 {
+    let t = ((d - HURRY_FROM) / (HURRY_TO - HURRY_FROM)).clamp(0.0, 1.0);
+    speed + (HURRY.max(speed) - speed) * t
+}
+
+/// Whether what fights is up and about to: not a boss lying in its lair yet to come for the
+/// player, unless it's the sort that would anyway
+fn roused(a: &Animal) -> bool {
+    a.boss.as_ref().is_none_or(|b| b.engaged) || a.look.is_monster()
 }
 
 /// Whether one of the slain can rise as what it was: what walks on two legs or four and is no
@@ -177,6 +270,9 @@ impl Combat {
         };
         let a = &arena.animals[i];
         self.ordered = Some((a.id, ORDER_SECONDS));
+        // On it at once, as all of them are shown being sent
+        self.summons.on = Some((a.id, SENT));
+        self.summons.prey = Some((i, SENT));
         let over = Combat::over(arena, i);
         self.spots.push((a.position + up * 0.05 * vpm, a.look.body().1 + 0.6, 0.8));
         let void = Element::look(Some(Element::Void));
@@ -187,18 +283,304 @@ impl Combat {
         true
     }
 
-    /// What the dead were sent at, if they were a little while ago and it's still up, by index
-    pub(in crate::combat) fn ordered_prey(&self, arena: &Arena) -> Option<usize> {
-        let (id, left) = self.ordered?;
-        if left <= 0.0 {
+    /// The dead raised that are up, taken to go along with the player to another world: put back
+    /// with bring_raised() once it's there, they climb up out of the ground beside the player as
+    /// soon as they're found to be far from them, see rejoin()
+    pub fn take_raised(&mut self) -> Raised {
+        let (raised, rest) = std::mem::take(&mut self.familiars).into_iter().partition(|f| f.risen.is_some() && f.life > CRUMBLE_SECONDS);
+        self.familiars = rest;
+        Raised(raised)
+    }
+
+    pub fn bring_raised(&mut self, raised: Raised) {
+        self.familiars.extend(raised.0);
+    }
+
+    /// The player struck animal `i` with a blow or a shot of their own, or aimed a power at it,
+    /// for the dead to go after, see choose_prey()
+    pub(in crate::combat) fn struck_by_player(&mut self, id: u32) {
+        if !self.summons.by_minion && !self.summons.struck.contains(&id) && self.summons.struck.len() < 16 {
+            self.summons.struck.push(id);
+        }
+    }
+
+    /// Something struck the player, by id, for the dead to turn on it, see game.rs
+    pub fn blame(&mut self, id: u32) {
+        let now = self.time;
+        match self.summons.attackers.iter_mut().find(|(a, _)| *a == id) {
+            Some(a) => a.1 = now,
+            None => self.summons.attackers.push((id, now)),
+        }
+    }
+
+    /// The boss or monster whose doing game.rs is carrying out, so what it throws and how it
+    /// strikes the player is known as its, see blame()
+    pub fn set_doer(&mut self, id: Option<u32>) {
+        self.summons.doer = id;
+    }
+
+    pub fn doer(&self) -> Option<u32> {
+        self.summons.doer
+    }
+
+    /// What the dead are after, by id, and why, for a screenshot run to say
+    pub fn summons_on(&self) -> Option<(u32, &'static str)> {
+        self.summons.on.map(|(id, tier)| (id, ["sent", "struck by the player", "struck the player", "closing in", "nearest"][tier as usize]))
+    }
+
+    /// How many of the dead are up, not crumbling
+    pub fn raised_count(&self) -> usize {
+        self.familiars.iter().filter(|f| f.risen.is_some() && f.life > CRUMBLE_SECONDS).count()
+    }
+
+    /// The power of the weapon in hand ready to use, with the mana for it, for a screenshot run
+    pub fn ready_power(&mut self) {
+        self.power.cooldown = 0.0;
+        self.mana = MAX_MANA;
+    }
+
+    /// What's been blamed for striking the player lately, by id, for tests to see
+    #[cfg(test)]
+    pub fn blamed(&self) -> Vec<u32> {
+        self.summons.attackers.iter().map(|&(id, _)| id).collect()
+    }
+
+    /// Whether one of the dead may strike `a`: anything that fights, or whatever they're after,
+    /// which the player struck or sent them at; never townsfolk, merchants or pets, nor the
+    /// beasts of the wild the player's let be
+    pub(in crate::combat) fn fair_game(&self, a: &Animal) -> bool {
+        hostile(a) || (a.health > 0.0 && !a.look.is_pet() && self.summons.on.is_some_and(|(id, _)| id == a.id))
+    }
+
+    /// How much animal `i` is to be gone for by the dead, if at all: SENT, FOCUS, ATTACKER,
+    /// CLOSING_IN or NEAREST, the player's feet at `feet`, `held` if it's what they're already after, which they
+    /// let go of only further off
+    fn tier_of(&self, arena: &Arena, i: usize, feet: Vector3<f64>, held: bool) -> Option<u8> {
+        let a = &arena.animals[i];
+        if a.health <= 0.0 || a.look.is_pet() {
             return None;
         }
-        arena.animals.iter().position(|a| a.id == id && hostile(a))
+        if self.ordered.is_some_and(|(id, left)| id == a.id && left > 0.0) {
+            return Some(SENT);
+        }
+        let d = (a.position - feet).norm() / arena.view.vpm;
+        let slack = if held { LEASH_SLACK } else { 1.0 };
+        if self.summons.focus.is_some_and(|(id, _, last)| id == a.id && self.time - last < FOCUS_SECONDS) && d < FOCUS_LEASH * slack {
+            return Some(FOCUS);
+        }
+        if !hostile(a) {
+            return None;
+        }
+        let attacking = self.summons.attackers.iter().any(|&(id, at)| id == a.id && self.time - at < ATTACKER_SECONDS);
+        if attacking && d < ATTACKER_LEASH * slack {
+            return Some(ATTACKER);
+        }
+        if a.boss.as_ref().is_some_and(|b| b.engaged) && d < CLOSING * slack {
+            return Some(CLOSING_IN);
+        }
+        if roused(a) && d < LEASH * slack {
+            return Some(NEAREST);
+        }
+        None
+    }
+
+    /// What the dead are to go after this frame, all of them together: what's most to be gone
+    /// for, see SENT, kept on till it dies, gets away or something more to be gone for comes up
+    pub(in crate::combat) fn choose_prey(&mut self, arena: &Arena, dt: f64) {
+        let vpm = arena.view.vpm;
+        let feet = arena.player.unwrap_or(arena.view.eye - Vector3::z() * 1.6 * vpm);
+        // Which way the player's going, for where the dead keep behind them, eased round so they
+        // aren't swinging about at every turn
+        let moved = self.summons.last_feet.map_or(Vector3::zeros(), |last| feet - last).xy();
+        self.summons.last_feet = Some(feet);
+        let facing = || {
+            let f = arena.view.forward();
+            f.y.atan2(f.x)
+        };
+        let heading = self.summons.heading.get_or_insert_with(facing);
+        if moved.norm() > 1.0 * vpm * dt && moved.norm() < 30.0 * vpm * dt.max(1.0 / 30.0) {
+            let to = moved.y.atan2(moved.x);
+            let turn = (to - *heading + PI).rem_euclid(TAU) - PI;
+            *heading += turn * (3.0 * dt).min(1.0);
+        }
+        // What the player struck since: what they're after if it's among it, as a blow sweeping
+        // through a crowd strikes it too, otherwise whichever of it was nearest the crosshair;
+        // and not off what they struck last till it's been HOLD seconds
+        let struck = std::mem::take(&mut self.summons.struck);
+        let on = self.summons.on.map(|(id, _)| id);
+        if !struck.is_empty() {
+            let forward = arena.view.forward();
+            let pick = if on.is_some_and(|id| struck.contains(&id)) {
+                on
+            } else {
+                struck
+                    .iter()
+                    .filter_map(|&id| arena.animals.iter().find(|a| a.id == id))
+                    .map(|a| ((a.center(vpm as u32) - arena.view.eye).try_normalize(1e-6).map_or(-1.0, |w| w.dot(&forward)), a.id))
+                    .max_by(|a, b| a.0.total_cmp(&b.0))
+                    .map(|(_, id)| id)
+            };
+            if let Some(id) = pick {
+                let now = self.time;
+                self.summons.focus = match self.summons.focus {
+                    Some((was, since, _)) if was == id => Some((id, since, now)),
+                    Some((was, since, last)) if now - since < HOLD && arena.animals.iter().any(|a| a.id == was && a.health > 0.0) => Some((was, since, last)),
+                    _ => Some((id, now, now)),
+                };
+            }
+        }
+        let now = self.time;
+        self.summons.attackers.retain(|&(_, at)| now - at < ATTACKER_SECONDS);
+        if self.summons.focus.is_some_and(|(_, _, last)| now - last >= FOCUS_SECONDS) {
+            self.summons.focus = None;
+        }
+        if !self.familiars.iter().any(|f| f.risen.is_some()) {
+            self.summons.prey = None;
+            self.summons.on = None;
+            self.summons.mark = None;
+            return;
+        }
+        // The most to be gone for there is: of those that struck the player, the one that did
+        // last; otherwise the nearest
+        let mut best: Option<(u8, f64, usize)> = None;
+        for i in 0..arena.animals.len() {
+            let Some(tier) = self.tier_of(arena, i, feet, false) else { continue };
+            let a = &arena.animals[i];
+            let d = (a.position - feet).norm() / vpm;
+            let score = match tier {
+                ATTACKER => self.summons.attackers.iter().find(|&&(id, _)| id == a.id).map_or(d, |&(_, at)| now - at),
+                _ => d,
+            };
+            if best.is_none_or(|(t, s, _)| tier < t || (tier == t && score < s)) {
+                best = Some((tier, score, i));
+            }
+        }
+        let current = on.and_then(|id| arena.animals.iter().position(|a| a.id == id)).and_then(|i| self.tier_of(arena, i, feet, true).map(|t| (i, t)));
+        let chosen = match (current, best) {
+            (Some((i, t)), Some((bt, _, b))) if bt < t && b != i => Some((b, bt)),
+            (Some(c), _) => Some(c),
+            (None, b) => b.map(|(t, _, i)| (i, t)),
+        };
+        self.summons.prey = chosen;
+        self.summons.on = chosen.map(|(i, t)| (arena.animals[i].id, t));
+        self.summons.mark = chosen.map(|(i, _)| Combat::over(arena, i));
+    }
+
+    /// The mark over what the dead are after: three motes of the dark that raised them going
+    /// round over its head, faint, so it's seen what they'll go for without it taking the eye
+    pub(in crate::combat) fn mark_instances(&self, view: &View) -> Vec<(Vector3<f64>, AnimalInstance)> {
+        let Some(at) = self.summons.mark else {
+            return Vec::new();
+        };
+        let vpm = view.vpm;
+        let (model, ball) = self.effect_model(SLOT_FIREBALL, Element::look(Some(Element::Void)));
+        // A little bigger further off, so it reads, but never much
+        let far = ((at - view.eye).norm() / vpm / 12.0).clamp(1.0, 2.5).sqrt();
+        (0..3)
+            .map(|k| {
+                let a = self.time * 2.4 + k as f64 * TAU / 3.0;
+                let p = at + Vector3::new(a.cos(), a.sin(), 0.0) * 0.28 * far * vpm;
+                (p, place(model, ball, MODEL_RES, Vector3::zeros(), p, UnitQuaternion::identity(), vpm, 0.045 * far, MOVING))
+            })
+            .collect()
+    }
+
+    /// What one of the dead goes after this frame, by index, and how much it's to be gone for
+    pub(in crate::combat) fn prey(&self) -> Option<(usize, u8)> {
+        self.summons.prey
+    }
+
+    /// Where the `slot`th of the dead keeps by the player with nothing to fight, on the ground:
+    /// round behind them the way they've been going, further out for the colossus
+    pub(in crate::combat) fn guard_spot(&self, arena: &Arena, slot: u8, big: bool) -> Vector3<f64> {
+        let vpm = arena.view.vpm;
+        let feet = arena.player.unwrap_or(arena.view.eye - Vector3::z() * 1.6 * vpm);
+        let (turn, out) = GUARD[slot as usize % GUARD.len()];
+        let out = out + (slot as usize / GUARD.len()) as f64 * 1.4 + if big { 1.6 } else { 0.0 };
+        let a = self.summons.heading.unwrap_or(0.0) + PI + turn;
+        Combat::ground_below(arena, feet + Vector3::new(a.cos(), a.sin(), 0.0) * out * vpm)
+    }
+
+    /// The ground under `at`, however far down, or the top of the water over it; `at` itself if
+    /// there's none
+    pub(in crate::combat) fn ground_below(arena: &Arena, at: Vector3<f64>) -> Vector3<f64> {
+        let vpm = arena.view.vpm;
+        let from = at + Vector3::z() * 1.0 * vpm;
+        let to = Vector3::new(at.x, at.y, 0.0);
+        let ground = solid_along(arena.world, from, to).map_or(at, |t| from + (to - from) * t);
+        Combat::floor_at(arena, ground)
+    }
+
+    /// Which of the places round the player the next of the dead raised keeps, the first one none
+    /// of those up keeps
+    pub(in crate::combat) fn free_slot(&self) -> u8 {
+        (0..u8::MAX).find(|&k| !self.familiars.iter().any(|f| f.risen.is_some_and(|r| r.slot == k))).unwrap_or(0)
+    }
+
+    /// One of the dead, `f`, left too far behind the player, after a teleport, through a gate, or
+    /// with the player gone on too fast: climbing up out of the ground beside them again, its
+    /// place by them, true if it did. Not while it's still climbing out or crumbling.
+    pub(in crate::combat) fn rejoin(&mut self, arena: &Arena, f: &mut Familiar, r: &mut Risen) -> bool {
+        let vpm = arena.view.vpm;
+        let up = Vector3::z();
+        if r.age < RISE_SECONDS || f.life <= CRUMBLE_SECONDS {
+            return false;
+        }
+        let feet = arena.player.unwrap_or(arena.view.eye - up * 1.6 * vpm);
+        let off = f.position - feet;
+        // Flying, the player's far above what follows them on the ground, and gone on too fast
+        // for it to keep up: let further behind, so it isn't climbing up out of the ground under
+        // them over and over, and up beside them once they land
+        let (far, reach) = if arena.player.is_some() { (off.norm(), REJOIN) } else { (off.xy().norm(), REJOIN * 2.0) };
+        let [sx, sy, _] = arena.world.size.map(f64::from);
+        let outside = f.position.x < 0.0 || f.position.y < 0.0 || f.position.x >= sx || f.position.y >= sy;
+        if far < reach * vpm && !outside {
+            return false;
+        }
+        let void = Element::look(Some(Element::Void));
+        if !outside && (f.position - arena.view.eye).norm() < 90.0 * vpm {
+            self.sparks(f.position + up * 0.6 * vpm, 8, 1.5, void, 0.4, 0.5);
+        }
+        // Its place by the player, or where they stand if that's off a ledge or up a wall
+        let spot = self.guard_spot(arena, r.slot, r.look == Look::GraveBrute);
+        let at = if arena.player.is_some() && (spot.z - feet.z).abs() > 2.5 * vpm { feet } else { spot };
+        f.position = if r.kind == Minion::Wraith { at + up * WRAITH_HOVER * vpm } else { at };
+        r.age = 0.0;
+        r.swing = None;
+        r.moving = false;
+        r.post = if r.kind == Minion::Wraith { Vector3::zeros() } else { at };
+        f.wait = f.wait.max(RISE_SECONDS);
+        self.sparks(at + up * 0.2 * vpm, 10, 2.4, void, 0.6, 0.6);
+        for _ in 0..4 {
+            let v = (self.any_direction() + up * 1.4) * 2.5 * vpm;
+            self.drop(at + up * 0.1 * vpm, v, DROP_MUD, 1.0);
+        }
+        true
+    }
+
+    /// One of the dead with nothing to fight going back to its place by the player, `slot`,
+    /// walking at `speed` meters a second, hurrying when the player's got ahead; standing there
+    /// till it's GUARD_SLACK off it
+    pub(in crate::combat) fn keep_by(&mut self, arena: &Arena, f: &mut Familiar, r: &mut Risen, speed: f64, dt: f64) {
+        let vpm = arena.view.vpm;
+        let spot = self.guard_spot(arena, r.slot, r.look == Look::GraveBrute);
+        let d = (spot - f.position).xy().norm();
+        if !r.moving && d < GUARD_SLACK * vpm {
+            f.position = Combat::floor_at(arena, f.position);
+            return;
+        }
+        let feet = arena.player.unwrap_or(arena.view.eye - Vector3::z() * 1.6 * vpm);
+        let speed = hurried(speed, (f.position - feet).xy().norm() / vpm);
+        let heading = r.heading;
+        if self.step_towards(arena, f, r, spot, 0.25 * vpm, speed, dt) {
+            // Facing the way it was going as it stops, rather than at the spot under it
+            r.heading = heading;
+        }
     }
 
     /// Room made for `n` more of the dead: the oldest of those up crumbling away, so no more than
     /// MINIONS are ever up at once
-    fn make_room(&mut self, n: usize) {
+    pub(in crate::combat) fn make_room(&mut self, n: usize) {
         let up = self.familiars.iter().filter(|f| f.risen.is_some() && f.life > CRUMBLE_SECONDS).count();
         let mut over = (up + n).saturating_sub(MINIONS);
         for f in self.familiars.iter_mut().filter(|f| f.risen.is_some() && f.life > CRUMBLE_SECONDS) {
@@ -241,6 +623,7 @@ impl Combat {
         for (k, (spot, look, minion, life, damage)) in raised.into_iter().enumerate() {
             let at = Combat::floor_at(arena, spot);
             let heading = toward.y.atan2(toward.x) + (random(&mut self.rng) - 0.5) * 0.5;
+            let slot = self.free_slot();
             self.familiars.push(Familiar {
                 position: at,
                 life: life + k as f64 * 0.2,
@@ -248,7 +631,7 @@ impl Combat {
                 profile: profile.clone(),
                 damage,
                 phantom: false,
-                risen: Some(Risen { look, heading, phase: 0.0, moving: false, age: -0.15 * k as f64, swing: None, kind: minion, post: if minion == Minion::Wraith { Vector3::zeros() } else { at } }),
+                risen: Some(Risen { look, heading, phase: 0.0, moving: false, age: -0.15 * k as f64, swing: None, kind: minion, post: if minion == Minion::Wraith { Vector3::zeros() } else { at }, slot }),
             });
             self.sparks(at + up * 0.2 * vpm, 10, 2.4, Element::look(Some(Element::Void)), 0.6, 0.6);
             for _ in 0..4 {
@@ -290,23 +673,32 @@ impl Combat {
         match r.kind {
             Minion::Wraith => self.fly_wraith(arena, f, r, dt),
             Minion::Archer => self.walk_archer(arena, f, r, dt),
-            Minion::Colossus => self.walk_bones(arena, f, r, dt, COLOSSUS_SPEED, 2.0, COLOSSUS_BLOW, f64::INFINITY),
-            _ => self.walk_bones(arena, f, r, dt, BONES_SPEED, BONES_REACH, BONES_BLOW, PHALANX_GUARD),
+            Minion::Colossus => self.walk_bones(arena, f, r, dt, COLOSSUS_SPEED, 2.0, COLOSSUS_BLOW),
+            _ => self.walk_bones(arena, f, r, dt, BONES_SPEED, BONES_REACH, BONES_BLOW),
         }
     }
 
-    /// What one of the dead at `from` goes after: what it was sent at, or the nearest thing that
-    /// fights within `hunt` meters of it and `guard` of `post`
-    fn minion_prey(&self, arena: &Arena, from: Vector3<f64>, post: Vector3<f64>, hunt: f64, guard: f64) -> Option<usize> {
+    /// What one of the dead, `f`, goes after: what they're all after, see choose_prey(); but a
+    /// phalanx's skeleton stands its ground, going only after what they were sent at, what the
+    /// player struck or what's attacking them, and otherwise the nearest thing that fights within
+    /// PHALANX_GUARD of where it stands
+    fn minion_prey(&self, arena: &Arena, f: &Familiar, r: &Risen) -> Option<usize> {
         let vpm = arena.view.vpm;
-        self.ordered_prey(arena).or_else(|| {
-            (0..arena.animals.len())
-                .filter(|&i| hostile(&arena.animals[i]) && (arena.animals[i].position - post).xy().norm() < guard * vpm)
-                .map(|i| ((arena.animals[i].position - from).xy().norm(), i))
-                .filter(|&(d, _)| d < hunt * vpm)
-                .min_by(|a, b| a.0.total_cmp(&b.0))
-                .map(|(_, i)| i)
-        })
+        let shared = self.prey();
+        if r.kind != Minion::Phalanx {
+            return shared.map(|(i, _)| i);
+        }
+        if let Some((i, tier)) = shared
+            && tier <= CLOSING_IN
+        {
+            return Some(i);
+        }
+        (0..arena.animals.len())
+            .filter(|&i| hostile(&arena.animals[i]) && roused(&arena.animals[i]) && (arena.animals[i].position - r.post).xy().norm() < PHALANX_GUARD * vpm)
+            .map(|i| ((arena.animals[i].position - f.position).xy().norm(), i))
+            .filter(|&(d, _)| d < MINION_HUNT * vpm)
+            .min_by(|a, b| a.0.total_cmp(&b.0))
+            .map(|(_, i)| i)
     }
 
     /// Walking `f` towards `goal` on the ground at `speed` meters a second till it's within `stop`
@@ -332,17 +724,18 @@ impl Combat {
 
     /// A skeleton of the phalanx, or the colossus, going on: walking at what it's after and
     /// striking it, a phalanx's going back to stand its ground where it rose when there's nothing
-    /// near it, the colossus following the player; the colossus's blow striking all round where it
+    /// near it, or after the player to stand it again where they stop once they've left it well
+    /// behind, the colossus keeping by the player; the colossus's blow striking all round where it
     /// lands and shaking the ground
     #[allow(clippy::too_many_arguments)]
-    fn walk_bones(&mut self, arena: &mut Arena, f: &mut Familiar, mut r: Risen, dt: f64, speed: f64, reach: f64, blow: f64, guard: f64) {
+    fn walk_bones(&mut self, arena: &mut Arena, f: &mut Familiar, mut r: Risen, dt: f64, speed: f64, reach: f64, blow: f64) {
         let vpm = arena.view.vpm;
         let up = Vector3::z();
         let colossus = r.kind == Minion::Colossus;
         // The ground round the colossus heaving as it stands up out of it, throwing what's there
         if colossus && r.age - dt < RISE_SECONDS {
             let profile = f.profile.clone();
-            let near: Vec<usize> = Combat::foes_round(arena, f.position + up * 0.5 * vpm, COLOSSUS_ROUND).into_iter().filter(|&i| hostile(&arena.animals[i])).collect();
+            let near: Vec<usize> = Combat::foes_round(arena, f.position + up * 0.5 * vpm, COLOSSUS_ROUND).into_iter().filter(|&i| self.fair_game(&arena.animals[i])).collect();
             for i in near {
                 let at = arena.animals[i].center(vpm as u32);
                 self.strike(arena, &profile, i, Blow { damage: f.damage * 0.6, crit: false, heavy: true, from: f.position, depth: 1, element: profile.element.or(Some(Element::Void)) });
@@ -371,7 +764,7 @@ impl Combat {
                 let ahead = Vector3::new(r.heading.cos(), r.heading.sin(), 0.0);
                 let lands = f.position + ahead * reach * 0.8 * vpm + up * 0.9 * vpm;
                 let round = if colossus { COLOSSUS_ROUND } else { 0.9 };
-                let struck: Vec<usize> = Combat::foes_round(arena, lands, round).into_iter().filter(|&i| hostile(&arena.animals[i])).take(if colossus { 6 } else { 1 }).collect();
+                let struck: Vec<usize> = Combat::foes_round(arena, lands, round).into_iter().filter(|&i| self.fair_game(&arena.animals[i])).take(if colossus { 6 } else { 1 }).collect();
                 let profile = f.profile.clone();
                 for i in struck {
                     let at = arena.animals[i].center(vpm as u32);
@@ -413,36 +806,44 @@ impl Combat {
             return;
         }
         let feet = arena.player.unwrap_or(arena.view.eye - up * 1.6 * vpm);
-        let post = if colossus { f.position } else { r.post };
-        let prey = self.minion_prey(arena, f.position, post, MINION_HUNT, guard);
-        match prey {
+        match self.minion_prey(arena, f, &r) {
             Some(i) => {
                 let a = &arena.animals[i];
                 let goal = a.position;
                 let stop = (reach + a.look.body().1 * 0.7) * vpm;
+                let speed = hurried(speed, (f.position - feet).xy().norm() / vpm);
                 if self.step_towards(arena, f, &mut r, goal, stop, speed, dt) && f.wait <= 0.0 {
                     r.swing = Some(0.0);
                     f.wait = blow + if colossus { 0.4 } else { 0.35 };
                 }
             }
-            // Back to where it stands its ground, or after the player
+            // After the player once they've left where it stands its ground well behind, to stand
+            // it again where it stops by them
+            None if !colossus && (r.post - feet).xy().norm() > PHALANX_LEASH * vpm => {
+                self.keep_by(arena, f, &mut r, speed, dt);
+                if !r.moving {
+                    r.post = f.position;
+                }
+            }
+            // Back to where it stands its ground
             None if !colossus => {
                 let post = r.post;
-                self.step_towards(arena, f, &mut r, post, 0.3 * vpm, speed, dt);
+                if self.step_towards(arena, f, &mut r, post, 0.3 * vpm, speed, dt) {
+                    f.position = Combat::floor_at(arena, f.position);
+                }
             }
-            None => {
-                self.step_towards(arena, f, &mut r, feet, 3.5 * vpm, speed, dt);
-            }
+            None => self.keep_by(arena, f, &mut r, speed, dt),
         }
         f.risen = Some(r);
     }
 
     /// A skeleton archer going on: keeping back from what's after it, drawing and loosing an arrow
-    /// at what's near every ARCHER_PACE, following the player when there's nothing
+    /// at it every ARCHER_PACE, walking up till it's in reach, keeping by the player when there's
+    /// nothing
     fn walk_archer(&mut self, arena: &mut Arena, f: &mut Familiar, mut r: Risen, dt: f64) {
         let vpm = arena.view.vpm;
         let up = Vector3::z();
-        let prey = self.minion_prey(arena, f.position, f.position, ARCHER_RANGE, f64::INFINITY);
+        let prey = self.minion_prey(arena, f, &r);
         if let Some(s) = r.swing {
             let next = s + dt / ARCHER_DRAW;
             if s < LANDS && next >= LANDS
@@ -452,6 +853,11 @@ impl Combat {
                 let to = arena.animals[i].center(vpm as u32);
                 let way = lead(from, to, ARROW_SPEED, ARROW_GRAVITY, vpm);
                 self.launch(&f.profile, Some(Missile::arrow(0, true)), Form::Bolt, from, way * ARROW_SPEED * vpm, f.damage, ARROW_GRAVITY);
+                // Its own, not the player's, so what it strikes isn't taken for what the player's
+                // going for
+                if let Some(p) = self.projectiles.last_mut() {
+                    p.minion = true;
+                }
                 self.cues.push(Cue::at(Sound::Twang, from, 0.5).pitched(1.1));
             }
             r.swing = (next < 1.0).then_some(next);
@@ -467,12 +873,17 @@ impl Combat {
                 if d > 1e-6 {
                     r.heading = off.y.atan2(off.x);
                 }
-                // Stepping back from what's come too near
+                // Stepping back from what's come too near, and walking up to what's out of reach
                 if d < ARCHER_BACK + a.look.body().1 {
                     let away = f.position - Vector3::new(off.x, off.y, 0.0) / d;
                     let heading = r.heading;
                     self.step_towards(arena, f, &mut r, away, 0.0, BONES_SPEED * 0.8, dt);
                     r.heading = heading;
+                } else if d > ARCHER_RANGE {
+                    let goal = a.position;
+                    let feet = arena.player.unwrap_or(arena.view.eye - up * 1.6 * vpm);
+                    let speed = hurried(BONES_SPEED, (f.position - feet).xy().norm() / vpm);
+                    self.step_towards(arena, f, &mut r, goal, ARCHER_RANGE * 0.8 * vpm, speed, dt);
                 } else {
                     r.moving = false;
                     if f.wait <= 0.0 {
@@ -481,10 +892,7 @@ impl Combat {
                     }
                 }
             }
-            None => {
-                let feet = arena.player.unwrap_or(arena.view.eye - up * 1.6 * vpm);
-                self.step_towards(arena, f, &mut r, feet, 3.5 * vpm, BONES_SPEED, dt);
-            }
+            None => self.keep_by(arena, f, &mut r, BONES_SPEED, dt),
         }
         f.risen = Some(r);
     }
@@ -496,7 +904,9 @@ impl Combat {
         let vpm = arena.view.vpm;
         let up = Vector3::z();
         let mut v = r.post;
-        let prey = self.minion_prey(arena, f.position, f.position, MINION_HUNT, f64::INFINITY);
+        let prey = self.minion_prey(arena, f, &r);
+        let feet = arena.player.unwrap_or(arena.view.eye - up * 1.6 * vpm);
+        let fly = hurried(WRAITH_FLY, (f.position - feet).xy().norm() / vpm);
         match prey {
             Some(i) if f.wait <= 0.0 => {
                 let center = arena.animals[i].center(vpm as u32);
@@ -519,14 +929,14 @@ impl Combat {
             _ => {
                 let anchor = match prey {
                     Some(i) => arena.animals[i].position,
-                    None => arena.player.unwrap_or(arena.view.eye - up * 1.6 * vpm),
+                    None => feet,
                 };
-                // Each round at its own place, by when it rose
-                let a = self.time * 1.3 + (self.time - r.age) * 14.0;
+                // Each round at its own place
+                let a = self.time * 1.3 + r.slot as f64 * TAU / 3.0 + r.slot as f64 * 0.37;
                 let ground = Combat::floor_at(arena, anchor);
                 let goal = Vector3::new(anchor.x, anchor.y, ground.z) + Vector3::new(a.cos(), a.sin(), 0.0) * 3.5 * vpm + up * (WRAITH_HOVER + 0.6) * vpm;
                 let want = (goal - f.position) * 2.0;
-                let want = if want.norm() > WRAITH_FLY * vpm { want.normalize() * WRAITH_FLY * vpm } else { want };
+                let want = if want.norm() > fly * vpm { want.normalize() * fly * vpm } else { want };
                 v = v.lerp(&want, (3.0 * dt).min(1.0));
             }
         }
@@ -691,5 +1101,409 @@ mod tests {
         let (_, _, _, combat) = raised("phalanx_binding", &[Look::Bandit; 2], 4.0, Some(3.0));
         assert!(combat.ordered.is_some_and(|(_, left)| left > 0.0), "they weren't sent at anything");
         assert!(combat.power.cooldown > 0.0);
+    }
+
+    /// A fight on open ground `meters` across, the player standing at `feet` looking along
+    /// `facing` radians round from +y, with the dead raised by the player and what's about
+    struct Fight {
+        world: World,
+        animals: Vec<Animal>,
+        combat: Combat,
+        feet: Vector3<f64>,
+        facing: f64,
+        profile: Rc<Profile>,
+    }
+
+    impl Fight {
+        fn new(meters: u32) -> Fight {
+            let size = [meters * 8, meters * 8, 64];
+            let (tx, ty) = (size[0] as usize / 4, size[1] as usize / 4);
+            let mut occupancy = vec![0u128; tx * ty * (size[2] as usize / 8)];
+            occupancy[..tx * ty * 4].fill(u128::MAX);
+            let mut world = World::from_packed_occupancy(size, &occupancy, crate::worldgen::material::DIRT);
+            world.voxels_per_meter = 8;
+            let profile = Library::load().with_part("phalanx_binding", None).unwrap().profile.clone();
+            let mut combat = Combat::new(1, 0);
+            combat.mana = 1000.0;
+            let feet = Vector3::new(meters as f64 * 0.5, meters as f64 * 0.5, 4.0) * VPM;
+            Fight { world, animals: Vec::new(), combat, feet, facing: 0.0, profile }
+        }
+
+        fn view(&self) -> View {
+            let rotation = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), self.facing) * UnitQuaternion::from_axis_angle(&Vector3::x_axis(), -0.1);
+            View { eye: self.feet + Vector3::new(0.0, 0.0, 1.6 * VPM), rotation, tan: [1.2445, 0.7002], vpm: VPM, speed: 0.0, stride: 0.0 }
+        }
+
+        /// `look` standing `at` meters from the player, along x and y, by index
+        fn put(&mut self, look: Look, at: [f64; 2]) -> usize {
+            let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+            let near = self.feet + Vector3::new(at[0], at[1], 0.0) * VPM;
+            let mut one = crate::animals::spawn_pack(&self.world, &dry, &[look], near, 0.1, 7 + self.animals.len() as u32);
+            assert_eq!(one.len(), 1, "no {look:?} put down");
+            one[0].position = Vector3::new(near.x, near.y, 4.0 * VPM);
+            self.animals.append(&mut one);
+            self.animals.len() - 1
+        }
+
+        /// One of the dead, `kind`, risen already as `look`, `at` meters from the player
+        fn raise(&mut self, look: Look, kind: Minion, at: [f64; 2]) {
+            let position = self.feet + Vector3::new(at[0], at[1], if kind == Minion::Wraith { WRAITH_HOVER } else { 0.0 }) * VPM;
+            let slot = self.combat.free_slot();
+            let post = if kind == Minion::Wraith { Vector3::zeros() } else { position };
+            let risen = Risen { look, heading: 0.0, phase: 0.0, moving: false, age: RISE_SECONDS, swing: None, kind, post, slot };
+            self.combat.familiars.push(Familiar { position, life: 60.0, wait: 0.0, profile: self.profile.clone(), damage: 12.0, phantom: false, risen: Some(risen) });
+        }
+
+        /// One of each, eight in all, round the player
+        fn raise_all(&mut self) {
+            for (k, (look, kind)) in [(Look::ArmoredSkeleton, Minion::Phalanx), (Look::ArmoredSkeleton, Minion::Phalanx), (Look::BoneArcher, Minion::Archer), (Look::BoneArcher, Minion::Archer), (Look::GraveBrute, Minion::Colossus), (Look::RimeWraith, Minion::Wraith), (Look::Skeleton, Minion::Raised), (Look::Zombie, Minion::Corpse)].into_iter().enumerate() {
+                let a = k as f64 * 0.8;
+                self.raise(look, kind, [a.cos() * 2.5, a.sin() * 2.5]);
+            }
+        }
+
+        fn step(&mut self, dt: f64) {
+            let view = self.view();
+            let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+            let mut arena = Arena { world: &self.world, animals: &mut self.animals, view: &view, player: Some(self.feet), water: &dry };
+            self.combat.update(&mut arena, None, None, Controls::default(), dt);
+        }
+
+        /// The player striking animal `i` themselves
+        fn strike(&mut self, i: usize) {
+            let view = self.view();
+            let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+            let profile = self.profile.clone();
+            let feet = self.feet;
+            let mut arena = Arena { world: &self.world, animals: &mut self.animals, view: &view, player: Some(feet), water: &dry };
+            self.combat.strike(&mut arena, &profile, i, Blow { damage: 1.0, crit: false, heavy: false, from: feet, depth: 0, element: None });
+        }
+
+        /// What they're after, by index, and how much
+        fn on(&self) -> Option<(usize, u8)> {
+            self.combat.summons.on.and_then(|(id, tier)| self.animals.iter().position(|a| a.id == id).map(|i| (i, tier)))
+        }
+
+        fn raised(&self) -> Vec<(&Familiar, Risen)> {
+            self.combat.familiars.iter().filter_map(|f| f.risen.map(|r| (f, r))).collect()
+        }
+
+        /// How far the furthest of them is from the player, in meters
+        fn furthest(&self) -> f64 {
+            self.raised().iter().map(|(f, _)| (f.position - self.feet).xy().norm() / VPM).fold(0.0, f64::max)
+        }
+    }
+
+    const DT: f64 = 1.0 / 60.0;
+
+    /// They keep up with the player running off, the phalanx too once it's left behind, never
+    /// left so far behind they're lost, and never crumbling before their time
+    #[test]
+    fn they_keep_up_with_the_player() {
+        let mut fight = Fight::new(160);
+        fight.raise_all();
+        // Sprinting off along x for six seconds, 54 m: the phalanx left standing its ground till
+        // the player's well off, then coming after them
+        let (mut most, mut phalanx): (f64, f64) = (0.0, 0.0);
+        for _ in 0..(6.0 / DT) as usize {
+            fight.feet.x += 9.0 * VPM * DT;
+            fight.facing = -FRAC_PI_2;
+            fight.step(DT);
+            for (f, r) in fight.raised() {
+                let d = (f.position - fight.feet).xy().norm() / VPM;
+                if r.kind == Minion::Phalanx {
+                    phalanx = phalanx.max(d);
+                } else {
+                    most = most.max(d);
+                }
+            }
+            assert!(fight.raised().iter().all(|(f, r)| f.life > CRUMBLE_SECONDS && r.age >= RISE_SECONDS), "one of them crumbled, or climbed out again, as the player ran");
+        }
+        assert!(most < 12.0, "left {most:.1} m behind a sprinting player");
+        assert!(phalanx < PHALANX_LEASH + 4.0, "the phalanx left {phalanx:.1} m behind");
+        // And all round them again a few seconds after they stop
+        for _ in 0..(4.0 / DT) as usize {
+            fight.step(DT);
+        }
+        let furthest = fight.furthest();
+        assert!(furthest < 6.0, "still {furthest:.1} m off once the player stopped");
+        assert_eq!(fight.raised().len(), 8);
+    }
+
+    /// Left far behind, as by a teleport, or out of the world once it's moved on, they climb up
+    /// out of the ground beside the player, never just gone; and they go along through a gate
+    #[test]
+    fn they_rise_again_beside_the_player_after_a_teleport() {
+        let mut fight = Fight::new(160);
+        fight.raise_all();
+        fight.step(DT);
+        // Teleported 60 m off
+        fight.feet.y += 60.0 * VPM;
+        let mut climbed = 0;
+        for _ in 0..(3.0 / DT) as usize {
+            fight.step(DT);
+            climbed = climbed.max(fight.raised().iter().filter(|(_, r)| r.age < RISE_SECONDS).count());
+        }
+        assert_eq!(climbed, 8, "each climbed up out of the ground again by the player");
+        let furthest = fight.furthest();
+        assert!(furthest < 6.0, "{furthest:.1} m off the player after the teleport");
+        // The world moved on so far they're out of it
+        fight.combat.recenter(Vector3::new(130.0 * VPM, 0.0, 0.0));
+        fight.feet.x -= 130.0 * VPM;
+        fight.feet.x = fight.feet.x.max(10.0 * VPM);
+        for _ in 0..(2.0 / DT) as usize {
+            fight.step(DT);
+        }
+        let furthest = fight.furthest();
+        assert!(furthest < 6.0 && fight.raised().len() == 8, "{furthest:.1} m off after the world moved on");
+        // Through a gate: taken along, the world's let go of, and back beside the player there
+        let raised = fight.combat.take_raised();
+        fight.combat.clear();
+        fight.combat.bring_raised(raised);
+        fight.feet = Vector3::new(140.0, 30.0, 4.0) * VPM;
+        for _ in 0..(2.0 / DT) as usize {
+            fight.step(DT);
+        }
+        let furthest = fight.furthest();
+        assert!(furthest < 6.0 && fight.raised().len() == 8, "{furthest:.1} m off through a gate, {} came", fight.raised().len());
+    }
+
+    /// In a busy fight, sparks and drops and shots flying all about, they're still drawn: before
+    /// what's flying about them, as they were left out of what's drawn and seemed to vanish when
+    /// they were kept only as near as they were
+    #[test]
+    fn they_are_drawn_however_busy_the_fight() {
+        let mut fight = Fight::new(64);
+        fight.raise_all();
+        for (k, f) in fight.combat.familiars.iter_mut().enumerate() {
+            let a = k as f64 * 0.8;
+            f.position = fight.feet + Vector3::new(a.cos(), 1.0 + a.sin() * 0.3, 0.0) * 9.0 * VPM;
+        }
+        let view = fight.view();
+        let up = Vector3::z();
+        // A hundred and forty drops and sparks thrown up round the player and shots flying out
+        for k in 0..140 {
+            let at = fight.feet + Vector3::new((k % 7) as f64 - 3.0, 1.0 + (k / 7) as f64 * 0.2, 1.0) * VPM;
+            fight.combat.drop(at, up * VPM, DROP_MUD, 1.0);
+        }
+        let profile = fight.profile.clone();
+        for k in 0..30 {
+            let from = view.eye + Vector3::new(k as f64 * 0.3 - 4.5, 4.0, 0.0) * VPM;
+            fight.combat.launch(&profile, Some(Missile::arrow(0, true)), Form::Bolt, from, Vector3::y() * 30.0 * VPM, 1.0, ARROW_GRAVITY);
+        }
+        let mut drawn = fight.combat.flying_instances(&view);
+        let mut bodies = Vec::new();
+        for (f, r) in fight.raised() {
+            fight.combat.risen_instances(f, &r, &view, &mut bodies);
+        }
+        let near = |a: &AnimalInstance, b: &AnimalInstance| (a.sphere().0 - b.sphere().0).norm() < 1e-3;
+        // As many as there's room for in a fight, see game::MAX_INSTANCES, with seventy creatures
+        // about and the leaves' third taken
+        let room = 40;
+        drawn.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let kept: Vec<AnimalInstance> = drawn.iter().take(room).map(|(_, i)| *i).collect();
+        let shown = bodies.iter().filter(|(_, b)| kept.iter().any(|k| near(k, b))).count();
+        assert_eq!(shown, bodies.len(), "only {shown} of {} of what's drawn of them is", bodies.len());
+        // As it was: kept only as near as they are, none of them would be
+        let mut plain: Vec<(f64, AnimalInstance)> = drawn.iter().filter(|(_, i)| !bodies.iter().any(|(_, b)| near(i, b))).copied().collect();
+        plain.extend(bodies.iter().copied());
+        plain.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let was = bodies.iter().filter(|(_, b)| plain.iter().take(room).any(|(_, k)| near(k, b))).count();
+        assert!(was < bodies.len() / 2, "{was} of them were drawn before anyway");
+    }
+
+    /// Raise Dead with as many up as there can be: the oldest crumble away for its three, rather
+    /// than being gone at once
+    #[test]
+    fn raise_dead_makes_room_by_crumbling() {
+        let library = Library::load();
+        let focus = library.generate(11, library.family("skullfocus"), 0.0);
+        assert_eq!(focus.profile.power, Some(Power::RaiseDead));
+        let mut fight = Fight::new(64);
+        fight.raise_all();
+        let mut most = 0;
+        let mut rose = None;
+        for frame in 0..(3.0 / DT) as usize {
+            let t = frame as f64 * DT - 0.3;
+            let controls = fight.combat.power_controls(&focus, t, DT);
+            let view = fight.view();
+            let dry = |_: f64, _: f64| f64::NEG_INFINITY;
+            let mut arena = Arena { world: &fight.world, animals: &mut fight.animals, view: &view, player: Some(fight.feet), water: &dry };
+            fight.combat.update(&mut arena, Some((0, &focus)), None, controls, DT);
+            let up = fight.raised();
+            most = most.max(up.iter().filter(|(f, _)| f.life > CRUMBLE_SECONDS).count());
+            // As they rise: how many there are, and how many crumbling
+            if rose.is_none() && up.iter().any(|(f, r)| r.kind == Minion::Raised && f.life < 30.0) {
+                rose = Some((up.len(), up.iter().filter(|(f, _)| f.life <= CRUMBLE_SECONDS).count()));
+            }
+        }
+        assert_eq!(rose, Some((11, 3)), "as Raise Dead's rose, (all there were, crumbling)");
+        assert!(most <= MINIONS, "{most} up at once");
+        assert_eq!(fight.raised().iter().filter(|(f, r)| r.kind == Minion::Raised && f.life > CRUMBLE_SECONDS && f.life < 30.0).count(), 3, "Raise Dead's three rose");
+    }
+
+    /// They go for what's nearest at first, then all of them for what the player strikes, the
+    /// archers shooting at it; not off it at once for something else the player strikes; and
+    /// back to what's near once the player's let it be a while
+    #[test]
+    fn they_go_for_what_the_player_strikes() {
+        let mut fight = Fight::new(64);
+        let ahead = fight.put(Look::Bandit, [0.0, 8.0]);
+        fight.put(Look::Bandit, [1.5, 9.0]);
+        let aside = fight.put(Look::Bandit, [-11.0, 0.0]);
+        let other = fight.put(Look::Bandit, [11.0, 1.0]);
+        fight.raise_all();
+        for _ in 0..20 {
+            fight.step(DT);
+        }
+        // Struck by them, it's coming for the player now
+        assert!(matches!(fight.on(), Some((i, NEAREST | CLOSING_IN)) if i == ahead), "the nearest first, not {:?}", fight.on());
+        fight.strike(aside);
+        fight.step(DT);
+        assert_eq!(fight.on(), Some((aside, FOCUS)), "what the player struck");
+        // Struck right after by the player too: still on the first
+        fight.strike(other);
+        fight.step(DT);
+        assert_eq!(fight.on(), Some((aside, FOCUS)), "off what the player struck at once");
+        let health = fight.animals[aside].health;
+        let mut toward = 0;
+        let mut shots = 0;
+        let had: usize = fight.combat.projectiles.len();
+        let mut seen = had;
+        for _ in 0..(4.0 / DT) as usize {
+            fight.step(DT);
+            let n = fight.combat.projectiles.len();
+            if n > seen {
+                for p in &fight.combat.projectiles[seen..] {
+                    if p.minion {
+                        shots += 1;
+                        let to = (fight.animals[aside].position - p.position).xy().normalize();
+                        toward += (p.velocity.xy().normalize().dot(&to) > 0.9) as usize;
+                    }
+                }
+            }
+            seen = fight.combat.projectiles.len();
+        }
+        assert!(shots >= 2 && toward == shots, "the archers shot {toward} of {shots} at what the player struck");
+        assert!(fight.animals[aside].health < health, "they didn't hurt what the player struck");
+        assert_eq!(fight.on().map(|o| o.0), Some(aside));
+        // Struck again, the other this time, once it's been a while: on that
+        fight.strike(other);
+        fight.step(DT);
+        assert_eq!(fight.on(), Some((other, FOCUS)));
+        // Let be a while, it's only what's near, or coming for the player, like the rest
+        for _ in 0..((FOCUS_SECONDS + 0.5) / DT) as usize {
+            fight.step(DT);
+        }
+        assert!(fight.on().is_some_and(|(_, tier)| tier >= CLOSING_IN), "{:?} after the player let it be", fight.on());
+    }
+
+    /// What strikes the player from behind is turned on, before what's nearer in front; what the
+    /// player strikes before that; and what's sent at with right click before anything
+    #[test]
+    fn they_turn_on_what_strikes_the_player() {
+        let mut fight = Fight::new(64);
+        let ahead = fight.put(Look::Bandit, [0.0, 7.0]);
+        let behind = fight.put(Look::Bandit, [0.5, -12.0]);
+        fight.raise_all();
+        for _ in 0..30 {
+            fight.step(DT);
+        }
+        assert!(matches!(fight.on(), Some((i, NEAREST | CLOSING_IN)) if i == ahead), "{:?}", fight.on());
+        let id = fight.animals[behind].id;
+        fight.combat.blame(id);
+        fight.step(DT);
+        assert_eq!(fight.on(), Some((behind, ATTACKER)), "they didn't turn on what struck the player");
+        let health = fight.animals[behind].health;
+        for _ in 0..(4.0 / DT) as usize {
+            fight.step(DT);
+        }
+        assert!(fight.animals[behind].health < health, "they didn't hurt what struck the player");
+        // Coming on at the player, not yet having struck, is turned on too
+        let mut closing = Fight::new(64);
+        let ahead = closing.put(Look::Bandit, [0.0, 6.0]);
+        let coming = closing.put(Look::Bandit, [0.0, -7.5]);
+        closing.raise_all();
+        closing.step(DT);
+        assert_eq!(closing.on(), Some((ahead, NEAREST)), "{:?}", closing.on());
+        closing.animals[coming].boss.as_mut().unwrap().provoke();
+        closing.step(DT);
+        assert_eq!(closing.on(), Some((coming, CLOSING_IN)));
+        // What the player strikes before what struck them
+        fight.strike(ahead);
+        fight.step(DT);
+        assert_eq!(fight.on(), Some((ahead, FOCUS)));
+        // And what they're sent at before anything, for as long as they're sent
+        fight.combat.ordered = Some((fight.animals[behind].id, ORDER_SECONDS));
+        fight.step(DT);
+        assert_eq!(fight.on(), Some((behind, SENT)));
+        fight.strike(ahead);
+        fight.step(DT);
+        assert_eq!(fight.on(), Some((behind, SENT)), "taken off what they were sent at");
+    }
+
+    /// Two as near as each other, the nearer of them changing every frame, and the player striking
+    /// both in turn, quickly: they don't turn back and forth between them
+    #[test]
+    fn they_dont_flip_flop() {
+        let mut fight = Fight::new(64);
+        let left = fight.put(Look::Bandit, [-7.0, 0.0]);
+        let right = fight.put(Look::Bandit, [7.0, 0.0]);
+        fight.raise_all();
+        let mut changes = 0;
+        let mut last = None;
+        for frame in 0..(3.0 / DT) as usize {
+            let nudge = if frame % 2 == 0 { 0.1 } else { -0.1 } * VPM;
+            fight.animals[left].position.x += nudge;
+            fight.animals[right].position.x += nudge;
+            fight.step(DT);
+            let on = fight.on().map(|o| o.0);
+            changes += (last.is_some() && on != last) as usize;
+            last = on;
+        }
+        assert_eq!(changes, 0, "they turned {changes} times between two as near");
+        // Striking each in turn five times a second
+        let mut when = Vec::new();
+        for frame in 0..(4.0 / DT) as usize {
+            if frame % 12 == 0 {
+                fight.strike(if frame % 24 == 0 { left } else { right });
+            }
+            fight.step(DT);
+            let on = fight.on().map(|o| o.0);
+            if on != last {
+                when.push(frame as f64 * DT);
+            }
+            last = on;
+        }
+        assert!(when.windows(2).all(|w| w[1] - w[0] > HOLD - 0.1), "they turned at {when:?}");
+        assert!(when.len() <= 4, "they turned {} times in 4 s", when.len());
+    }
+
+    /// Townsfolk, merchants, pets and the beasts of the wild are left be, whatever's near; but a
+    /// beast the player strikes is gone after
+    #[test]
+    fn they_leave_be_what_doesnt_fight() {
+        let mut fight = Fight::new(64);
+        let calm: Vec<usize> = [(Look::Villager, [2.0, 4.0]), (Look::Merchant, [-3.0, 3.0]), (Look::Dog, [3.0, -2.0]), (Look::Squirrel, [-2.0, -3.0]), (Look::Bear, [5.0, 5.0])].into_iter().map(|(look, at)| fight.put(look, at)).collect();
+        fight.raise_all();
+        for _ in 0..(6.0 / DT) as usize {
+            fight.step(DT);
+        }
+        assert_eq!(fight.on(), None);
+        for &i in &calm {
+            let a = &fight.animals[i];
+            assert!(a.health >= a.max_health, "they struck the {:?}", a.look);
+        }
+        let bear = calm[4];
+        fight.strike(bear);
+        let health = fight.animals[bear].health;
+        for _ in 0..(4.0 / DT) as usize {
+            fight.step(DT);
+        }
+        assert!(fight.animals[bear].health < health, "they let be the bear the player struck");
+        for &i in &calm[..4] {
+            let a = &fight.animals[i];
+            assert!(a.health >= a.max_health, "they struck the {:?}", a.look);
+        }
     }
 }
