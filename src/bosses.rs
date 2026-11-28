@@ -1336,6 +1336,11 @@ impl Boss {
         self.buried
     }
 
+    /// For looking at it: up out of the sand it lay dug in under, to start with
+    pub fn dig_out(&mut self) {
+        self.buried = false;
+    }
+
     /// Holding up its guard, for a shieldbearer: whenever it isn't attacking or getting over it
     pub fn guarding(&self) -> bool {
         matches!(self.phase, Phase::Roam | Phase::Chase)

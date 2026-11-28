@@ -1,4 +1,4 @@
-﻿//! Getting out of where it's stuck. A boss, a demi-boss or a monster after the player that's got
+//! Getting out of where it's stuck. A boss, a demi-boss or a monster after the player that's got
 //! nowhere for a second or so, its way blocked by the side of a pit, a hole the player dug, a ledge
 //! or a wall, or with the player stood up out of its reach above it, bounds out: it crouches, so
 //! it's seen coming, and leaps in an arc onto the nearest ground it can stand on towards them,

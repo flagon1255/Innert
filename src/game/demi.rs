@@ -53,6 +53,21 @@ impl Game {
         self.demis = lairs;
     }
 
+    /// For looking at them: every monster about that a demi-boss grows from made one, the last kind
+    /// that grows from it, as in its lair, and turned on the player
+    pub fn promote_demis(&mut self) {
+        for a in self.animals.iter_mut().filter(|a| a.demi.is_none()) {
+            let Some(kind) = demis::KINDS.iter().rposition(|k| k.look == a.look) else { continue };
+            a.demi = Some(kind as u8);
+            (a.health, a.max_health) = (DEMI_HEALTH, DEMI_HEALTH);
+            if let Some(boss) = &mut a.boss {
+                boss.demi = true;
+                boss.provoke();
+                boss.dig_out();
+            }
+        }
+    }
+
     /// What the player's slain is: a demi-boss, or as slain_of() says
     pub(super) fn slain(&self, animal: &Animal) -> Slain {
         if animal.demi.is_some() { Slain::Demi } else { slain_of(animal.look, animal.boss.as_ref().map(|b| b.key), &self.raid_lairs) }

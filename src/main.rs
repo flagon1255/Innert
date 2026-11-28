@@ -2883,6 +2883,14 @@ impl App {
             let turn = setting("enemy_turn").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).to_radians();
             game.summon_pack(&world, &water_level, &looks, start, ahead, distance, turn, flag("enemy_calm", false), pose);
             println!("enemy: {}", looks.iter().map(|l| l.name()).collect::<Vec<_>>().join(", "));
+            // `enemy_demi=1` makes them demi-bosses of the kind each grows into, see src\demis.rs, out
+            // in the open to be seen, and `boss_move=storm` has them make only that move
+            if flag("enemy_demi", false) {
+                game.promote_demis();
+                if let Some(m) = setting("boss_move").filter(|_| capture.is_some()).and_then(bosses::Move::named) {
+                    game.force_boss_move(m);
+                }
+            }
             // `enemy_health=0.6` starts them hurt, their bars and levels showing
             if let Some(fraction) = setting("enemy_health").and_then(|v| v.parse::<f64>().ok()) {
                 game.hurt_monsters(fraction);
