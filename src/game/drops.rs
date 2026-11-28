@@ -274,6 +274,20 @@ impl Game {
         marks.into_iter().take(MARKS).map(|(_, at, grade, color)| (at, grade, color)).collect()
     }
 
+    /// For trying it out: where the rarest weapon dropped within `within` meters of `eye` lies,
+    /// nearest first among those as rare, see `--set loot_look_at=` in main.rs
+    pub fn rarest_weapon_dropped(&self, eye: Vector3<f64>, within: f64) -> Option<Vector3<f64>> {
+        let vpm = self.combat.vpm();
+        self.pickups
+            .iter()
+            .filter_map(|p| match p.item {
+                Item::Weapon(w) if (p.position - eye).norm() < within * vpm => Some((self.weapons[w].grade, -(p.position - eye).norm(), p.position)),
+                _ => None,
+            })
+            .max_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)))
+            .map(|(_, _, at)| at)
+    }
+
     /// The beams of light up from what's dropped in sight, and from the hoards of camps cleared:
     /// see the module's doc. One mesh for them all over the view, and a few motes rising up the
     /// rarer ones'. By night they glow, adding their light to what's behind; by day they're laid

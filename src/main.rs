@@ -4783,7 +4783,7 @@ impl App {
                 println!("LEAPT at frame {} 150 m on", capture.frame_times.len());
             }
             // `--set loot_look_at=N` brings the player at frame N of a screenshot run to stand
-            // `loot_look_from=4` meters back from the middle of what's dropped near, looking at it,
+            // `loot_look_from=4` meters back from the rarest weapon dropped near, looking at it,
             // as at a boss's hoard spilled out, see game\drops.rs
             static LOOT_LOOK: std::sync::OnceLock<Option<(usize, f64)>> = std::sync::OnceLock::new();
             let loot_look = *LOOT_LOOK.get_or_init(|| {
@@ -4798,7 +4798,8 @@ impl App {
                 let marks = self.game.drop_marks(eye);
                 if !marks.is_empty() {
                     let vpm = self.world.voxels_per_meter as f64;
-                    let middle = marks.iter().map(|m| m.0).sum::<Vector3<f64>>() / marks.len() as f64;
+                    // The rarest weapon among it, or the rarest of anything
+                    let middle = self.game.rarest_weapon_dropped(eye, game::DROP_MARKED).unwrap_or_else(|| marks.iter().rev().max_by_key(|m| m.1).map_or(eye, |m| m.0));
                     let away = Vector3::new(eye.x - middle.x, eye.y - middle.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
                     let to = middle + away * back * vpm + Vector3::new(0.0, 0.0, 0.5 * vpm);
                     match &mut self.player {
