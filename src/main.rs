@@ -2754,6 +2754,29 @@ impl App {
                 camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 0.3 * vpm), world.size));
             }
         }
+        // `--set drops=25` strews that many things as if dropped, a mix of everything that can lie
+        // about, weapons of every rarity among it, round a spot `drops_at=30` meters ahead,
+        // `drops_radius=5` meters out, to look at their beams and models, see game\drops.rs;
+        // `drops=rarities` lays a weapon of each rarity in a row there instead. `drops_look=1` turns
+        // the camera to look at the spot from where it is, `drops_from=3` brings it that many meters
+        // back from the spot and up a little, as for a close look at a boss's loot.
+        if let Some(what) = setting("drops") {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let vpm = world.voxels_per_meter as f64;
+            let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+            let distance: f64 = setting("drops_at").and_then(|v| v.parse().ok()).unwrap_or(30.0);
+            let radius: f64 = setting("drops_radius").and_then(|v| v.parse().ok()).unwrap_or(5.0);
+            let row = what == "rarities";
+            let count = what.parse().unwrap_or(25);
+            let middle = game.strew(&world, start + flat * distance * vpm, flat, count, radius, row);
+            println!("drops: {} strewn {distance} m ahead", if row { 6 } else { count });
+            if let Some(back) = setting("drops_from").and_then(|v| v.parse::<f64>().ok()) {
+                camera.position = voxels_to_camera(middle - flat * back * vpm + Vector3::new(0.0, 0.0, (0.6 * back).max(1.7) * vpm), world.size);
+            }
+            if flag("drops_look", false) || setting("drops_from").is_some() {
+                camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 0.5 * vpm), world.size));
+            }
+        }
         // `--set staff_element=fire` puts a staff of fire in hand, or of another element, or `none`
         if let Some(name) = setting("staff_element") {
             let element = serde_json::from_str::<weapons::Element>(&format!("\"{name}\"")).ok();
@@ -6040,6 +6063,8 @@ impl App {
         let raid_note = self.raid_note();
         // The compass in Realms, and the map, see compass.rs
         let bearing = if self.menu_open || self.session.gate_open || self.map.open { None } else { self.compass() };
+        // And what's dropped near marked on it, see game\drops.rs
+        let drop_marks = (!self.menu_open && !self.session.gate_open && !self.map.open && self.loaded_scene.is_terrain() && self.animals_on).then(|| self.drop_marks());
         let map_marks = (self.map.open && !self.menu_open).then(|| self.map_marks());
         // How many of the realm's guardians are slain, for the gate's window, see guardians.rs
         let guardians = self.guardians_slain();
@@ -6181,8 +6206,9 @@ impl App {
                     Color32::from_rgba_unmultiplied(235, 240, 255, 200),
                 );
             }
-            if let Some(bearing) = &bearing {
-                compass::draw_compass(&ctx, bearing);
+            let drops = drop_marks.unwrap_or(compass::DropMarks { heading: 0.0, raised: false, marks: Vec::new() });
+            if bearing.is_some() || drops.worth_showing() {
+                compass::draw_compass(&ctx, bearing.as_ref(), &drops);
             }
             if let Some(marks) = &map_marks {
                 compass::draw_map(&ctx, &mut self.map, marks);
@@ -6653,6 +6679,8 @@ impl App {
         // The roads' lamps only after dark, see worldgen\roads.rs, so by day they take none of the
         // lights there's room for
         let day = daynight::daylight(sky.sun.z) as f32;
+        // The beams of what's dropped glow by night and stand out by day, see game\drops.rs
+        self.game.set_daylight(day as f64);
         let lit = |l: &[f32; 8]| {
             let k = worldgen::by_night([l[4], l[5], l[6]], day);
             (k > 0.0).then(|| {

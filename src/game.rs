@@ -41,6 +41,8 @@ mod demi;
 pub use demi::DemiLair;
 /// The weapon in hand drawn finer than the rest, see weapons::HELD_FINE
 mod fine;
+/// What's dropped, shown as itself and found by its beam of light
+mod drops;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -430,8 +432,23 @@ fn item_level_tint(level: u32, player: u32) -> Color32 {
 const WEAPON_PRICES: [f64; 6] = [25.0, 60.0, 150.0, 360.0, 850.0, 2000.0];
 /// Seconds what's dropped flies out through the air before it lands
 const DROP_SECONDS: f64 = 0.75;
-/// How far off a weapon's beam of light shows where it lies, in meters
-const BEAM_RANGE: f64 = 45.0;
+/// How far off a beam of light shows where something dropped lies, in meters
+const BEAM_RANGE: f64 = 90.0;
+/// How tall each rarity's beam is, in meters: a legendary's and a mythic's tower over the trees
+const BEAM_HEIGHTS: [f64; 6] = [2.4, 3.2, 4.2, 5.4, 8.5, 11.0];
+/// Inside this many meters a beam has faded right out, and from the next it's whole, so close by
+/// it never washes over the view
+const BEAM_GONE: f64 = 1.6;
+const BEAM_WHOLE: f64 = 4.5;
+/// How many of what's dropped nearest the camera always have room among what's drawn, whatever
+/// else is about, see Game::instances()
+const DROP_ROOM: usize = 16;
+/// How far off what's dropped shows on the compass, in meters
+pub const DROP_MARKED: f64 = 60.0;
+/// How fast something dropped falls when what it lay on is dug away, and rises through water to
+/// float, in meters a second
+const DROP_FALL: f64 = 7.0;
+const DROP_RISE: f64 = 1.5;
 /// How far from a merchant the player can trade, in meters
 const SHOP_REACH: f64 = 6.0;
 
@@ -443,20 +460,30 @@ struct Pickup {
     /// Where it was thrown from as it was dropped, and seconds left before it lands
     from: Vector3<f64>,
     flying: f64,
-    /// Whether the camera can see it, for its beam of light to show
+    /// Whether the camera can see its beam of light, foot, middle or top
     seen: bool,
-    /// Shown by a beam of light like a weapon is, as the gold the player lost when they died
+    /// How much its beam shows, 0 to 1, easing in and out as it comes into sight and goes
+    shown: f32,
+    /// Shown by a beam as bright as an epic weapon's, as the gold the player lost when they died
     beacon: bool,
+    /// Floating on the water, bobbing, rather than lying on the bottom
+    afloat: bool,
 }
 
 impl Pickup {
     fn lying(item: Item, position: Vector3<f64>, heading: f64) -> Self {
-        Pickup { item, position, heading, from: position, flying: 0.0, seen: false, beacon: false }
+        Pickup::thrown(item, position, heading, position, 0.0)
     }
 
-    /// Whether a beam of light shows where it lies
+    /// Thrown from `from` to land at `position` in `flying` seconds
+    fn thrown(item: Item, position: Vector3<f64>, heading: f64, from: Vector3<f64>, flying: f64) -> Self {
+        Pickup { item, position, heading, from, flying, seen: false, shown: 0.0, beacon: false, afloat: false }
+    }
+
+    /// Whether a beam of light shows where it lies: everything dropped does, but the apples
+    /// growing on the trees and fallen under them
     fn shines(&self) -> bool {
-        self.beacon || matches!(self.item, Item::Weapon(_))
+        self.beacon || self.item != Item::Apple
     }
 
     /// Where it is now, in voxels: flying in an arc from where it was dropped, then where it landed
@@ -945,6 +972,12 @@ pub struct Game {
     /// Where the hoards turned up and not yet opened are, that the camera can see, for their beams
     /// of light to show
     beams: Vec<Vector3<f64>>,
+    /// How light it is, 0 at night to 1 by day, for the beams of what's dropped to glow by night
+    /// and stand out by day, see set_daylight()
+    daylight: f64,
+    /// The models of what's dropped that has none among the animals' or the weapons': each kind of
+    /// jewel, see jewels.rs, with its anchor. Drawn after the stage's, see model_words().
+    drop_models: Vec<(Model, Vector3<f64>)>,
     /// Cubic meters of water in the bucket
     bucket: f64,
     /// Gold carried, to spend at merchants
@@ -1256,6 +1289,8 @@ impl Game {
             boss_chests: Vec::new(),
             hoards: HashMap::new(),
             beams: Vec::new(),
+            daylight: 1.0,
+            drop_models: drops::models(),
             bucket: 0.0,
             gold: STARTING_GOLD,
             shop: None,
@@ -1452,6 +1487,7 @@ impl Game {
             .chain(self.wing_models.iter().map(|(m, _)| m))
             .chain(self.ward_models.iter().map(|(m, _)| m))
             .chain(self.stage_models.iter())
+            .chain(self.drop_models.iter().map(|(m, _)| m))
             .collect();
         pack_models(&models)
     }
@@ -1488,7 +1524,7 @@ impl Game {
     /// Where weapon `index`'s models start among model_words()
     fn weapon_model(&self, index: usize) -> u32 {
         let before: usize = self.weapons[..index].iter().map(|w| w.look.frames.len()).sum();
-        self.leaf_model() + (self.leaves.models.len() + self.wing_models.len() + self.ward_models.len() + self.stage_models.len() + before) as u32
+        self.leaf_model() + (self.leaves.models.len() + self.wing_models.len() + self.ward_models.len() + self.stage_models.len() + self.drop_models.len() + before) as u32
     }
 
     /// The weapon in hand, with its index
@@ -2509,7 +2545,7 @@ impl Game {
         }
         self.reap(world);
         self.leaves.update(world, water, view.eye, dt);
-        self.look_over_loot(world, player, view, dt);
+        self.look_over_loot(world, water, player, view, dt);
 
         self.levelled = if HOLD_LEVEL_UP.load(std::sync::atomic::Ordering::Relaxed) { 0.7 } else { self.levelled + dt };
         if player.is_some() {
@@ -3515,7 +3551,7 @@ impl Game {
         if lost > 0 {
             self.gold -= lost;
             let from = feet + Vector3::new(0.0, 0.0, 1.0 * vpm);
-            self.pickups.push(Pickup { item: Item::Gold(lost), position: feet, heading: 0.0, from, flying: DROP_SECONDS, seen: false, beacon: true });
+            self.pickups.push(Pickup { beacon: true, ..Pickup::thrown(Item::Gold(lost), feet, 0.0, from, DROP_SECONDS) });
         }
         self.say(if lost > 0 { format!("You were slain by the {by}. {lost} gold lies where you fell.") } else { format!("You were slain by the {by}.") });
         self.shake = self.shake.max(1.2);
@@ -4061,9 +4097,9 @@ impl Game {
         fell
     }
 
-    /// What was dropped landing, which weapons lying about the camera can see, for their beams of
-    /// light to show, and the merchant being traded with left behind
-    fn look_over_loot(&mut self, world: &World, player: Option<Vector3<f64>>, view: &View, dt: f64) {
+    /// What was dropped landing and kept on what it lies on, which beams of light the camera can
+    /// see, see game\drops.rs, and the merchant being traded with left behind
+    fn look_over_loot(&mut self, world: &World, water: WaterLevel, player: Option<Vector3<f64>>, view: &View, dt: f64) {
         let vpm = world.voxels_per_meter as f64;
         self.feet = Some(player.unwrap_or(view.eye));
         for pickup in &mut self.pickups {
@@ -4078,33 +4114,8 @@ impl Game {
                     self.cues.push(cue);
                 }
             }
-            // Looking a quarter of a meter at a time for anything in the way
-            if pickup.shines() {
-                let to = pickup.at(vpm) + Vector3::new(0.0, 0.0, 0.4 * vpm) - view.eye;
-                let d = to.norm();
-                let steps = (d / (0.25 * vpm)) as usize;
-                pickup.seen = d < BEAM_RANGE * vpm
-                    && (1..steps).all(|s| {
-                        let p = view.eye + to * (s as f64 / steps as f64);
-                        is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
-                    });
-            }
         }
-        // So do the hoards of the camps cleared, until they're opened
-        self.beams.clear();
-        for chest in self.chests.iter().filter(|c| c.hoard && !self.opened.contains(&c.key)) {
-            let to = chest.position + Vector3::new(0.0, 0.0, 0.5 * vpm) - view.eye;
-            let d = to.norm();
-            let steps = (d / (0.25 * vpm)) as usize;
-            let seen = d < BEAM_RANGE * vpm
-                && (1..steps).all(|s| {
-                    let p = view.eye + to * (s as f64 / steps as f64);
-                    is_passable(world.material_at(p.x.floor() as i64, p.y.floor() as i64, p.z.floor() as i64))
-                });
-            if seen {
-                self.beams.push(chest.position);
-            }
-        }
+        self.watch_drops(world, water, view, dt);
         if let Some(key) = self.shop.or(self.talking_to()) {
             let near = self.merchants.iter().find(|(_, k)| *k == key).and_then(|(id, _)| self.animals.iter().find(|a| a.id == *id));
             if near.is_none_or(|m| (m.position - view.eye).norm() > SHOP_REACH * vpm) {
@@ -4270,7 +4281,7 @@ impl Game {
             });
             let landed = landed.map_or(spot, |z| Vector3::new(spot.x, spot.y, z as f64 + 1.0));
             let heading = random(&mut self.rng) * TAU;
-            self.pickups.push(Pickup { item, position: landed, heading, from, flying: DROP_SECONDS, seen: false, beacon: false });
+            self.pickups.push(Pickup::thrown(item, landed, heading, from, DROP_SECONDS));
         }
     }
 
@@ -4904,8 +4915,7 @@ impl Game {
         let (Some(&(item, count)), Some(feet)) = (self.slots.get(slot), self.feet) else {
             return;
         };
-        // Nor jewels, which have nothing to lie on the ground as
-        if item.kept() || matches!(item, Item::Jewel(_)) {
+        if item.kept() {
             return;
         }
         self.remove_slot(slot);
@@ -4913,7 +4923,7 @@ impl Game {
         for k in 0..count {
             let angle = random(&mut self.rng) * TAU;
             let at = feet + Vector3::new(angle.cos(), angle.sin(), 0.0) * (0.5 + 0.2 * k as f64) * vpm;
-            self.pickups.push(Pickup { item, position: at, heading: angle, from: feet + Vector3::new(0.0, 0.0, 1.2 * vpm), flying: DROP_SECONDS, seen: false, beacon: false });
+            self.pickups.push(Pickup::thrown(item, at, angle, feet + Vector3::new(0.0, 0.0, 1.2 * vpm), DROP_SECONDS));
         }
         self.say(format!("You drop {}.", self.item_name(item)));
     }
@@ -5931,7 +5941,7 @@ impl Game {
             let lying = at + Vector3::new(0.0, 0.0, 0.1 * vpm);
             if !self.pickups.iter().any(|p| p.item == Item::Wings(k) && (p.position - lying).norm() < 2.0 * vpm) {
                 let heading = (key[0] ^ key[1]) as f64 * 0.37;
-                self.pickups.push(Pickup { item: Item::Wings(k), position: lying, heading, from: lying, flying: 0.0, seen: false, beacon: true });
+                self.pickups.push(Pickup::lying(Item::Wings(k), lying, heading));
             }
             self.aeries.push((key, k, at));
         }
@@ -6101,7 +6111,7 @@ impl Game {
             effect_anchors: self.combat.models.iter().map(|(_, a)| *a).collect(),
             ward_anchors: self.ward_models.iter().map(|(_, a)| *a).collect(),
             wings: self.wing_models.iter().map(|(m, a)| (copy(m), *a)).collect(),
-            after: self.ward_models.iter().map(|(m, _)| copy(m)).chain(self.stage_models.iter().map(copy)).collect(),
+            after: self.ward_models.iter().map(|(m, _)| copy(m)).chain(self.stage_models.iter().map(copy)).chain(self.drop_models.iter().map(|(m, _)| copy(m))).collect(),
             weapons: self.weapons.iter().map(|w| (w.family, w.parts.clone(), w.seed)).collect(),
         }
     }
@@ -6512,31 +6522,34 @@ impl Game {
         let mut near: Vec<(f64, AnimalInstance)> = self.combat.flying_instances(view);
         near.extend(self.dragonfire_instances(view));
         near.extend(self.aerie_instances(view));
-        let time = self.combat.time();
+        // What's dropped, each as itself, see game\drops.rs: the nearest DROP_ROOM of them always
+        // have room, however much else is about, the rest drawn along with everything else; the
+        // apples on the trees only along with the rest
+        let mut drops: Vec<(f64, usize, usize)> = Vec::new();
+        let mut dropped = Vec::new();
         for pickup in &self.pickups {
             let at = pickup.at(vpm);
             let d = (at - camera).norm();
             if d >= FOOD_RANGE * vpm {
                 continue;
             }
-            match (pickup.item, pickup.item.look()) {
-                (_, Some(look)) => near.push((d, animals::still_instance(look, at, pickup.heading, world.voxels_per_meter))),
-                // A weapon lies on its side a hand over the ground, turning slowly and bobbing, its
-                // middle over where it lies, tumbling as it flies out
-                (Item::Weapon(w), None) => {
-                    let look = &self.weapons[w].look;
-                    let tumble = pickup.flying / DROP_SECONDS * 9.0;
-                    let rotation = UnitQuaternion::from_axis_angle(&Vector3::z_axis(), pickup.heading + time * 0.7) * UnitQuaternion::from_axis_angle(&Vector3::y_axis(), FRAC_PI_2 + tumble);
-                    let hover = (0.22 + 0.05 * (time * 2.2 + pickup.heading).sin()) * vpm;
-                    let middle = (look.grip + look.tip) * 0.5;
-                    near.push((d, placed(self.weapon_model(w), &look.frames[0], look.res, middle, at + Vector3::new(0.0, 0.0, hover), rotation, vpm)));
-                }
-                // A few arrows or bolts lying side by side, or a little pile of shot
-                (Item::Ammo(k, _), None) => {
-                    let def = &self.library.ammo[k];
-                    near.extend(self.combat.bundle_instances(def.shot(), def.head.unwrap_or(0), def.element, at, pickup.heading).into_iter().map(|i| (d, i)));
-                }
-                _ => {}
+            let first = dropped.len();
+            self.drop_instances(pickup, at, vpm, &mut dropped);
+            if pickup.item == Item::Apple {
+                near.extend(dropped.drain(first..).map(|i| (d, i)));
+            } else {
+                drops.push((d, first, dropped.len()));
+            }
+        }
+        drops.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let mut room = DROP_ROOM;
+        for &(d, from, to) in &drops {
+            if to - from <= room && out.len() + to - from <= MAX_INSTANCES {
+                room -= to - from;
+                out.extend_from_slice(&dropped[from..to]);
+            } else {
+                room = 0;
+                near.extend(dropped[from..to].iter().map(|&i| (d, i)));
             }
         }
         // The Coil Unending's omens, from further off, as they're there to be seen
@@ -6926,6 +6939,9 @@ impl Game {
             painter.add(egui::Shape::mesh(mesh));
         }
 
+        // A beam of light up from what's dropped in sight, under the names and numbers over the
+        // view, see game\drops.rs
+        self.draw_beams(&painter, view, screen);
         // Health bars over animals that were just hurt
         let vpm = view.vpm;
         self.health_bars(&painter, view, &on_screen);
@@ -6963,39 +6979,6 @@ impl Game {
             let font = FontId::proportional(popup.size);
             painter.text(at + vec2(1.5, 1.5), Align2::CENTER_CENTER, &popup.text, font.clone(), Color32::from_black_alpha((160.0 * alpha) as u8));
             painter.text(at, Align2::CENTER_CENTER, &popup.text, font, Color32::from_rgba_unmultiplied(r, g, b, (255.0 * alpha) as u8));
-        }
-
-        // A beam of light up from each weapon lying about in sight, in the color of its rarity,
-        // taller and brighter the rarer it is, fading up and further off
-        // The gold the player lost when they died shines as bright as an epic weapon, and the hoard
-        // of a camp cleared, up from its lid, as a legendary one
-        let gold = [GOLD.r(), GOLD.g(), GOLD.b()];
-        let lying = self.pickups.iter().filter(|p| p.seen && p.flying <= 0.0 && p.shines()).map(|pickup| match pickup.item {
-            Item::Weapon(w) => (pickup.position, self.weapons[w].grade, self.library.rarities[self.weapons[w].grade].color, w),
-            _ => (pickup.position, 3, gold, 0),
-        });
-        let hoards = self.beams.iter().enumerate().map(|(k, &at)| (at + Vector3::new(0.0, 0.0, 0.25 * vpm), 4, gold, 7 + k));
-        for (position, grade, [r, g, b], w) in lying.chain(hoards) {
-            let base = position + Vector3::new(0.0, 0.0, 0.2 * vpm);
-            let distance = ((base - view.eye).norm() / vpm).max(1.0);
-            let top = base + Vector3::new(0.0, 0.0, (2.2 + 0.9 * grade as f64) * vpm);
-            let (Some(foot), Some(top)) = (on_screen(base), on_screen(top)) else {
-                continue;
-            };
-            let fade = ((1.0 - distance / BEAM_RANGE) * 1.5).clamp(0.0, 1.0) as f32 * (0.55 + 0.09 * grade as f32);
-            let width = ((26.0 / distance.sqrt()) as f32).clamp(2.5, 12.0) * (0.8 + 0.1 * grade as f32);
-            let pulse = 0.85 + 0.15 * (self.combat.time() * 3.0 + w as f64).sin() as f32;
-            let tint = |alpha: f32| Color32::from_rgba_unmultiplied(r, g, b, (alpha * fade * pulse * 255.0).clamp(0.0, 255.0) as u8);
-            painter.circle_filled(foot, width * 2.2, tint(0.18));
-            painter.circle_filled(foot, width * 0.9, tint(0.45));
-            for k in 0..14 {
-                let (a, z) = (k as f32 / 14.0, (k + 1) as f32 / 14.0);
-                let strength = (1.0 - a).powf(1.6);
-                let segment = [foot.lerp(top, a), foot.lerp(top, z)];
-                painter.line_segment(segment, Stroke::new(width * 2.4, tint(0.16 * strength)));
-                painter.line_segment(segment, Stroke::new(width * 0.9, tint(0.55 * strength)));
-                painter.line_segment(segment, Stroke::new(width * 0.3, Color32::from_white_alpha((strength * fade * 200.0) as u8)));
-            }
         }
 
         painter.circle_filled(center, 3.5, shadow);

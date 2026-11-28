@@ -12,7 +12,7 @@
 //! Each kind's model is in assets\models\jewels, a MagicaVoxel file of its own, as the code makes
 //! it till it's edited, colours and all: its icon is drawn from it, see icon(). They're shown only
 //! in the inventory, the quick bar and the weapon's card, not on the weapon in the world, so they
-//! cost nothing in the frame.
+//! cost nothing in the frame; and as themselves when one's dropped on the ground, see lying_model().
 
 use std::path::Path;
 
@@ -267,6 +267,40 @@ fn shape(root: &Path, j: u8) -> (Grid, [[u8; 4]; 256]) {
         return (f.grid, f.palette);
     }
     (model(j), palette(j))
+}
+
+/// Voxels a meter of a jewel lying on the ground: a cut gem about a hand's breadth across, a little
+/// over life size so it reads among the grass
+pub const LYING_RES: f64 = 80.0;
+
+/// Kind `j`'s model to lie on the ground in the world, see Game::instances(): the same voxels as its
+/// icon's, its file's if it's been edited, in the world's own materials, as those are all the
+/// shader knows. A common jewel's dull, the rest glow in their colour, melee's red, ranged's green
+/// and magic's blue, legendary and mythic shot with gold, mythic with white sparks. With where the
+/// middle of its bottom is, in meters from its point, as animals::voxelize() gives it.
+pub fn lying_model(root: &Path, j: u8) -> (crate::animals::Model, nalgebra::Vector3<f64>) {
+    use crate::worldgen::material as m;
+    let (c, t) = parts(j);
+    let (grid, _) = shape(root, j);
+    let body = match (c, t) {
+        (Category::Melee, 0) => m::TEMPLE_RED,
+        (Category::Ranged, 0) => m::MOSS,
+        (Category::Magic, 0) => m::CLOTH_BLUE,
+        (Category::Melee, _) => m::GLOW_BLOOD,
+        (Category::Ranged, _) => m::GLOW_POISON,
+        (Category::Magic, _) => m::GLOW_FROST,
+    };
+    let voxels = grid.voxels.iter().map(|&v| match v {
+        0 => m::AIR,
+        3 => m::GOLD,
+        4 => m::GLOW_HOLY,
+        _ => body,
+    });
+    let model = crate::animals::Model { size: grid.size, voxels: voxels.collect() };
+    let [sx, sy, _] = grid.size.map(|v| v as f64);
+    let [ox, oy, oz] = grid.origin.map(|v| v as f64);
+    let anchor = nalgebra::Vector3::new(ox + sx * 0.5, oy + sy * 0.5, oz) / LYING_RES;
+    (model, anchor)
 }
 
 /// Kind `j`'s icon, `size` pixels a side: its model seen from above at an angle, every voxel a
