@@ -1260,9 +1260,10 @@ const HEX_SECONDS: f64 = 6.0;
 const HEX_DAMAGE: f64 = 0.4;
 const HEX_SLOW: f64 = 0.35;
 /// Seconds between the hurts of a beam, and how much of an orb's damage it does a second for each
-/// cast a second it has
+/// cast a second it has: about what a scepter's bolts do, every one landing but only on the one
+/// thing it touches, with nothing splashed round it
 const BEAM_TICK: f64 = 0.15;
-const BEAM_POWER: f64 = 0.6;
+const BEAM_POWER: f64 = 1.8;
 /// The colors a prismatic sweep runs through as it goes across
 const PRISM: [Element; 5] = [Element::Fire, Element::Frost, Element::Storm, Element::Arcane, Element::Holy];
 /// The most familiars a tome can keep conjured at once, how long each lasts and how often it casts
