@@ -81,14 +81,36 @@ pub fn direction(foot: Vector3<f64>, player: Option<Vector3<f64>>, look: Vector3
     away.and_then(|a| a.try_normalize(1.0)).or_else(|| Vector2::new(look.x, look.y).try_normalize(1e-6)).unwrap_or(Vector2::x())
 }
 
+/// How `tree` comes down, by what most of its wood is rather than the bit of it that was hit: a
+/// palm's, or a dead tree's if it's dead wood with no leaves on it, only fungus if anything, as a
+/// grey-barked beech or kapok in leaf comes down as any other
+fn kind_of(world: &World, tree: &Tree) -> Kind {
+    let (mut dead, mut palm, mut rest) = (0usize, 0usize, 0usize);
+    for (b, list) in &tree.cut {
+        for &k in list {
+            let v = [b[0] * BLOCK + (k as i64 % 8), b[1] * BLOCK + (k as i64 / 8) % 8, b[2] * BLOCK + k as i64 / 64];
+            match world.material_at(v[0], v[1], v[2]) {
+                DEAD_WOOD => dead += 1,
+                PALM_WOOD => palm += 1,
+                m if is_trunk(m) => rest += 1,
+                _ => {}
+            }
+        }
+    }
+    let leafless = tree.leaf.is_none_or(|l| l == MUSHROOM_CAP);
+    if palm > dead.max(rest) {
+        Kind::Palm
+    } else if leafless && dead >= rest {
+        Kind::Dead
+    } else {
+        Kind::Broad
+    }
+}
+
 /// What it takes to bring `tree` down in `world`, the player at `player` looking along `look`
 pub fn plan(world: &World, tree: Tree, player: Option<Vector3<f64>>, look: Vector3<f64>) -> Plan {
     let vpm = world.voxels_per_meter as f64;
-    let kind = match tree.bark {
-        DEAD_WOOD => Kind::Dead,
-        PALM_WOOD => Kind::Palm,
-        _ => Kind::Broad,
-    };
+    let kind = kind_of(world, &tree);
     // A dead tree leaves its stump standing
     let snap = if kind == Kind::Dead { (SNAP_M * vpm).round() } else { 0.0 };
     let above = tree.foot.z + snap;

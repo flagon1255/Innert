@@ -2198,9 +2198,16 @@ struct Object {
     seed: u32,
     min: Vec3,
     max: Vec3,
+    /// For a tree of one of the newer kinds, which, see trees::Species, and where its foot is
+    species: Option<(trees::Species, [f32; 2])>,
 }
 
 impl Object {
+    /// A tree of `species` standing at `foot`
+    fn of(self, species: trees::Species, foot: [f32; 2]) -> Self {
+        Object { species: Some((species, foot)), ..self }
+    }
+
     fn new(shapes: Vec<Shape>, seed: u32) -> Self {
         let mut min = [f32::MAX; 3];
         let mut max = [f32::MIN; 3];
@@ -2215,6 +2222,7 @@ impl Object {
             seed,
             min,
             max,
+            species: None,
         }
     }
 }
@@ -4100,7 +4108,6 @@ impl Terrain {
     /// Puts everything that's out on the land, or under it, once the rivers are in. Of the props,
     /// lights, springs, sites and camps, only those in the piece itself are kept.
     fn place(&mut self, heights: &Heights, rivers: &RiverCache) {
-        let (lo, hi) = (self.lo, self.hi);
         let (objects, mut features) = self.place_objects(heights, rivers);
         let own = |p: &[f32]| self.inside(p[0], p[1]);
         features.props.retain(|p| own(&p.position));
@@ -4110,7 +4117,12 @@ impl Terrain {
         features.camps.retain(|c| own(&c.fire));
         self.objects = objects;
         self.features = features;
+        self.index_objects();
+    }
 
+    /// Notes which of its objects reach into each OBJECT_CELL square, to find them by area
+    fn index_objects(&mut self) {
+        let (lo, hi) = (self.lo, self.hi);
         let cells = [0, 1].map(|i| ((hi[i] - lo[i]) / OBJECT_CELL).ceil() as usize);
         let mut object_cells = vec![Vec::new(); cells[0] * cells[1]];
         let cell = |v: f32, axis: usize| (((v - lo[axis]) / OBJECT_CELL).floor().max(0.0) as usize).min(cells[axis] - 1);
@@ -5291,8 +5303,7 @@ impl Terrain {
             let soil = is_grassy(column.top) || column.top == SNOW && c.snow > 0.3 || column.top == SAND && c.desert > 0.5;
             let mild = c.jungle.max(c.desert).max(c.snow) < 0.4;
             if soil && mild && column.top == GRASS && unit(hash(r ^ 0x5117)) < 0.45 && by_river(x, y) {
-                let mut rng = Rng(hash(r ^ 0x3171));
-                return Some(Object::new(self.willow(x, y, ground, &mut rng), rng.0));
+                return Some(self.riverside_tree(x, y, ground, r));
             }
             (soil && unit(r) < density).then(|| self.wild_tree(x, y, ground, hash(r)))
         });
@@ -5306,7 +5317,8 @@ impl Terrain {
             })
         });
 
-        // Cacti and dry shrubs in the desert
+        // Cacti and dry shrubs in the desert, and stands of Joshua trees here and there
+        let joshuas = |x: f32, y: f32| smoothstep(0.15, 0.45, fbm(x / 70.0, y / 70.0, 2, seed.wrapping_add(14)));
         scatter(6.0, 0xcac7, 4.0, &mut |x, y, ground, column, r| {
             let c = climate(x, y);
             if column.top != SAND || c.desert < 0.5 || ground - sea_level < 2.0 {
@@ -5320,6 +5332,8 @@ impl Terrain {
                 Some(Object::new(self.lupine(x, y, ground, FLOWER_PURPLE, &mut rng), rng.0))
             } else if roll < 0.5 {
                 Some(Object::new(self.broadleaf(x, y, ground, 0.35, 2, DEAD_WOOD, BARE, &mut rng), rng.0))
+            } else if roll < 0.5 + 0.16 * joshuas(x, y) {
+                Some(Object::new(self.joshua(x, y, ground, &mut rng), rng.0).of(trees::Species::Joshua, [x, y]))
             } else {
                 None
             }
