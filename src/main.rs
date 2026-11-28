@@ -313,6 +313,18 @@ fn still_lights(lights: impl Iterator<Item = [f32; 8]>, eye: Vector3<f32>, vpm: 
 /// yellower behind its glass, least. Crystals and glows shine steady.
 fn flicker(light: [f32; 8], seconds: f32, vpm: f32) -> [f32; 8] {
     let [r, g, b] = [light[4], light[5], light[6]];
+    // The pale fire of the dead's camps in caves gutters, sinking low and flaring up slowly, see
+    // worldgen\camps\cave.rs
+    if [r, g, b] == worldgen::GHOST_FIRE_LIGHT {
+        let s = (light[0] * 0.37 + light[1] * 0.71).fract() * 40.0;
+        let t = seconds;
+        let k = 0.78 + 0.14 * (t * 2.1 + s).sin() + 0.08 * (t * 5.3 + 1.3 * s).sin() + 0.05 * (t * 11.7 + s).sin();
+        let mut out = light;
+        for c in &mut out[4..7] {
+            *c *= k;
+        }
+        return out;
+    }
     if r <= 0.0 || r < g || g <= b {
         return light;
     }
@@ -2006,6 +2018,17 @@ impl Placed {
             let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
             landscape.and_then(|l| l.nearest_cavern([112.0, 112.0]))
         });
+        // `--set cave_camp=bandits`, `dead`, `nobody` or `any` starts by the fire of the nearest
+        // camp in a cave kept by them, a way back along the way in to it, looking at it,
+        // `cave_camp_distance=12` that many meters off, and `cave_camp_room=2.4` the nearest with
+        // that much room round its fire, see worldgen\camps\cave.rs
+        let cave_camp = setting("cave_camp").filter(|_| dungeon.is_none() && cavern.is_none()).and_then(|kind| {
+            let (_, landscape) = build_world(scene, &terrain, INITIAL_VOXEL_RESOLUTION, [0, 0], &rivers);
+            let room = setting("cave_camp_room").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+            let c = landscape?.nearest_cave_camp([112.0, 112.0], worldgen::Folk::named(kind), room)?;
+            println!("Cave camp: {:?} at {:.0}, {:.0}, {:.1}, room {:.1} m, {} bandits and {} brutes", c.folk, c.fire[0], c.fire[1], c.fire[2], c.room, c.bandits, c.brutes);
+            Some(c)
+        });
         // `--set town=1` starts in the square of the nearest town, `town=far` past the end of one of
         // its streets, looking down it, `town=stall` in front of a merchant's stall on its square,
         // `town=cave` in the square of the nearest town down in a cavern and `town=tunnel` outside
@@ -2121,6 +2144,7 @@ impl Placed {
             .or(camp_at)
             .or(dungeon.map(|d| [d[0], d[1]]))
             .or(cavern.map(|(floor, ..)| [floor[0], floor[1]]))
+            .or(cave_camp.map(|c| [c.fire[0], c.fire[1]]))
             .or(town.map(|(square, _)| [square[0], square[1]]))
             .or(royal.as_ref().map(|r| {
                 // Out in front of it, there's room in the world for the view of it from there
@@ -2271,6 +2295,27 @@ impl Placed {
                 let whole = voxels_to_camera(eye + Vector3::new(origin[0] as f64, origin[1] as f64, 0.0), [widest, widest, terrain.size()[2]]);
                 println!("Passage view: --set camera={},{},{} --set look_at={},{},{}", whole.x, whole.y, whole.z, target.x, target.y, target.z);
             }
+        } else if let Some(c) = cave_camp {
+            // Back along the way in from the fire, as far as there's room, looking at it
+            let vpm = world.voxels_per_meter as f64;
+            let fire = Vector3::new(c.fire[0] as f64 * vpm - origin[0] as f64, c.fire[1] as f64 * vpm - origin[1] as f64, c.fire[2] as f64 * vpm);
+            let low = fire + Vector3::new(0.0, 0.0, 1.6 * vpm);
+            let want = setting("cave_camp_distance").and_then(|v| v.parse::<f64>().ok()).unwrap_or(c.room as f64 + 2.2);
+            let room = |d: Vector3<f64>| (1..=(want * vpm) as i64).take_while(|&k| worldgen::is_passable(world.material_at((low.x + d.x * k as f64) as i64, (low.y + d.y * k as f64) as i64, low.z as i64))).count() as f64;
+            // The way with the most room, toward the way in if there's as much that way
+            let toward = Vector3::new(c.way[0] as f64, c.way[1] as f64, 0.0);
+            let way = (0..32).map(|k| k as f64 / 32.0 * std::f64::consts::TAU).map(|a| Vector3::new(a.cos(), a.sin(), 0.0)).max_by(|a, b| (room(*a) + a.dot(&toward)).total_cmp(&(room(*b) + b.dot(&toward)))).unwrap_or(toward);
+            let at = low + way * (room(way) - 0.5 * vpm).max(1.5 * vpm);
+            // Standing on the floor there, which may be higher or lower than at the fire
+            let floor = (0..(4.0 * vpm) as i64).map(|k| at.z - k as f64).find(|&z| !worldgen::is_passable(world.material_at(at.x as i64, at.y as i64, z as i64 - 1))).unwrap_or(fire.z);
+            let eye = Vector3::new(at.x, at.y, floor + 1.6 * vpm);
+            camera.position = voxels_to_camera(eye, world.size);
+            let target = voxels_to_camera(fire + Vector3::new(0.0, 0.0, 0.5 * vpm), world.size);
+            camera.look_at(target);
+            // The same view for a build without this
+            let whole = voxels_to_camera(eye + Vector3::new(origin[0] as f64, origin[1] as f64, 0.0), [widest, widest, terrain.size()[2]]);
+            let look = target - camera.position;
+            println!("Cave camp view: --set at={},{} --set camera={},{},{} --set look={},{},{}", c.fire[0], c.fire[1], whole.x, whole.y, whole.z, look.x, look.y, look.z);
         } else if let Some((inside, out)) = falls_cave {
             // Just inside the cave behind a waterfall, looking out through it
             let vpm = world.voxels_per_meter as f64;
@@ -2486,7 +2531,7 @@ impl Placed {
             camera.look_at(target);
         }
         let down_in_chasm = chasm.is_some() && matches!(crevice_view, Some("bottom" | "demi" | "fight"));
-        let indoors = dungeon.is_some() || cavern.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city || down_in_chasm;
+        let indoors = dungeon.is_some() || cavern.is_some() || cave_camp.is_some() || town.is_some() && underground || royal.is_some() && inside_castle || sunken.is_some() && in_city || down_in_chasm;
         // Into the world that moves on from here a strip at a time
         let (world, pieces, river_springs) = match &landscape {
             Some(landscape) => into_window(world, landscape),
@@ -3485,6 +3530,7 @@ impl App {
         // front, where there's room to fight. Down in the ravines it's demi-boss's instead, below.
         let camps = &landscape.camps;
         let camp_at = |site: &worldgen::Site| camps.iter().find(|c| c.fire == site.position);
+        let cave_camp_at = |site: &worldgen::Site| landscape.cave_camps.iter().find(|c| c.fire == site.position);
         let lairs: Vec<game::Lair> = landscape
             .sites
             .iter()
@@ -3590,6 +3636,22 @@ impl App {
                             hint: c.hint,
                         }),
                     ),
+                    // Bandits by their fire in a cave, as at a camp out on the land, and the dead
+                    // lying under the floor of theirs, see worldgen\camps\cave.rs
+                    worldgen::CAVE_CAMP_SITE => match cave_camp_at(site)? {
+                        c if c.folk == worldgen::Folk::Bandits => (
+                            game::DenKind::Camp,
+                            0.0,
+                            Some(game::Band {
+                                keepers: std::iter::repeat_n(animals::Look::Bandit, c.bandits as usize).chain(std::iter::repeat_n(animals::Look::BanditBrute, c.brutes as usize)).collect(),
+                                within: c.spread as f64,
+                                hoard: game::Chest { position: to_voxels(c.chest), heading: c.heading as f64, key: c.chest.map(|v| (v * 10.0).round() as i64), luck: c.luck as f64, hoard: true },
+                                hint: c.hint,
+                            }),
+                        ),
+                        c if c.folk == worldgen::Folk::Dead => (game::DenKind::Risen, 0.0, None),
+                        _ => return None,
+                    },
                     worldgen::ROOST_SITE => (game::DenKind::Roost, 0.0, None),
                     worldgen::NEST_SITE => (game::DenKind::Nest, 0.0, None),
                     worldgen::BONES_SITE => (game::DenKind::Hall, 0.0, None),
@@ -3629,7 +3691,7 @@ impl App {
                     return (site.kind == "royal stall").then(|| game::Stall { position: to_voxels(site.position), key: [key[0], key[1], key[2] + 7], within: 0.3, royal: Some(heading), trade: None });
                 }
                 let pick = (key[0].wrapping_mul(73_856_093) ^ key[1].wrapping_mul(19_349_663)).rem_euclid(100);
-                if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || site.kind.starts_with("undercity") || site.kind.starts_with("ravine") || site.kind == worldgen::LURKER_SITE || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | "town" | "cave town" | "gargoyle perch") {
+                if pick < BOSS_CHANCE || pick % 3 != 0 || site.kind.starts_with("fallen") || site.kind.starts_with("undercity") || site.kind.starts_with("ravine") || site.kind == worldgen::LURKER_SITE || matches!(site.kind, "dungeon" | "dungeon hall" | "ravine" | "crevice" | "cavern" | "cave nest" | "bandit camp" | worldgen::CAVE_CAMP_SITE | "town" | "cave town" | "gargoyle perch") {
                     return None;
                 }
                 let [fx, fy] = site.facing;
@@ -3663,6 +3725,9 @@ impl App {
         let water = &self.water;
         self.game.set_lairs(&self.world, &|x, y| water.surface_at(x, y), lairs);
         self.game.set_dens(&self.world, &|x, y| water.surface_at(x, y), dens);
+        // The fires of the camps in caves, heard and giving off embers near them, see
+        // src\game\cavecamps.rs
+        self.game.set_cave_fires(landscape.cave_camps.iter().map(|c| game::CaveFire { position: to_voxels(c.fire), folk: c.folk, key: c.fire.map(|v| (v * 10.0).round() as i64) }).collect());
         self.game.set_stalls(&self.world, &|x, y| water.surface_at(x, y), stalls);
         self.game.set_towns(&self.world, &|x, y| water.surface_at(x, y), towns);
         self.game.set_guards(&self.world, &|x, y| water.surface_at(x, y), guards);

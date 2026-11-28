@@ -1391,6 +1391,7 @@ impl App {
             all.lights.extend(piece.lights.iter().filter(|l| inside(&l.position)));
             all.sites.extend(piece.sites.iter().filter(|s| inside(&s.position)));
             all.camps.extend(piece.camps.iter().filter(|c| inside(&c.fire)));
+            all.cave_camps.extend(piece.cave_camps.iter().filter(|c| inside(&c.fire)));
             all.waterfalls.extend(piece.waterfalls.iter().filter(|w| inside(&w.0)));
         }
         self.adopt_features(&all);

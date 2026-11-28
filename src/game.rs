@@ -43,6 +43,10 @@ pub use demi::DemiLair;
 mod fine;
 /// What's dropped, shown as itself and found by its beam of light
 mod drops;
+/// The camps in caves: their fires heard and smoking, and the dead rising at theirs, see
+/// src\worldgen\camps\cave.rs
+mod cavecamps;
+pub use cavecamps::CaveFire;
 
 /// How far away things can be picked up or hit, in meters
 pub const REACH: f64 = 4.0;
@@ -50,6 +54,9 @@ pub const REACH: f64 = 4.0;
 const HUNGER_SECONDS: f64 = 600.0;
 /// Animals further than this aren't drawn, and food further than that, in meters
 const ANIMAL_RANGE: f64 = 90.0;
+/// Bosses nearer than this, in meters, or after the player, are drawn before anything else; those
+/// further off, lying in their lairs, by how near they are like the rest, see Game::instances()
+const BOSS_FIRST: f64 = 20.0;
 const FOOD_RANGE: f64 = 60.0;
 const PROP_RANGE: f64 = 30.0;
 /// Fish aren't drawn further off than this
@@ -605,6 +612,9 @@ pub enum DenKind {
     /// A perch on a castle's walls, a ruin's tower or before a fallen city's temple, a gargoyle
     /// asleep on it in stone, see src\gargoyles.rs
     Perch,
+    /// The dead's camp in a cave, the dead lying under its floor until someone comes near, see
+    /// src\game\cavecamps.rs
+    Risen,
 }
 
 /// Where a merchant has their stall: where in voxels, and where in the whole landscape, for what
@@ -1001,6 +1011,8 @@ pub struct Game {
     /// Dungeon halls in this piece of the world, and those cleared of monsters
     dens: Vec<[i64; 3]>,
     cleared: HashSet<[i64; 3]>,
+    /// The camps in caves in this piece of the world, see game\cavecamps.rs
+    cave_camps: cavecamps::CaveCamps,
     /// Chests beaten bosses left, kept as the world moves on
     boss_chests: Vec<Chest>,
     /// The hoards of the bandits' camps in this piece of the world, by their dens, and where each
@@ -1323,6 +1335,7 @@ impl Game {
             demis_seen: HashSet::new(),
             dens: Vec::new(),
             cleared: HashSet::new(),
+            cave_camps: Default::default(),
             boss_chests: Vec::new(),
             hoards: HashMap::new(),
             beams: Vec::new(),
@@ -1484,6 +1497,7 @@ impl Game {
         self.defeated.clear();
         self.dens.clear();
         self.cleared.clear();
+        self.cave_camps = Default::default();
         self.boss_chests.clear();
         self.hoards.clear();
         self.beams.clear();
@@ -2060,12 +2074,18 @@ impl Game {
     /// pack to a den.
     pub fn set_dens(&mut self, world: &World, water: WaterLevel, dens: Vec<Den>) {
         self.hoards = dens.iter().filter_map(|d| d.band.as_ref().map(|b| (d.key, (b.hoard.clone(), b.hint)))).collect();
+        self.cave_camps.dead.clear();
         for den in &dens {
             let here = self.animals.iter().any(|a| a.look.is_monster() && a.boss.as_ref().is_some_and(|b| b.key == den.key));
             if here || self.cleared.contains(&den.key) {
                 continue;
             }
             let seed = hash(den.key[0] as u32 ^ hash(den.key[1] as u32 ^ 0xde4));
+            // The dead of a camp in a cave lie under its floor until someone comes near
+            if den.kind == DenKind::Risen {
+                self.cave_camps.dead.push(cavecamps::Sleeping { position: den.position, key: den.key, looks: cavecamps::risen(seed) });
+                continue;
+            }
             // A camp's band as many as it says, some of its bandits crossbowmen or shieldbearers
             let band: Vec<Look>;
             let haunted: &[Look] = match den.kind {
@@ -2120,6 +2140,8 @@ impl Game {
                     band = vec![crate::gargoyles::of_land(worldgen::land_of(self.seed))];
                     &band
                 }
+                // Not yet, see above
+                DenKind::Risen => &[],
             };
             let spread = match &den.band {
                 Some(b) => b.within,
@@ -2595,6 +2617,7 @@ impl Game {
         }
         self.tend_dragonfire(world, player, view, dt);
         self.tend_aerie(world, player, view, dt);
+        self.tend_cave_camps(world, water, player, view, dt);
         self.tend_brine(player, dt);
         self.watch_for_lairs(player);
         self.watch_for_shrines(player);
@@ -5497,6 +5520,7 @@ impl Game {
         self.chests.clear();
         self.lairs.clear();
         self.dens.clear();
+        self.cave_camps = Default::default();
         self.boss_chests.clear();
         self.hoards.clear();
         self.beams.clear();
@@ -6627,28 +6651,33 @@ impl Game {
         let mut dragons: Vec<(f64, usize)> = Vec::new();
         for (k, animal) in self.animals.iter().enumerate() {
             let d = (animal.position - camera).norm();
+            // Bosses come first, but only one near enough to fight or after the player: those lying
+            // in their lairs further off come by how near they are like the rest, or their many
+            // pieces would leave no room for what's right in front of the player
+            let first = animal.look.is_boss() && (d < BOSS_FIRST * vpm || animal.boss.as_ref().is_some_and(|b| b.sighted()));
+            let rank = |d: f64, k: f64| if first { d * k } else { d };
             // A great serpent's head, jaw and every piece of its long body, see serpents::Coils,
             // before any but other bosses, the nearest of them first, so however many are about
             // the one being fought is drawn whole
             if let Some(coils) = animal.coils() {
                 pieces.clear();
                 coils.instances(vpm, animal.status.tint(), &mut pieces);
-                creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
+                creatures.extend(pieces.drain(..).map(|i| (rank((i.sphere_center() - camera).norm(), 0.05), i)));
             } else if let Some(body) = animal.kraken() {
                 // A kraken's mantle, head and every piece of its arms, the same way, see
                 // bosses::kraken::Body
                 pieces.clear();
                 body.instances(vpm, animal.status.tint(), &mut pieces);
-                creatures.extend(pieces.drain(..).map(|i| ((i.sphere_center() - camera).norm() * 0.05, i)));
+                creatures.extend(pieces.drain(..).map(|i| (rank((i.sphere_center() - camera).norm(), 0.05), i)));
             } else if animal.dragon.is_some() || animal.winged.is_some() || crate::rig::rigged(animal.look) {
                 // A jointed boss, avian or gargoyle too, see rig::instances() and avians::instances()
                 if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
-                    dragons.push((if animal.look.is_boss() { 0.0 } else { d }, k));
+                    dragons.push((rank(d, 0.0), k));
                 }
             } else if crate::animals::sealife::is_fish(animal.look) && d > FISH_RANGE * vpm {
                 // A fish is small, and the water's murky: only drawn near
             } else if d < ANIMAL_RANGE * vpm || animal.look.is_boss() {
-                creatures.push((if animal.look.is_boss() { 0.0 } else { d }, animal.instance(world.voxels_per_meter)));
+                creatures.push((rank(d, 0.0), animal.instance(world.voxels_per_meter)));
                 // Near enough, posed live from its pieces, or easing into it or out of it, see
                 // choose_live() and below
                 if animal.live > 0.0 && animal.posable() {
