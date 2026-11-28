@@ -858,6 +858,26 @@ pub fn models() -> Vec<(Model, Vector3<f64>)> {
     models
 }
 
+/// A pair of wings of kind `kind` lying on the ground, dropped or in a shrine's nest: spread either
+/// side of `at`, in voxels of the world, their leading edges toward `heading` and their tips lifted a
+/// little, both drawn with the kind's own model, the first of which is model `first`, as `models()`
+/// made them
+pub fn lying(first: u32, models: &[(Model, Vector3<f64>)], kind: u8, at: Vector3<f64>, heading: f64, vpm: f64) -> [AnimalInstance; 2] {
+    let k = (kind as usize).min(KINDS.len() - 1);
+    let (model, anchor) = &models[k];
+    let ahead = Vector3::new(heading.cos(), heading.sin(), 0.0);
+    let across = Vector3::new(-heading.sin(), heading.cos(), 0.0);
+    let lift: f64 = 0.2;
+    [1.0, -1.0].map(|side: f64| {
+        let span = across * side * lift.cos() + Vector3::z() * lift.sin();
+        let turn = UnitQuaternion::from_rotation_matrix(&Rotation3::from_basis_unchecked(&[span, ahead, span.cross(&ahead)]));
+        let [x, y, z] = model.size.map(|v| v as f64 / RES);
+        let reach = (x * x * 0.25 + y * y * 0.25 + z * z).sqrt() * vpm;
+        let root = at + across * side * 0.06 * vpm + Vector3::new(0.0, 0.0, 0.06 * vpm);
+        AnimalInstance::new(first + k as u32, root + turn * anchor * vpm, turn, vpm / RES, reach, MOVING)
+    })
+}
+
 /// A mote of a wing's trail, in voxels of the world
 struct Mote {
     at: Vector3<f64>,

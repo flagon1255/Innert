@@ -29,6 +29,24 @@ pub struct Bearing {
     pub raised: bool,
 }
 
+/// What's dropped near, marked on the compass, see game\drops.rs: which way the view faces, as for
+/// Bearing, whether it's lifted clear of a boss's bar, and for each how far round it is from
+/// straight ahead, in radians clockwise, how far off in meters, how rare, common 0 to mythic 5, and
+/// its beam's colour
+pub struct DropMarks {
+    pub heading: f64,
+    pub raised: bool,
+    pub marks: Vec<(f64, f64, usize, [u8; 3])>,
+}
+
+impl DropMarks {
+    /// Whether the compass is shown for these alone, with nothing else to point to: only for
+    /// something better than common, so a few coins from a wolf don't bring it up
+    pub fn worth_showing(&self) -> bool {
+        self.marks.iter().any(|m| m.2 >= 1)
+    }
+}
+
 /// How far round from straight ahead the compass shows either side, in radians
 const COMPASS_SPAN: f64 = 100.0 * PI / 180.0;
 
@@ -158,6 +176,24 @@ impl App {
         let toward = (spot[1] - at[1]).atan2(spot[0] - at[0]);
         let note = self.guardians_slain().filter(|(slain, of)| slain < of).map(|(slain, of)| format!("Guardians {slain}/{of}  ·  the raid bosses are warded till all are slain"));
         Some(Bearing { label, distance: far(spot), turn: wrapped(heading - toward), heading, note, raised })
+    }
+
+    /// What's dropped near enough to be marked on the compass, see game\drops.rs
+    pub(super) fn drop_marks(&self) -> DropMarks {
+        let eye = camera_to_voxels(self.camera.position, self.world.size);
+        let feet = self.player.as_ref().map_or(eye, |p| p.position);
+        let vpm = self.world.voxels_per_meter as f64;
+        let heading = self.heading();
+        let marks = self
+            .game
+            .drop_marks(feet)
+            .into_iter()
+            .map(|(at, grade, color)| {
+                let to = at - feet;
+                (wrapped(heading - to.y.atan2(to.x)), to.xy().norm() / vpm, grade, color)
+            })
+            .collect();
+        DropMarks { heading, raised: self.game.boss_bar_up(eye), marks }
     }
 
     /// What's marked on the map
@@ -319,20 +355,41 @@ fn land_seen_from_above(settings: &TerrainSettings, middle: [f64; 2]) -> Vec<u8>
 
 /// The compass strip at the foot of the view: the points of the compass going by as the view
 /// turns, and a mark where `bearing` is, kept to the strip's ends while it's behind, with what it
-/// is and how far under it
-pub fn draw_compass(ctx: &egui::Context, bearing: &Bearing) {
+/// is and how far under it; and what's dropped near, see DropMarks, as small marks of its colour
+/// along the strip's foot, bigger the rarer, a legendary's or a mythic's ringed. With nothing to
+/// point to, the strip's there for what's dropped alone.
+pub fn draw_compass(ctx: &egui::Context, bearing: Option<&Bearing>, drops: &DropMarks) {
     let screen = ctx.screen_rect();
     let painter = ctx.layer_painter(LayerId::new(Order::Background, egui::Id::new("compass")));
     let width = 440.0f32;
+    let (heading, raised) = bearing.map_or((drops.heading, drops.raised), |b| (b.heading, b.raised));
     // Lifted clear of a boss's bar and its name while one's up along the bottom
-    let lift = if bearing.raised { 82.0 } else { 0.0 };
+    let lift = if raised { 82.0 } else { 0.0 };
     let middle = pos2(screen.center().x, screen.bottom() - 74.0 - lift);
     let strip = Rect::from_center_size(middle, vec2(width, 24.0));
     crate::theme::hud_panel(&painter, strip, 5.0);
     let x_of = |turn: f64| middle.x + (turn / COMPASS_SPAN) as f32 * width * 0.5;
+    // What's dropped, the furthest first so the nearest are on top: within the strip, a rare one
+    // behind kept to its end as the bearing is
+    for &(turn, distance, grade, [r, g, b]) in drops.marks.iter().rev() {
+        let behind = turn.abs() > COMPASS_SPAN * 0.97;
+        if behind && grade < 3 {
+            continue;
+        }
+        let x = x_of(turn.clamp(-COMPASS_SPAN * 0.97, COMPASS_SPAN * 0.97));
+        let near = (1.0 - (distance / crate::game::DROP_MARKED) as f32 * 0.55).clamp(0.3, 1.0) * if behind { 0.6 } else { 1.0 };
+        let color = Color32::from_rgba_unmultiplied(r, g, b, (255.0 * near) as u8);
+        let s = 2.6 + 0.55 * grade as f32;
+        let at = pos2(x, strip.bottom() - 4.5 - 0.3 * grade as f32);
+        if grade >= 4 {
+            painter.circle_filled(at, s * 2.1, Color32::from_rgba_unmultiplied(r, g, b, (60.0 * near) as u8));
+            painter.circle_stroke(at, s * 1.7, Stroke::new(1.2f32, color));
+        }
+        painter.add(Shape::convex_polygon(vec![at + vec2(0.0, -s), at + vec2(s * 0.8, 0.0), at + vec2(0.0, s), at + vec2(-s * 0.8, 0.0)], color, Stroke::new(1.0f32, Color32::from_black_alpha((150.0 * near) as u8))));
+    }
     for k in 0..16 {
         let way = k as f64 * FRAC_PI_4 / 2.0;
-        let turn = wrapped(bearing.heading - way);
+        let turn = wrapped(heading - way);
         if turn.abs() > COMPASS_SPAN * 0.95 {
             continue;
         }
@@ -346,6 +403,9 @@ pub fn draw_compass(ctx: &egui::Context, bearing: &Bearing) {
         let (size, color) = if name == "N" { (15.0, Color32::from_rgba_unmultiplied(255, 120, 100, fade as u8)) } else { (if k % 4 == 0 { 14.0 } else { 11.0 }, Color32::from_white_alpha(fade as u8)) };
         painter.text(pos2(x, middle.y), Align2::CENTER_CENTER, name, FontId::proportional(size), color);
     }
+    let Some(bearing) = bearing else {
+        return;
+    };
     // Where it is: a gold mark over the strip, at its end pointing on round while it's behind
     let gold = Color32::from_rgb(255, 210, 110);
     let behind = bearing.turn.abs() > COMPASS_SPAN;

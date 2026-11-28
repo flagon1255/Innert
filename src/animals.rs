@@ -4226,6 +4226,13 @@ pub fn still_instance(look: Look, position: Vector3<f64>, heading: f64, world_vo
     AnimalInstance::new(model_index(look, 0), position, facing(heading), vpm / look.resolution(), look.reach() * vpm, STILL)
 }
 
+/// Something dropped lying on the ground, turned `rotation` as it turns slowly to be seen, and
+/// `grow` times life size, as small things are drawn a little bigger. `vpm` is the main world's
+/// voxels per meter.
+pub fn lying_instance(look: Look, position: Vector3<f64>, rotation: UnitQuaternion<f64>, grow: f64, vpm: f64) -> AnimalInstance {
+    AnimalInstance::new(model_index(look, 0), position, rotation, vpm / look.resolution() * grow, look.reach() * vpm * grow, MOVING)
+}
+
 /// Something of `look` walking, `phase` of the way through its stride, 0 to 1, or None standing, or
 /// winding up and striking with `strike`, 0 to 1, as a necromancer's skeletons fight, see
 /// combat\faith.rs: turned `rotation`, its feet at `position`. They're drawn eased, see

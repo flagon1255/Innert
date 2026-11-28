@@ -2765,6 +2765,50 @@ impl App {
                 camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 0.3 * vpm), world.size));
             }
         }
+        // `--set drops=25` strews that many things as if dropped, a mix of everything that can lie
+        // about, weapons of every rarity among it, round a spot `drops_at=30` meters ahead,
+        // `drops_radius=5` meters out, to look at their beams and models, see game\drops.rs;
+        // `drops=rarities` lays a weapon of each rarity in a row there instead. `drops_look=1` turns
+        // the camera to look at the spot from where it is, `drops_from=3` brings it that many meters
+        // back from the spot and up a little, as for a close look at a boss's loot.
+        if let Some(what) = setting("drops") {
+            let ahead = (camera.rotation_matrix() * Vector4::new(0.0, 1.0, 0.0, 0.0)).xyz();
+            let vpm = world.voxels_per_meter as f64;
+            // `drops_turn=60` strews them that many degrees round to the left of ahead
+            let turn = setting("drops_turn").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).to_radians();
+            let flat = Vector3::new(ahead.x, ahead.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+            let turned = |a: f64| Vector3::new(flat.x * a.cos() - flat.y * a.sin(), flat.x * a.sin() + flat.y * a.cos(), 0.0);
+            // `drops_at=10,30,60` strews a pile at each, fanned out a little either side
+            let distances: Vec<f64> = setting("drops_at").map_or(vec![30.0], |v| v.split(',').filter_map(|d| d.trim().parse().ok()).collect());
+            let radius: f64 = setting("drops_radius").and_then(|v| v.parse().ok()).unwrap_or(5.0);
+            let row = what == "rarities";
+            let count = what.parse().unwrap_or(25);
+            let mut middle = start;
+            for (k, &distance) in distances.iter().enumerate() {
+                let way = turned(turn + (k as f64 - (distances.len() - 1) as f64 * 0.5) * 14f64.to_radians());
+                let mut spot = start + way * distance * vpm;
+                // `drops_water=1` strews them over the nearest water at least 2 m deep there, to see
+                // them float up
+                if flag("drops_water", false)
+                    && let Some(deep) = animals::deep_water_near(&world, &water_level, spot, 60.0, 2.0)
+                {
+                    println!("drops: over water {:.0} m deep", (water_level(deep.x, deep.y) - deep.z) / vpm);
+                    spot = deep;
+                }
+                middle = game.strew(&world, spot, way, count, radius, row);
+                println!("drops: {} strewn {distance} m ahead", if row { 6 } else { count });
+            }
+            let flat = turned(turn);
+            if let Some(back) = setting("drops_from").and_then(|v| v.parse::<f64>().ok()) {
+                camera.position = voxels_to_camera(middle - flat * back * vpm + Vector3::new(0.0, 0.0, (0.6 * back).max(1.7) * vpm), world.size);
+            }
+            if distances.len() > 1 {
+                let average = distances.iter().sum::<f64>() / distances.len() as f64;
+                camera.look_at(voxels_to_camera(Vector3::new(start.x, start.y, middle.z) + flat * average * vpm + Vector3::new(0.0, 0.0, 2.0 * vpm), world.size));
+            } else if flag("drops_look", false) || setting("drops_from").is_some() {
+                camera.look_at(voxels_to_camera(middle + Vector3::new(0.0, 0.0, 0.5 * vpm), world.size));
+            }
+        }
         // `--set staff_element=fire` puts a staff of fire in hand, or of another element, or `none`
         if let Some(name) = setting("staff_element") {
             let element = serde_json::from_str::<weapons::Element>(&format!("\"{name}\"")).ok();
@@ -2790,6 +2834,10 @@ impl App {
             // `--set boss_health=0.6` starts it hurt, to see what it does later in a fight
             if let Some(fraction) = setting("boss_health").and_then(|v| v.parse::<f64>().ok()) {
                 game.hurt_bosses(fraction);
+            }
+            // `--set boss_slain=1` has it fall straight away, to see its hoard spill out
+            if flag("boss_slain", false) {
+                game.slay_bosses();
             }
             // `--set boss_move=throw` has it make only that move, as soon as it's ready, wherever
             // the player is, for shots of it in a screenshot run
@@ -4784,6 +4832,37 @@ impl App {
                 self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
                 println!("LEAPT at frame {} 150 m on", capture.frame_times.len());
             }
+            // `--set loot_look_at=N` brings the player at frame N of a screenshot run to stand
+            // `loot_look_from=4` meters back from the rarest weapon dropped near, looking at it,
+            // as at a boss's hoard spilled out, see game\drops.rs
+            static LOOT_LOOK: std::sync::OnceLock<Option<(usize, f64)>> = std::sync::OnceLock::new();
+            let loot_look = *LOOT_LOOK.get_or_init(|| {
+                let settings = settings_from_args();
+                let at = settings.iter().find(|(k, _)| k == "loot_look_at").and_then(|(_, v)| v.parse().ok())?;
+                Some((at, settings.iter().find(|(k, _)| k == "loot_look_from").and_then(|(_, v)| v.parse().ok()).unwrap_or(4.0)))
+            });
+            if let (Some(capture), Some((at, back))) = (&self.capture, loot_look)
+                && at == capture.frame_times.len()
+            {
+                let eye = camera_to_voxels(self.camera.position, self.world.size);
+                let marks = self.game.drop_marks(eye);
+                if !marks.is_empty() {
+                    let vpm = self.world.voxels_per_meter as f64;
+                    // The rarest weapon among it, or the rarest of anything
+                    let middle = self.game.rarest_weapon_dropped(eye, game::DROP_MARKED).unwrap_or_else(|| marks.iter().rev().max_by_key(|m| m.1).map_or(eye, |m| m.0));
+                    let away = Vector3::new(eye.x - middle.x, eye.y - middle.y, 0.0).try_normalize(1e-6).unwrap_or(Vector3::x());
+                    let to = middle + away * back * vpm + Vector3::new(0.0, 0.0, 0.5 * vpm);
+                    match &mut self.player {
+                        Some(player) => {
+                            player.position = to;
+                            self.camera.position = voxels_to_camera(player.eye(&self.world), self.world.size);
+                        }
+                        None => self.camera.position = voxels_to_camera(to + Vector3::new(0.0, 0.0, (0.5 * back).max(1.2) * vpm), self.world.size),
+                    }
+                    self.camera.look_at(voxels_to_camera(middle, self.world.size));
+                    println!("LOOKING at {} things dropped from {back} m, at frame {at}", marks.len());
+                }
+            }
         }
         self.ambience(delta_time);
 
@@ -6220,6 +6299,8 @@ impl App {
         let raid_note = self.raid_note();
         // The compass in Realms, and the map, see compass.rs
         let bearing = if self.menu_open || self.session.gate_open || self.map.open { None } else { self.compass() };
+        // And what's dropped near marked on it, see game\drops.rs
+        let drop_marks = (!self.menu_open && !self.session.gate_open && !self.map.open && self.loaded_scene.is_terrain() && self.animals_on).then(|| self.drop_marks());
         let map_marks = (self.map.open && !self.menu_open).then(|| self.map_marks());
         // How many of the realm's guardians are slain, for the gate's window, see guardians.rs
         let guardians = self.guardians_slain();
@@ -6361,8 +6442,9 @@ impl App {
                     Color32::from_rgba_unmultiplied(235, 240, 255, 200),
                 );
             }
-            if let Some(bearing) = &bearing {
-                compass::draw_compass(&ctx, bearing);
+            let drops = drop_marks.unwrap_or(compass::DropMarks { heading: 0.0, raised: false, marks: Vec::new() });
+            if bearing.is_some() || drops.worth_showing() {
+                compass::draw_compass(&ctx, bearing.as_ref(), &drops);
             }
             if let Some(marks) = &map_marks {
                 compass::draw_map(&ctx, &mut self.map, marks);
@@ -6836,6 +6918,8 @@ impl App {
         // The roads' lamps only after dark, see worldgen\roads.rs, so by day they take none of the
         // lights there's room for
         let day = daynight::daylight(sky.sun.z) as f32;
+        // The beams of what's dropped glow by night and stand out by day, see game\drops.rs
+        self.game.set_daylight(day as f64);
         let lit = |l: &[f32; 8]| {
             let k = worldgen::by_night([l[4], l[5], l[6]], day);
             (k > 0.0).then(|| {
