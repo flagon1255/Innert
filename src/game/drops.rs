@@ -27,6 +27,15 @@ const GROW: f64 = 1.2;
 const SETTLED_WITHIN: f64 = 120.0;
 /// The most marked on the compass at once
 const MARKS: usize = 12;
+/// From this many meters off a beam's drawn taller, up to BEAM_FAR times as tall from 45 m on
+const BEAM_NEAR: f64 = 15.0;
+const BEAM_FAR: f64 = 2.0;
+
+/// `rgb` with its colour pushed `by` times further from grey, as for the beams by day
+fn saturated(rgb: [u8; 3], by: f32) -> [u8; 3] {
+    let grey = (rgb[0] as f32 + rgb[1] as f32 + rgb[2] as f32) / 3.0;
+    rgb.map(|c| (grey + (c as f32 - grey) * by).clamp(0.0, 255.0) as u8)
+}
 
 /// How something lying on the ground is drawn
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -351,7 +360,10 @@ impl Game {
             if strength < 0.01 {
                 continue;
             }
-            let height = BEAM_HEIGHTS[grade] * vpm;
+            // Taller further off, up to BEAM_FAR times from 45 m on, so one far across the land
+            // still stands up over the grass and the bushes round it
+            let reach = ((distance - BEAM_NEAR) / (45.0 - BEAM_NEAR)).clamp(0.0, 1.0);
+            let height = BEAM_HEIGHTS[grade] * (1.0 + (BEAM_FAR - 1.0) * reach) * vpm;
             let top = foot + Vector3::new(0.0, 0.0, height);
             let (Some(base), Some(peak)) = (project(foot), project(top)) else {
                 continue;
@@ -362,27 +374,30 @@ impl Game {
                 continue;
             }
             let side = vec2(-along.y, along.x).normalized();
+            // Stronger in colour by day, against the bright land and sky
+            let color = saturated(color, 1.0 + 0.5 * day);
             let white = [0, 1, 2].map(|i| (color[i] as f32 + (255.0 - color[i] as f32) * (0.7 - 0.35 * day)) as u8);
-            let dark = color.map(|c| (c as f32 * 0.3) as u8);
-            // Its glow, a dark edge by day so it stands out against a bright sky or sand, its body
-            // and its bright core, each a strip of quads fading up the beam, by day more slowly
+            let dark = color.map(|c| (c as f32 * 0.25) as u8);
+            // Its glow, its body and its bright core, and by day a dark edge round its body so it
+            // stands out against a bright sky or sand: each a strip of quads fading up the beam, by
+            // day far more slowly. However far off it is, its body's a few pixels across.
             let body = 0.1 + 0.03 * rare as f64;
-            let layers = [
-                (body * 3.4, 5.0, 26.0, color, 0.22 * (1.0 - 0.3 * day)),
-                (body * 1.45, 3.4 * day, 11.0, dark, 0.4 * day),
-                (body, 2.2 + 0.8 * day, 8.0, color, 0.55 + 0.35 * day),
-                (body * 0.32, 1.0, 2.5, white, 0.85),
-            ];
-            let fading = 1.5 - 0.75 * day;
+            let fading = 1.5 - 1.05 * day;
             const ROWS: usize = 7;
-            for (radius, least, most, rgb, alpha) in layers {
+            let halves = |u: f32| {
+                let px = (wide_foot + (wide_top - wide_foot) * u) * body as f32;
+                let body = px.clamp(1.6 + 0.6 * day, 5.0);
+                [(px * 3.4).clamp(5.0, 18.0), body + 1.4 * day, body, (px * 0.32).clamp(0.9, 2.5).min(body * 0.6)]
+            };
+            let layers = [(color, 0.22 * (1.0 - 0.3 * day)), (dark, 0.6 * day), (color, 0.6 + 0.4 * day), (white, 0.9)];
+            for (layer, (rgb, alpha)) in layers.into_iter().enumerate() {
                 if alpha <= 0.0 {
                     continue;
                 }
                 let first = mesh.vertices.len() as u32;
                 for row in 0..ROWS {
                     let u = row as f32 / (ROWS - 1) as f32;
-                    let half = ((wide_foot + (wide_top - wide_foot) * u) * radius as f32).clamp(least, most);
+                    let half = halves(u)[layer];
                     let at = base + along * u;
                     let c = tint(rgb, alpha * strength * (1.0 - u).powf(fading));
                     mesh.colored_vertex(at - side * half, c);
@@ -394,18 +409,28 @@ impl Game {
                     }
                 }
             }
-            // Motes rising up a rare one's beam, more the rarer, fading as they go
-            for k in 0..grade.saturating_sub(1) {
-                let u = ((time * 0.3 + phase * 0.37 + k as f64 / (grade - 1) as f64).fract()) as f32;
+            // A bright flare near its top, ringed dark by day, so where it ends reads at a glance
+            let flare = 0.82;
+            let size = (halves(flare)[2] * 1.3).clamp(2.4, 4.5);
+            // Only from a little way off, where it helps: close by the beam itself is plain enough
+            let fade = (1.0 - flare).powf(fading).max(0.35) * ((distance - 8.0) / 12.0).clamp(0.0, 1.0) as f32;
+            motes.push((base + along * flare, size, tint(white, strength * fade), (day * strength * fade * 0.7).min(1.0)));
+            // Motes rising up the beam, more the rarer, and by day one up every beam, fading as they go
+            let count = grade.saturating_sub(1).max(usize::from(day > 0.5));
+            for k in 0..count {
+                let u = ((time * 0.3 + phase * 0.37 + k as f64 / count as f64).fract()) as f32;
                 let wobble = side * (wide_foot * body as f32 * 0.8) * ((time * 3.0 + k as f64 * 2.0).sin() as f32);
                 let size = (wide_foot + (wide_top - wide_foot) * u) * body as f32 * 0.7;
-                motes.push((base + along * u + wobble, size.clamp(1.2, 5.0), tint(white, strength * (u * std::f32::consts::PI).sin())));
+                motes.push((base + along * u + wobble, size.clamp(1.2 + 0.6 * day, 3.5), tint(white, strength * (u * std::f32::consts::PI).sin()), 0.0));
             }
         }
         if !mesh.is_empty() {
             painter.add(egui::Shape::mesh(mesh));
         }
-        for (at, size, color) in motes {
+        for (at, size, color, ring) in motes {
+            if ring > 0.0 {
+                painter.circle_stroke(at, size + 0.8, Stroke::new(1.4f32, Color32::from_black_alpha((ring * 200.0) as u8)));
+            }
             painter.circle_filled(at, size, color);
         }
     }
